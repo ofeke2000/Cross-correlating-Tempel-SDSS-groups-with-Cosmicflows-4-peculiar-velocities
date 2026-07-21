@@ -1,0 +1,23 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+
+# Environments
+.venv/
+venv/
+
+# Notebooks
+.ipynb_checkpoints/
+
+# Data products — catalogues are never committed (see README)
+*.hdf5
+*.h5
+*.npy
+*.npz
+data/
+output/
+results/
+literature/
+Imports/
