@@ -2,14 +2,14 @@
 
 **Density–velocity cross-correlations from Tempel et al. (2017) SDSS groups and Cosmicflows-4 peculiar velocities.**
 
-This repository measures the group-centred density–velocity correlation multipoles ξ_Tu,0 and ξ_Tu,1 between the unique Tempel SDSS DR12 group catalogue and Cosmicflows-4 (CF4) radial peculiar velocities, together with the complementary Górski velocity–velocity correlations Ψ∥ and Ψ⊥ from CF4–CF4 pairs. The methodology follows Nusser (2017), adapted from a velocity-centred to a group-centred construction, with all conventions fixed by the accompanying methodological note.
+This repository measures the group-centred density–velocity correlation multipoles $\xi_{Tu,0}$ and $\xi_{Tu,1}$ between the unique Tempel SDSS DR12 group catalogue and Cosmicflows-4 (CF4) radial peculiar velocities, together with the complementary Górski velocity–velocity correlations $\Psi_\parallel$ and $\Psi_\perp$ from CF4–CF4 pairs. The methodology follows Nusser (2017), adapted from a velocity-centred to a group-centred construction, with all conventions fixed by the accompanying methodological note.
 
-The primary science target is the dipole ξ_Tu,1, whose large-scale amplitude scales as b_T f P_m and constrains the growth rate combination fσ₈ (equivalently β = f/b). The monopole ξ_Tu,0 serves as a geometry and calibration diagnostic; Ψ∥ and Ψ⊥ (scaling as f²P_m) probe the coherence of the velocity field itself.
+The primary science target is the dipole $\xi_{Tu,1}$, whose large-scale amplitude scales as $b_T f P_m$ and constrains the growth rate combination $f\sigma_8$ (equivalently $\beta = f/b$). The monopole $\xi_{Tu,0}$ serves as a geometry and calibration diagnostic; $\Psi_\parallel$ and $\Psi_\perp$ (scaling as $f^2 P_m$) probe the coherence of the velocity field itself.
 
 ## Scientific background
 
 - Nusser, A. 2017, MNRAS 470, 445 — the u–δ shell-dipole correlation method this project reproduces and extends (there: CF3 × 2MRS).
-- Górski, K. 1988, ApJ 332, L7 — the velocity correlation tensor formalism underlying Ψ∥ and Ψ⊥.
+- Górski, K. 1988, ApJ 332, L7 — the velocity correlation tensor formalism underlying $\Psi_\parallel$ and $\Psi_\perp$.
 - Turner, Blake & Ruggeri 2021, MNRAS 502, 2087 — the general pair-count galaxy–velocity correlation framework.
 - Tempel et al. 2017, A&A 602, A100 — the SDSS group catalogue.
 - Tully et al. 2023, ApJ 944, 94 — Cosmicflows-4.
@@ -20,23 +20,23 @@ These are fixed project-wide in `src/tempelcf4/config.py` and `geometry.py` and 
 
 | Symbol | Meaning |
 |---|---|
-| s_T, s_V | Tempel and CF4 **redshift-space** positions, CMB frame, one shared redshift–distance convention |
-| **r** = s_V − s_T | Pair separation vector, **group → velocity object**; r = \|**r**\| |
-| µ = n̂_T · r̂ | Configuration-space, group-centred angular cosine |
-| r∥, r⊥ | rµ and r√(1−µ²) |
-| R = \|s_T\| | Observer-to-group distance |
-| u = **v** · n̂_V | Observer-centred radial peculiar velocity (CF4 `Vpec`) |
-| ξ_Tu,ℓ | Multipoles of the Tempel-density × CF4-velocity correlation |
-| Ψ∥, Ψ⊥ | Górski velocity–velocity correlation functions |
-| L_ℓ | Legendre polynomials; P_m(k) is reserved for the matter power spectrum |
-| µ_k = k̂ · n̂ | Fourier-space line-of-sight cosine (RSD formulae only) |
+| $s_T$, $s_V$ | Tempel and CF4 **redshift-space** positions, CMB frame, one shared redshift–distance convention |
+| $\mathbf{r} = s_V - s_T$ | Pair separation vector, **group → velocity object**; $r = \|\mathbf{r}\|$ |
+| $\mu = \hat{n}_T \cdot \hat{r}$ | Configuration-space, group-centred angular cosine |
+| $r_\parallel$, $r_\perp$ | $r\mu$ and $r\sqrt{1-\mu^2}$ |
+| $R = \|s_T\|$ | Observer-to-group distance |
+| $u = \mathbf{v} \cdot \hat{n}_V$ | Observer-centred radial peculiar velocity (CF4 `Vpec`) |
+| $\xi_{Tu,\ell}$ | Multipoles of the Tempel-density × CF4-velocity correlation |
+| $\Psi_\parallel$, $\Psi_\perp$ | Górski velocity–velocity correlation functions |
+| $L_\ell$ | Legendre polynomials; $P_m(k)$ is reserved for the matter power spectrum |
+| $\mu_k = \hat{k} \cdot \hat{n}$ | Fourier-space line-of-sight cosine (RSD formulae only) |
 
 Consequences that follow from these choices and must not be violated:
 
-- Coherent infall gives a **negative** dipole ξ_Tu,1.
+- Coherent infall gives a **negative** dipole $\xi_{Tu,1}$.
 - Reversing the pair orientation flips the sign of all odd multipoles.
 - Distance-indicator distances are **never** used as pair-position coordinates; positions are redshift-space only.
-- Missing peculiar-velocity measurements are missing data, never u = 0.
+- Missing peculiar-velocity measurements are missing data, never $u = 0$.
 - Every Tempel group enters exactly once (`IDg` collapsed); using all member rows silently produces a richness-weighted statistic.
 
 ## Repository layout
@@ -69,10 +69,10 @@ Run the numbered scripts in order; each writes to `data/processed/` or `results/
 2. `01_build_unique_groups.py` — collapse Tempel rows to one row per `IDg`; choose and record the group-centre definition (default: `Rg = 1` member; robustness alternatives logged).
 3. `02_harmonize_positions.py` — CMB-frame redshift-space positions for both catalogues under one stated convention.
 4. `03_build_randoms.py` — random catalogues matching angular mask and radial selection for every richness/redshift cut; emits data-vs-random n(z) and healpy footprint diagnostics.
-5. `04_measure_xi_tu.py` — ξ_Tu,0 and ξ_Tu,1 simultaneously, exact pair geometry, binned in r (and group distance R for the monopole-leakage check).
-6. `05_measure_psi.py` — Ψ∥ and Ψ⊥ from CF4–CF4 pairs via the exact curved-sky two-parameter regression.
+5. `04_measure_xi_tu.py` — $\xi_{Tu,0}$ and $\xi_{Tu,1}$ simultaneously, exact pair geometry, binned in $r$ (and group distance $R$ for the monopole-leakage check).
+6. `05_measure_psi.py` — $\Psi_\parallel$ and $\Psi_\perp$ from CF4–CF4 pairs via the exact curved-sky two-parameter regression.
 7. `06_mock_covariance.py` — mock-based covariance from MDPL2 observer light-cones (primary); spatial jackknife as a secondary check only.
-8. `07_fit_model.py` — joint fit of ξ_TT, ξ_Tu,1, Ψ∥, Ψ⊥ for bias, growth, and nuisance dispersion.
+8. `07_fit_model.py` — joint fit of $\xi_{TT}$, $\xi_{Tu,1}$, $\Psi_\parallel$, $\Psi_\perp$ for bias, growth, and nuisance dispersion.
 
 ## Null tests
 
@@ -82,7 +82,7 @@ velocity shuffle (cross-correlation must vanish), spherical-infall sign test (re
 
 ## Error model
 
-Independent-pair error bars are invalid: pairs share objects and large-scale velocities are strongly correlated. The covariance is mock-based, built from MDPL2/Rockstar light-cones with halo selection matched to the survey selection function φ(r), realistic redshift-space distortions, and Monte Carlo velocity errors drawn from the CF4 distance-modulus uncertainties. A conservative first linear-theory scale cut is r ≳ 20 h⁻¹ Mpc.
+Independent-pair error bars are invalid: pairs share objects and large-scale velocities are strongly correlated. The covariance is mock-based, built from MDPL2/Rockstar light-cones with halo selection matched to the survey selection function $\phi(r)$, realistic redshift-space distortions, and Monte Carlo velocity errors drawn from the CF4 distance-modulus uncertainties. A conservative first linear-theory scale cut is $r \gtrsim 20\ h^{-1}\,\mathrm{Mpc}$.
 
 ## Installation
 
@@ -94,7 +94,7 @@ conda activate tempelcf4
 pytest                                # geometry and sign-convention tests must pass
 ```
 
-Core dependencies: numpy, scipy, astropy, healpy, pandas; Corrfunc for the group autocorrelation; CAMB or CLASS for P_m(k); halotools for the MDPL2 side.
+Core dependencies: numpy, scipy, astropy, healpy, pandas; Corrfunc for the group autocorrelation; CAMB or CLASS for $P_m(k)$; halotools for the MDPL2 side.
 
 ## Data
 
