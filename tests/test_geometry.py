@@ -186,6 +186,258 @@ def test_mu_is_a_cosine_and_spans_the_shell():
     np.testing.assert_allclose(r_mag, R_SHELL, rtol=1e-12)
 
 
+# ---------------------------------------------------------------------------
+# Primitive-level tests
+# ---------------------------------------------------------------------------
+#
+# These exercise the three geometry primitives in isolation, on hand-checkable
+# inputs. They are deliberately separate from the sign gate above: the gate
+# tests a physical claim about a velocity field, whereas these test the
+# mechanical contracts -- shapes, norms, orientation, clipping -- that the gate
+# silently assumes. A primitive failure here should be read before the gate is
+# even consulted, since a broken norm makes the gate's verdict meaningless.
+
+
+class TestUnitVector:
+    def test_known_vector_normalises(self):
+        np.testing.assert_allclose(
+            unit_vector(np.array([3.0, 4.0, 0.0])), [0.6, 0.8, 0.0]
+        )
+
+    def test_single_vector_keeps_shape(self):
+        assert unit_vector(np.array([1.0, 2.0, 3.0])).shape == (3,)
+
+    def test_batch_normalises_rowwise(self):
+        vec = np.array([[3.0, 4.0, 0.0], [0.0, 0.0, 5.0], [-1.0, 0.0, 0.0]])
+        out = unit_vector(vec)
+
+        assert out.shape == (3, 3)
+        np.testing.assert_allclose(
+            out, [[0.6, 0.8, 0.0], [0.0, 0.0, 1.0], [-1.0, 0.0, 0.0]]
+        )
+        np.testing.assert_allclose(np.linalg.norm(out, axis=1), 1.0)
+
+    def test_already_unit_vector_is_unchanged(self):
+        vec = _sphere_directions(64)
+        np.testing.assert_allclose(unit_vector(vec), vec, atol=1e-15)
+
+    def test_direction_is_preserved(self):
+        """Normalisation must scale, never rotate or reflect."""
+        vec = np.array([[1.0, -2.0, 3.0], [-4.0, 5.0, -6.0]])
+        out = unit_vector(vec)
+        # Each output is a positive multiple of its input.
+        np.testing.assert_array_less(0.0, np.einsum("ij,ij->i", vec, out))
+
+    def test_zero_vector_returns_zeros_not_nan(self):
+        """Documented choice: no division by zero, no raise, no NaN."""
+        out = unit_vector(np.array([0.0, 0.0, 0.0]))
+
+        assert out.shape == (3,)
+        np.testing.assert_array_equal(out, np.zeros(3))
+        assert np.all(np.isfinite(out))
+
+    def test_zero_row_in_batch_does_not_poison_neighbours(self):
+        """A zero row must be contained -- the other rows are still correct."""
+        vec = np.array([[3.0, 4.0, 0.0], [0.0, 0.0, 0.0], [0.0, 2.0, 0.0]])
+        out = unit_vector(vec)
+
+        assert np.all(np.isfinite(out))
+        np.testing.assert_allclose(
+            out, [[0.6, 0.8, 0.0], [0.0, 0.0, 0.0], [0.0, 1.0, 0.0]]
+        )
+
+    def test_zero_vector_emits_no_warning(self):
+        """The masked divide must not trip numpy's invalid-value warning."""
+        with np.errstate(divide="raise", invalid="raise"):
+            unit_vector(np.array([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]]))
+
+
+class TestPairSeparation:
+    def test_hand_checked_case(self):
+        s_center = np.array([1.0, 1.0, 1.0])
+        s_others = np.array([[4.0, 5.0, 1.0], [1.0, 1.0, 3.0]])
+
+        r_vec, r_mag = pair_separation(s_center, s_others)
+
+        np.testing.assert_allclose(r_vec, [[3.0, 4.0, 0.0], [0.0, 0.0, 2.0]])
+        np.testing.assert_allclose(r_mag, [5.0, 2.0])
+
+    def test_points_from_center_to_others(self):
+        """The frozen orientation r = s_V - s_T, asserted directionally.
+
+        Displacing a neighbour further along +x must make r more positive in x.
+        If the subtraction were reversed this test fails while every norm-based
+        check above still passes -- which is the whole point of having it.
+        """
+        s_center = np.array([10.0, 0.0, 0.0])
+        s_others = np.array([[15.0, 0.0, 0.0], [5.0, 0.0, 0.0]])
+
+        r_vec, _ = pair_separation(s_center, s_others)
+
+        assert r_vec[0, 0] > 0.0   # neighbour beyond the centre
+        assert r_vec[1, 0] < 0.0   # neighbour in front of the centre
+        np.testing.assert_allclose(r_vec[:, 0], [5.0, -5.0])
+
+    def test_magnitude_matches_norm_of_vector(self):
+        rng = np.random.default_rng(20260721)
+        s_center = rng.normal(size=3) * 50.0
+        s_others = rng.normal(size=(128, 3)) * 50.0
+
+        r_vec, r_mag = pair_separation(s_center, s_others)
+
+        np.testing.assert_allclose(r_mag, np.linalg.norm(r_vec, axis=1))
+
+    def test_shapes_are_stable(self):
+        r_vec, r_mag = pair_separation(np.zeros(3), np.ones((7, 3)))
+        assert r_vec.shape == (7, 3)
+        assert r_mag.shape == (7,)
+
+    def test_single_neighbour_still_returns_stacked_shapes(self):
+        """N == 1 must not collapse to (3,) and (), per the shape contract."""
+        r_vec, r_mag = pair_separation(np.zeros(3), np.array([[3.0, 4.0, 0.0]]))
+
+        assert r_vec.shape == (1, 3)
+        assert r_mag.shape == (1,)
+        np.testing.assert_allclose(r_mag, [5.0])
+
+    def test_coincident_pair_gives_zero_not_nan(self):
+        """Self-pairs are a normal neighbour-query product; caller filters them."""
+        r_vec, r_mag = pair_separation(np.array([2.0, 2.0, 2.0]),
+                                       np.array([[2.0, 2.0, 2.0]]))
+
+        np.testing.assert_array_equal(r_vec, np.zeros((1, 3)))
+        np.testing.assert_array_equal(r_mag, [0.0])
+
+    def test_no_periodic_wrapping_is_applied(self):
+        """Coordinates are taken at face value -- periodicity is upstream.
+
+        A neighbour unwrapped past the box face sits at a large positive
+        offset. Minimum-imaging here would report a short separation with the
+        opposite sign, so this pins the documented contract.
+        """
+        s_center = np.array([config.BOX_SIZE - 10.0, 0.0, 0.0])
+        s_others = np.array([[config.BOX_SIZE + 10.0, 0.0, 0.0]])
+
+        r_vec, r_mag = pair_separation(s_center, s_others)
+
+        np.testing.assert_allclose(r_vec, [[20.0, 0.0, 0.0]])
+        np.testing.assert_allclose(r_mag, [20.0])
+
+    def test_inputs_are_not_mutated(self):
+        s_center = np.array([1.0, 2.0, 3.0])
+        s_others = np.array([[4.0, 5.0, 6.0]])
+        before_center, before_others = s_center.copy(), s_others.copy()
+
+        pair_separation(s_center, s_others)
+
+        np.testing.assert_array_equal(s_center, before_center)
+        np.testing.assert_array_equal(s_others, before_others)
+
+    def test_accepts_readonly_observer_constant(self):
+        """config.OBSERVER_POSITION is write-locked; it must still be usable."""
+        r_vec, r_mag = pair_separation(
+            config.OBSERVER_POSITION, config.OBSERVER_POSITION[None, :]
+        )
+        np.testing.assert_array_equal(r_mag, [0.0])
+
+
+class TestMuCosine:
+    N_T_HAT = np.array([1.0, 0.0, 0.0])
+
+    def test_parallel_gives_plus_one(self):
+        mu = mu_cosine(np.array([[1.0, 0.0, 0.0]]), self.N_T_HAT)
+        np.testing.assert_allclose(mu, [1.0])
+
+    def test_antiparallel_gives_minus_one(self):
+        mu = mu_cosine(np.array([[-1.0, 0.0, 0.0]]), self.N_T_HAT)
+        np.testing.assert_allclose(mu, [-1.0])
+
+    def test_perpendicular_gives_zero(self):
+        r_hat = np.array([[0.0, 1.0, 0.0], [0.0, 0.0, 1.0], [0.0, 0.0, -1.0]])
+        np.testing.assert_allclose(mu_cosine(r_hat, self.N_T_HAT), [0.0, 0.0, 0.0])
+
+    def test_known_intermediate_angle(self):
+        r_hat = unit_vector(np.array([[1.0, 1.0, 0.0]]))
+        np.testing.assert_allclose(mu_cosine(r_hat, self.N_T_HAT), [np.sqrt(0.5)])
+
+    def test_shape_is_n(self):
+        r_hat = _sphere_directions(37)
+        assert mu_cosine(r_hat, self.N_T_HAT).shape == (37,)
+
+    def test_single_separation_returns_length_one(self):
+        assert mu_cosine(np.array([[0.0, 1.0, 0.0]]), self.N_T_HAT).shape == (1,)
+
+    def test_clips_overshooting_input(self):
+        """Guards float overshoot: |mu| must never exceed 1.
+
+        The inputs here overshoot by far more than float error to make the clip
+        observable at all; the real overshoot it exists for is ~1e-16.
+        """
+        r_hat = np.array([[1.0 + 1e-9, 0.0, 0.0], [-1.0 - 1e-9, 0.0, 0.0]])
+        mu = mu_cosine(r_hat, self.N_T_HAT)
+
+        np.testing.assert_array_equal(mu, [1.0, -1.0])
+        assert np.all(np.abs(mu) <= 1.0)
+
+    def test_clip_is_not_a_normalisation(self):
+        """A short un-normalised input is passed through, not rescaled to 1.
+
+        Documents that the clip only bounds; it does not repair bad input.
+        """
+        mu = mu_cosine(np.array([[0.5, 0.0, 0.0]]), self.N_T_HAT)
+        np.testing.assert_allclose(mu, [0.5])
+
+    def test_matches_explicit_dot_product(self):
+        rng = np.random.default_rng(7)
+        r_hat = unit_vector(rng.normal(size=(256, 3)))
+        n_T_hat = unit_vector(rng.normal(size=3))
+
+        np.testing.assert_allclose(
+            mu_cosine(r_hat, n_T_hat), r_hat @ n_T_hat, atol=1e-15
+        )
+
+    def test_broadcasts_per_pair_lines_of_sight(self):
+        """An (N, 3) n_T_hat pairs row-wise, not as an outer product."""
+        r_hat = np.array([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]])
+        n_T_hat = np.array([[1.0, 0.0, 0.0], [1.0, 0.0, 0.0]])
+
+        np.testing.assert_allclose(mu_cosine(r_hat, n_T_hat), [1.0, 0.0])
+
+    def test_reversing_r_hat_negates_mu(self):
+        """The primitive-level statement of the sign hazard in config.py."""
+        r_hat = _sphere_directions(128)
+        n_T_hat = unit_vector(np.array([0.3, -0.5, 0.8]))
+
+        np.testing.assert_allclose(
+            mu_cosine(-r_hat, n_T_hat), -mu_cosine(r_hat, n_T_hat), atol=1e-15
+        )
+
+
+class TestPrimitivesCompose:
+    def test_mu_is_plus_one_directly_behind_the_centre(self):
+        """End-to-end orientation check with no velocities involved.
+
+        A neighbour placed further from the observer than the centre, along the
+        same ray, must give mu = +1 ("far side"). This is the composition the
+        estimator performs, and it fixes the sign of the geometry independently
+        of the infall gate above.
+        """
+        observer = np.asarray(config.OBSERVER_POSITION, dtype=float)
+        s_center = observer + np.array([R_CENTER, 0.0, 0.0])
+        s_far = s_center + np.array([[R_SHELL, 0.0, 0.0]])
+        s_near = s_center - np.array([[R_SHELL, 0.0, 0.0]])
+
+        n_T_hat = unit_vector(s_center - observer)
+
+        r_far, mag_far = pair_separation(s_center, s_far)
+        r_near, mag_near = pair_separation(s_center, s_near)
+
+        np.testing.assert_allclose(mag_far, [R_SHELL])
+        np.testing.assert_allclose(mag_near, [R_SHELL])
+        np.testing.assert_allclose(mu_cosine(unit_vector(r_far), n_T_hat), [1.0])
+        np.testing.assert_allclose(mu_cosine(unit_vector(r_near), n_T_hat), [-1.0])
+
+
 # TODO(sign-gate): once the estimator is implemented, extend this file with
 #   - a velocity-shuffle null test (permuting u across positions must kill the
 #     cross-correlation),

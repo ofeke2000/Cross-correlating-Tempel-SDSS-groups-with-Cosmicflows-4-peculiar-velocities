@@ -26,16 +26,27 @@ downstream binning code does not need to special-case single-object input.
 
 Periodic boundary conditions
 ----------------------------
-Box coordinates are periodic with side config.BOX_SIZE. Any difference of two
-positions must be reduced by the minimum-image convention
+The box is periodic with side config.BOX_SIZE, but **none of the functions in
+this module apply the minimum-image convention.** They are pure Euclidean
+geometry on whatever coordinates they are handed.
 
-    d -= BOX_SIZE * round(d / BOX_SIZE)
+Periodicity is discharged one level up, at the point where neighbours are
+selected: the pipeline carves a sub-volume around each centre and unwraps it
+into that centre's local continuous frame, so coordinates reaching this module
+may legitimately lie outside [0, BOX_SIZE) and are already the nearest image of
+their centre. Re-applying a minimum-image reduction to such coordinates would
+wrap correctly-unwrapped neighbours back across the box -- a silent corruption
+of r_hat, since the result still looks like a short, plausible separation.
 
-before its norm or its direction is used. This applies to the observer -> object
-direction as much as to the pair separation: the observer is a point in the same
-periodic box, and the nearest image of a halo is the one it is physically near.
-Minimum-image geometry is only unambiguous for separations below
-config.MAX_ANALYSIS_RADIUS = BOX_SIZE / 2.
+The contract this module depends on, and cannot check:
+
+    every position handed in is the image nearest the relevant centre,
+    expressed continuously with it.
+
+Hard rule 3 (PBC everywhere) is therefore honoured by the carving step, not by
+these primitives. Do not "fix" a minimum-image reduction into `pair_separation`.
+Separations must still stay below config.MAX_ANALYSIS_RADIUS = BOX_SIZE / 2,
+beyond which the nearest image is not unique and the carving is ill-defined.
 """
 
 from __future__ import annotations
@@ -58,21 +69,27 @@ def unit_vector(vec: np.ndarray) -> np.ndarray:
     ndarray, shape (3,) or (N, 3)
         Same shape as the input, each row scaled to unit norm.
 
-    Raises
-    ------
-    ValueError
-        If any input vector has zero (or numerically negligible) norm. A
-        zero-length separation has no direction, and returning NaN or 0 here
-        would propagate into mu as a silently wrong cosine rather than an
-        error. Coincident pairs must be excluded by the caller.
+    Notes
+    -----
+    Zero-length vectors are returned as zeros. They are neither divided by nor
+    raised on: the division is masked, so no NaN and no warning is produced.
+
+    A zero-length vector has no direction, so this is a placeholder, not an
+    answer. A row of zeros propagates into `mu_cosine` as mu = 0 -- a
+    perfectly ordinary-looking cosine -- so coincident pairs must still be
+    excluded upstream. The reason for returning zeros rather than raising is
+    that self-pairs are a routine, expected product of a neighbour query and
+    are filtered by the caller on r_mag; making the primitive raise would force
+    every caller to pre-filter before it can normalise.
     """
-    raise NotImplementedError
+    vec = np.asarray(vec, dtype=float)
+    norm = np.linalg.norm(vec, axis=-1, keepdims=True)
+    return np.divide(vec, norm, out=np.zeros_like(vec), where=norm > 0.0)
 
 
 def pair_separation(
     s_center: np.ndarray,
     s_others: np.ndarray,
-    box_size: float | None = None,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Separation vectors from one central object to many neighbours.
 
@@ -84,28 +101,48 @@ def pair_separation(
     ----------
     s_center : ndarray, shape (3,)
         Position of the central (density/Tempel-like) object, s_T, in comoving
-        box coordinates, h^-1 Mpc.
+        coordinates, h^-1 Mpc. Must already be in the same unwrapped frame as
+        `s_others` (see Notes).
     s_others : ndarray, shape (N, 3)
-        Positions of the N neighbour (velocity) objects, s_V, same units.
-    box_size : float, optional
-        Periodic box side, h^-1 Mpc. Defaults to config.BOX_SIZE. Pass a value
-        explicitly only to test non-default boxes; pass None for production.
+        Positions of the N neighbour (velocity) objects, s_V, same units and
+        same frame.
 
     Returns
     -------
     r_vec : ndarray, shape (N, 3)
-        Minimum-image separation vectors s_V - s_T, one per row.
+        Separation vectors s_V - s_T, one per row.
     r_mag : ndarray, shape (N,)
         Euclidean norms |r|, h^-1 Mpc. Always (N,), never scalar.
 
     Notes
     -----
-    The minimum-image reduction is applied to r_vec before its norm is taken,
-    so r_mag is bounded by sqrt(3) * box_size / 2 and pairs never "wrap the
-    long way round". Callers must restrict shells to
-    config.MAX_ANALYSIS_RADIUS, beyond which the nearest image is not unique.
+    **This function does NOT apply the minimum-image convention, and adding it
+    here would be a bug, not a fix.**
+
+    Periodicity is resolved one level up: the pipeline carves a sub-volume
+    around each centre and hands down neighbour coordinates already unwrapped
+    into that centre's local frame, so images near a box face arrive with
+    coordinates outside [0, BOX_SIZE). A minimum-image reduction applied to
+    those coordinates would wrap a legitimately unwrapped neighbour back across
+    the box and corrupt both r_mag and r_hat -- silently, since the result is
+    still a plausible short separation.
+
+    The invariant the caller owes this function is therefore stronger than
+    "coordinates are in the box": every neighbour must be the image nearest
+    `s_center`, expressed continuously with it. Given that, a plain difference
+    is the correct and complete answer, and hard rule 3 is satisfied by the
+    carving step rather than by this primitive.
+
+    Shells must still be restricted to config.MAX_ANALYSIS_RADIUS, beyond which
+    the nearest image is not unique and the carving itself is ill-defined.
     """
-    raise NotImplementedError
+    s_center = np.asarray(s_center, dtype=float)
+    s_others = np.atleast_2d(np.asarray(s_others, dtype=float))
+
+    r_vec = s_others - s_center
+    r_mag = np.linalg.norm(r_vec, axis=-1)
+
+    return r_vec, r_mag
 
 
 def mu_cosine(r_hat: np.ndarray, n_T_hat: np.ndarray) -> np.ndarray:
@@ -133,8 +170,13 @@ def mu_cosine(r_hat: np.ndarray, n_T_hat: np.ndarray) -> np.ndarray:
     Notes
     -----
     Both arguments must already be unit vectors -- this function does not
-    normalise, so that an un-normalised input shows up as a |mu| > 1 test
-    failure rather than as a quietly rescaled correlation amplitude.
+    normalise, so that an un-normalised input shows up as a wrong correlation
+    amplitude at the point of use rather than being quietly rescaled here.
+
+    The returned cosines are clipped to [-1, 1]. The clip is a guard against
+    floating-point overshoot of order 1e-16 in the dot product of two unit
+    vectors; it is not a normalisation, and it will not rescue genuinely
+    un-normalised input, which simply saturates at +-1.
 
     In the distant-observer limit (r << R = |s_T|) the neighbour's own line of
     sight n_hat_V coincides with n_hat_T and the observed radial velocity of a
@@ -144,4 +186,9 @@ def mu_cosine(r_hat: np.ndarray, n_T_hat: np.ndarray) -> np.ndarray:
     perfectly spherical infall leaks a monopole U_0 = (2r / 3R) v_inf, which is
     why the monopole is measured alongside the dipole rather than assumed zero.
     """
-    raise NotImplementedError
+    r_hat = np.atleast_2d(np.asarray(r_hat, dtype=float))
+    n_T_hat = np.asarray(n_T_hat, dtype=float)
+
+    mu = np.sum(r_hat * n_T_hat, axis=-1)
+
+    return np.clip(mu, -1.0, 1.0)
