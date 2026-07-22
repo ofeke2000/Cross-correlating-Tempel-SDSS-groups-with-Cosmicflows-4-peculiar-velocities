@@ -104,17 +104,12 @@ def _infall_shell() -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     return s_center, s_neighbors, u
 
 
-@pytest.mark.xfail(
-    reason="geometry.py and shell_dipole are stubs; this is the target behaviour",
-    raises=NotImplementedError,
-    strict=True,
-)
 def test_spherical_infall_gives_negative_dipole():
     """Coherent infall must produce a negative dipole. This is the sign gate."""
     s_center, s_neighbors, u = _infall_shell()
     shell_edges = np.array([0.5 * R_SHELL, 1.5 * R_SHELL])
 
-    monopole, dipole = shell_dipole(
+    result = shell_dipole(
         s_center=s_center,
         s_neighbors=s_neighbors,
         shell_edges=shell_edges,
@@ -122,26 +117,23 @@ def test_spherical_infall_gives_negative_dipole():
     )
 
     # Every neighbour is in the single shell.
-    assert monopole.shape == (1,)
-    assert dipole.shape == (1,)
+    assert result.pair_count.shape == (1,)
+    assert result.dipole.shape == (1,)
 
     # The assertion the project rests on.
-    assert dipole[0] < 0.0
-    assert np.sign(dipole[0]) == config.INFALL_DIPOLE_SIGN
+    assert result.dipole[0] < 0.0
+    assert np.sign(result.dipole[0]) == config.INFALL_DIPOLE_SIGN
 
     # And it should recover the imposed infall speed, not merely its sign.
-    # Normalising the L_1 accumulator by the count picks up the <mu^2> = 1/3
-    # of a uniform shell, hence the factor of 3. Tolerance is loose because the
-    # setup is at finite R, where the recovery is exact only to O(r/R).
-    recovered = 3.0 * dipole[0] / monopole[0]
+    # Normalising the L_1 accumulator by the PAIR COUNT (result.pair_count, not the
+    # velocity monopole Σu which is ~0 for an isotropic shell) picks up the
+    # <mu^2> = 1/3 of a uniform shell, hence the factor of 3. Tolerance is loose
+    # because the setup is at finite R, where the recovery is exact only to
+    # O(r/R).
+    recovered = 3.0 * result.dipole[0] / result.pair_count[0]
     assert recovered == pytest.approx(V_INFALL, rel=0.1)
 
 
-@pytest.mark.xfail(
-    reason="geometry.py is a stub; this is the target behaviour",
-    raises=NotImplementedError,
-    strict=True,
-)
 def test_reversing_the_pair_vector_flips_the_dipole():
     """r = s_T - s_V instead of s_V - s_T must flip the dipole's sign.
 
@@ -164,11 +156,6 @@ def test_reversing_the_pair_vector_flips_the_dipole():
     assert np.sum(u * mu_reversed) > 0.0   # reversed: the wrong answer
 
 
-@pytest.mark.xfail(
-    reason="geometry.py is a stub; this is the target behaviour",
-    raises=NotImplementedError,
-    strict=True,
-)
 def test_mu_is_a_cosine_and_spans_the_shell():
     """mu must lie in [-1, 1] and cover both hemispheres for a full shell."""
     s_center, s_neighbors, _ = _infall_shell()
@@ -184,6 +171,88 @@ def test_mu_is_a_cosine_and_spans_the_shell():
     assert np.mean(mu) == pytest.approx(0.0, abs=1e-2)  # uniform shell: no
     #                                                     geometric dipole
     np.testing.assert_allclose(r_mag, R_SHELL, rtol=1e-12)
+
+
+# Toy parameters for the geometry-only dipole sign gate below. Kept local to
+# the test's own block (distinct from the R_CENTER/R_SHELL of the estimator
+# gate) so the two setups are never silently conflated.
+R_CENTER_GEOM = 100.0    # observer -> central object distance, h^-1 Mpc
+R_SHELL_GEOM = 20.0      # shell radius around the central object (<< R_CENTER)
+V_INFALL_SPEED = 300.0   # infall SPEED, km/s; a positive magnitude, direction
+#                          imposed inward by construction below
+N_SHELL_GEOM = 2048      # neighbours on the shell
+
+
+def test_infall_dipole_is_negative_from_geometry_alone():
+    """The load-bearing convention check, at the geometry level only.
+
+    Builds coherent radial infall onto a central object and forms the raw
+    dipole sum D = sum_i u_i * mu_i using ONLY the geometry primitives -- no
+    shell estimator, no binning, no normalisation. If D < 0 here, the frozen
+    convention (r = s_V - s_T, mu = n_hat_T . r_hat, infall -> negative dipole)
+    is self-consistent independently of any downstream accumulator.
+
+    Why D < 0 for infall (see config.py for the full argument):
+      Each neighbour's imposed velocity is v_i = -V_INFALL_SPEED * r_hat_i,
+      i.e. directed inward along -r_hat. What the catalogue measures is the
+      projection onto the neighbour's OWN observer line of sight,
+      u_i = v_i . n_hat_V,i. In the distant-observer limit n_hat_V,i -> n_hat_T
+      = z_hat, so u_i -> -V_INFALL_SPEED * (r_hat_i . z_hat) = -V_INFALL_SPEED
+      * mu_i, giving u_i * mu_i -> -V_INFALL_SPEED * mu_i^2 <= 0 for EVERY
+      neighbour. Concretely:
+        - Far side (mu > 0): neighbour lies beyond the centre and falls back
+          toward the observer, so u < 0; u*mu < 0.
+        - Near side (mu < 0): neighbour lies in front and falls away from the
+          observer, so u > 0; u*mu < 0.
+      Both hemispheres carry the same sign, which is exactly why the dipole
+      survives the shell average while the monopole cancels.
+    """
+    observer = np.asarray(config.OBSERVER_POSITION, dtype=float)
+
+    # Central density object out along +z; its radial direction is z_hat.
+    z_hat = np.array([0.0, 0.0, 1.0])
+    s_center = observer + R_CENTER_GEOM * z_hat
+    n_T_hat = unit_vector(s_center - observer)
+    np.testing.assert_allclose(n_T_hat, z_hat, atol=1e-15)
+
+    # Neighbours (velocity objects) on an isotropic shell around the centre.
+    r_hat = _sphere_directions(N_SHELL_GEOM)
+    s_neighbors = s_center + R_SHELL_GEOM * r_hat
+
+    # Pure radial infall toward the centre: direction is (s_center - s_neighbor)
+    # normalised, i.e. inward = -r_hat; magnitude is the fixed infall speed.
+    infall_dir = unit_vector(s_center - s_neighbors)
+    np.testing.assert_allclose(infall_dir, -r_hat, atol=1e-12)
+    v_vec = V_INFALL_SPEED * infall_dir
+
+    # CF4 measures only the line-of-sight component: project onto each
+    # neighbour's OWN observer direction n_hat_V, not the central object's.
+    n_hat_v = unit_vector(s_neighbors - observer)
+    u = np.einsum("ij,ij->i", v_vec, n_hat_v)
+
+    # Geometry: r = s_V - s_T, then mu = n_hat_T . r_hat.
+    r_vec, r_mag = pair_separation(s_center, s_neighbors)
+    np.testing.assert_allclose(r_mag, R_SHELL_GEOM, rtol=1e-12)
+    mu = mu_cosine(unit_vector(r_vec), n_T_hat)
+
+    # The raw dipole sum. This is the whole point.
+    dipole = np.sum(u * mu)
+
+    assert dipole < 0.0
+    assert np.sign(dipole) == config.INFALL_DIPOLE_SIGN
+
+    # Stronger than the sign: the dipole must not be a near-cancellation that
+    # merely tips negative, it must RECOVER the imposed infall speed. With
+    # u ~ -V_INFALL_SPEED * mu in the distant-observer limit, the raw sum is
+    #     D = sum_i u_i mu_i ~ -V_INFALL_SPEED * sum_i mu_i^2 = -V * N * <mu^2>,
+    # and <mu^2> = 1/3 over a uniform shell (the 1/3 is pure shell geometry,
+    # kept inline per the config.py rule on mathematical constants). Hence
+    # 3 D / N recovers -V_INFALL_SPEED. Tolerance is loose because the setup is
+    # at finite R = 5 * r_shell, where the recovery is exact only to O(r/R):
+    # the same O(0.2) line-of-sight tilt that puts a thin positive tail near
+    # mu = 0 also biases the amplitude by a few percent.
+    recovered = 3.0 * dipole / N_SHELL_GEOM
+    assert recovered == pytest.approx(-V_INFALL_SPEED, rel=0.1)
 
 
 # ---------------------------------------------------------------------------
