@@ -10,6 +10,10 @@ and the answer can be checked before it is trusted on data.
 
 Read these for context before non-trivial work:
 
+- [docs/summary.md](docs/summary.md) — science context, conventions, pipeline (best overview)
+- [docs/architecture.md](docs/architecture.md) — per-file responsibilities; the live map,
+  kept in sync with the code
+- [docs/research_notes.md](docs/research_notes.md) — current goals; what we are working on now
 - [README.md](README.md) — science goals, frozen conventions table, full pipeline, null tests
 - [literature/tempel_cf4_velocity_correlations.pdf](literature/tempel_cf4_velocity_correlations.pdf)
   — the project's methodological note; **the authority on every convention and sign**
@@ -42,8 +46,16 @@ most likely to be worth porting.
 
 ## Running
 
+Work inside the project virtual environment — it isolates the pinned dependencies in
+`requirements.txt` from the system Python. Create it once, then activate it for every
+session; don't `pip install` into the system interpreter.
+
 ```bash
-pytest    # geometry and sign-convention tests
+python -m venv venv                    # once
+source venv/bin/activate               # every session
+pip install -r requirements.txt        # once, inside the venv
+
+pytest                                 # geometry and sign-convention tests
 ```
 
 The sign-gate tests in [tests/test_geometry.py](tests/test_geometry.py) are currently
@@ -55,6 +67,13 @@ that is a conversation about conventions, not an edit.
 task needs it, and ask before running anything long.
 
 ## Hard rules
+
+0. **Check `Imports from old repo/` before starting any task.** Before writing new code —
+   an estimator, a mask, an overdensity calculation, a data loader, geometry helpers — read
+   the corresponding reference code there first. It is the bulk-flow project's working
+   implementation and often already solves the problem (or shows the sign/PBC pitfalls).
+   Copy and adapt deliberately; never wire live imports into it. The folder is gitignored
+   and not a package.
 
 1. **Frozen conventions live in `config.py`, nowhere else.** The pair orientation
    `r = s_V − s_T`, the cosine `µ = n̂_T · r̂`, the CMB frame, and the observer position are
@@ -89,8 +108,12 @@ task needs it, and ask before running anything long.
    the catalogue, existence-checked before recomputation: check column → skip if present →
    compute → save.
 
-8. **Keep docs in sync.** A change to structure or conventions updates `README.md` and this
-   file in the same task.
+8. **Keep docs in sync.** Any change to code structure — a new module, a moved
+   responsibility, a changed public signature — updates [docs/architecture.md](docs/architecture.md)
+   in the same task; it is the live per-file map and must never lag the code. A change to
+   conventions also updates `README.md` and this file. [docs/summary.md](docs/summary.md)
+   and [docs/research_notes.md](docs/research_notes.md) exist to complete the doc structure
+   but are **not actively maintained yet** — leave them until explicitly asked.
 
 ## Coding conventions
 
@@ -100,6 +123,13 @@ task needs it, and ask before running anything long.
 - **Stateful pipeline stages are classes.** Anything holding a catalogue, a KDTree, a
   configuration, or a run's worth of intermediate state gets encapsulated (cf. the old
   repo's `MaskMaker`, `OverdensityCalculator`).
+- **Numbers and stable configuration are stored in classes.** Parameters and settings
+  that are not expected to change often live as class attributes (or a small config
+  dataclass, cf. the old repo's `src/config/`), not as inline literals or scattered
+  module globals. This is the storage counterpart to keeping *compute* primitives free
+  functions, and the mechanism behind hard rule 4. The frozen module-level constants in
+  `config.py` are the deliberate exception: single-source-of-truth conventions, not
+  tunables.
 - **Explicit array-shape contracts in every docstring.** `(3,)` for one vector, `(N, 3)` for
   many, `(N,)` for scalars-per-object. Shapes are stable: a function documented as returning
   `(N,)` returns `(N,)` even for N = 1.
@@ -123,3 +153,8 @@ Fixed project-wide; see the README table and `config.py`.
 - Velocities: km/s; masses: `mvir` in h⁻¹ M☉
 - MDPL2 cosmology: H0 = 67.77, Ωm = 0.307115, σ8 = 0.8228; box 1000 h⁻¹ Mpc
 - Small-scale velocity noise: σ* ≈ 250 km/s
+
+## Agent workflow
+
+- Delegate implementation work (writing/editing code) to a Sonnet subagent.
+- Delegate code review to an Opus subagent.
