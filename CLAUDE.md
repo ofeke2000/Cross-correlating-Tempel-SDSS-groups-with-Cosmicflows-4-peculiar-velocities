@@ -28,6 +28,7 @@ Read these for context before non-trivial work:
 
 ```
 config.py            frozen conventions — sign, pair orientation, observer, box, columns
+settings.py          tunable settings in dataclasses — paths, cosmology, shell binning, selection
 geometry.py          pure geometry primitives (unit_vector, pair_separation, mu_cosine)
 estimators/          shell_dipole.py — monopole + dipole accumulators per radial shell
 selection/           masks, selection functions, random catalogues (empty)

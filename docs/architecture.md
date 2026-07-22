@@ -25,6 +25,40 @@ never restates a convention locally.
 - Sign: `INFALL_DIPOLE_SIGN = -1`; `nusser_multipole_sign(ell) -> (-1)**ell`.
 - Catalogue columns: `HALO_COLUMNS`, `POSITION_COLUMNS`, `VELOCITY_COLUMNS`.
 
+### `settings.py` — tunable settings **[done]**
+Counterpart to `config.py`: everything here is a first-pass, tunable knob (file locations,
+MDPL2 cosmology metadata, shell binning, mocks/selection placeholders), never a sign or
+normalisation convention. Anything with a sign lives in `config.py` and is imported here,
+never restated. Four small dataclasses plus an aggregator:
+
+- `PathsConfig` (mutable) — catalogue and output locations, all derived from `project_root`
+  (`Path(__file__).resolve().parent`, i.e. the repo root) rather than hardcoded absolutes, so
+  the settings are portable across checkouts. `data_dir`, `output_dir`, and the four catalogue
+  paths (`mdpl2_catalog`, `cf4_groups_catalog`, `cf4_velocities_catalog`,
+  `sdss_tempel_catalog`) default to `None` and are resolved in `__post_init__`. Method
+  `ensure_output_dir()` creates `output_dir`. Does not load the ~4M-row MDPL2 catalogue — a
+  path only.
+- `CosmologyConfig` (frozen dataclass) — MDPL2 simulation cosmology (`H0`, `Om0`, `Ode0`,
+  `Ob0`, `sigma8`, `ns`, `growth_index`, `flat`); simulation metadata, not a `config.py`-style
+  convention, but `__post_init__` raises `ValueError` if `h` (`H0/100`, the definition of the
+  reduced Hubble parameter) disagrees with `config.HUBBLE_PARAM` beyond `_H_CONSISTENCY_TOL`,
+  keeping the two single sources of truth from drifting apart. `to_colossus_dict()` for
+  colossus's constructor shape. CF4's distance-ladder `H0_CF4` is deliberately out of scope
+  until the CF4 data arm starts.
+- `ShellConfig` — radial shell binning for `estimators.shell_dipole.shell_dipole`:
+  `min_radius`, `max_radius`, `radii_step`, `sigma_star` (small-scale velocity noise, km/s).
+  `__post_init__` validates ordering and that `max_radius <= config.MAX_ANALYSIS_RADIUS`.
+  Properties `shell_edges (B+1,)` and `shell_centers (B,)`; edges are built min→max in steps
+  of `radii_step` with `max_radius` appended exactly (avoiding `np.arange` overshoot) and
+  clipped to `config.MAX_ANALYSIS_RADIUS`.
+- `SelectionConfig` — lean placeholder knobs for the not-yet-built `mocks/`/`selection/` arms:
+  `mass_min` (default `1e12`, matching the catalogue's mvir floor), `mass_max`,
+  `number_of_observers`, `observer_selection` (`"random"` or `"virgo"`), all validated in
+  `__post_init__`.
+- `Settings` — aggregates one instance of each via `default_factory` (so sub-configs are
+  independent across instances); `default_settings()` returns a fresh instance rather than a
+  shared module-level singleton.
+
 ### `geometry.py` — pure geometry primitives **[done]**
 Stateless, array-vectorised free functions; the layer the sign convention physically lives
 in, kept small enough to be fully unit-tested. Shape contracts: `(3,)` one vector,
@@ -104,6 +138,13 @@ KDTree overdensity), `data_loader.py`.
 - `tests/test_shell_dipole.py` **[done]** — estimator-level sign gate (reuses `_infall_shell`),
   isotropic/velocity-shuffle nulls, binning correctness, empty-shell/NaN edge cases, and
   input validation.
+- `tests/test_settings.py` **[done]** — `settings.py` dataclass tests: `PathsConfig` derived
+  paths and `ensure_output_dir` (via `tmp_path`, never the real `output/`); `CosmologyConfig`
+  frozen-ness, `h`/`config.HUBBLE_PARAM` agreement, `to_colossus_dict`, and the inconsistent-H0
+  `ValueError`; `ShellConfig` edge/center shape and monotonicity, the `MAX_ANALYSIS_RADIUS`
+  ceiling, invalid-input `ValueError`s, and a toy `shell_dipole` call on the produced edges;
+  `SelectionConfig` valid/invalid construction; `Settings`/`default_settings` independence
+  across instances.
 
 ## `notebooks/` — exploration only **[empty]**
 Nothing load-bearing.
