@@ -5,7 +5,7 @@ Tunable settings, stored in classes -- the counterpart to `config.py`'s frozen
 conventions.
 
 `config.py` is the single source of truth for anything that carries a sign or
-a normalisation (pair orientation, the observer, the box, catalogue column
+a normalization (pair orientation, the observer, the box, catalog column
 names): change it and the science answer changes, silently, if you are not
 careful. Nothing in *this* module may redefine or restate one of those
 conventions; where a setting here needs one (e.g. the shell-edge ceiling, or
@@ -23,7 +23,7 @@ analysis code.
 
 Four small dataclasses, one aggregator:
 
-    PathsConfig      -- catalogue and output file locations, repo-root-relative
+    PathsConfig      -- catalog and output file locations, repo-root-relative
     CosmologyConfig  -- MDPL2 cosmology (frozen/immutable, but not a `config.py`
                         convention -- it is simulation metadata, not a sign)
     ShellConfig      -- radial shell binning for the shell-dipole estimator
@@ -51,7 +51,7 @@ import config
 
 @dataclass
 class PathsConfig:
-    """Catalogue and output file locations, derived from the repo root.
+    """Catalog and output file locations, derived from the repo root.
 
     Unlike the old bulk-flow repo's `paths_config.py`, nothing here is a
     hardcoded absolute path: every field is derived from `project_root` so the
@@ -61,7 +61,7 @@ class PathsConfig:
     `data_dir` in `__post_init__`, since one dataclass default cannot cleanly
     reference another.
 
-    The MDPL2 halo catalogue (`mdpl2_catalog`) is ~4M rows / ~600 MB and is
+    The MDPL2 halo catalog (`mdpl2_catalog`) is ~4M rows / ~600 MB and is
     gitignored; this class only names its path, it does not load it -- see
     CLAUDE.md's "don't load it fully unless the task needs it".
 
@@ -70,19 +70,19 @@ class PathsConfig:
     project_root : Path
         Repository root, i.e. the directory containing this file.
     data_dir : Path
-        Input catalogue directory, default `project_root / "data"`.
+        Input catalog directory, default `project_root / "data"`.
     output_dir : Path
         Output directory for derived products, default `project_root / "output"`.
     mdpl2_catalog : Path
-        MDPL2/Rockstar halo catalogue, default
+        MDPL2/Rockstar halo catalog, default
         `data_dir / "mdpl2_rockstar_125_pid-1_mvir12.csv"`.
     cf4_groups_catalog : Path
-        Cosmicflows-4 group catalogue, default `data_dir / "CF4_Groups.csv"`.
+        Cosmicflows-4 group catalog, default `data_dir / "CF4_Groups.csv"`.
     cf4_velocities_catalog : Path
         Cosmicflows-4 group peculiar velocities, default
         `data_dir / "CF4_Groups_Velocities.csv"`.
     sdss_tempel_catalog : Path
-        Tempel et al. (2017) SDSS group catalogue, default
+        Tempel et al. (2017) SDSS group catalog, default
         `data_dir / "SDSS_Temple.csv"`.
     """
 
@@ -129,10 +129,10 @@ _H_CONSISTENCY_TOL: float = 1e-9
 class CosmologyConfig:
     """MDPL2 simulation cosmology.
 
-    Fixed by the simulation the halo catalogue was drawn from, not a
+    Fixed by the simulation the halo catalog was drawn from, not a
     user-editable analysis knob -- hence `frozen=True` rather than a plain
     dataclass. It is simulation *metadata*, not a `config.py`-style sign or
-    normalisation convention, which is why it lives here rather than in
+    normalization convention, which is why it lives here rather than in
     `config.py`; but `h` (see below) must still agree with
     `config.HUBBLE_PARAM`, so `__post_init__` checks that explicitly.
 
@@ -298,7 +298,7 @@ class SelectionConfig:
     """Placeholder selection knobs for the not-yet-built `mocks/` and `selection/` arms.
 
     Kept deliberately lean: only the fields that are already clearly needed
-    (a mass floor matching the catalogue, an observer count and placement
+    (a mass floor matching the catalog, an observer count and placement
     strategy for the MDPL2 mock-observer arm) rather than the old repo's full
     `OriginConfig` surface. Expect this to grow once `mocks/` and `selection/`
     are implemented.
@@ -307,7 +307,7 @@ class SelectionConfig:
     ----------
     mass_min : float
         Minimum halo mass, h^-1 M_sun. Defaults to 1e12, matching the
-        catalogue floor (`mdpl2_rockstar_125_pid-1_mvir12.csv` is already cut
+        catalog floor (`mdpl2_rockstar_125_pid-1_mvir12.csv` is already cut
         at mvir >= 1e12).
     mass_max : float | None
         Maximum halo mass, h^-1 M_sun, or None for no upper cut.

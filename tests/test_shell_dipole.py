@@ -11,8 +11,8 @@ while the geometry sign gate passes, the bug is in the estimator wiring -- the
 binning, the weight handling, or the moment sums -- not in the convention.
 
 The rest pin the mechanical contracts the sign gate silently relies on:
-isotropy kills the dipole while leaving the count, neighbours land in the
-shells their radii dictate, out-of-range neighbours are excluded, and empty
+isotropy kills the dipole while leaving the count, neighbors land in the
+shells their radii dictate, out-of-range neighbors are excluded, and empty
 shells return zeros rather than NaN.
 """
 
@@ -45,8 +45,8 @@ def test_estimator_preserves_the_infall_sign():
     """The negative-dipole convention must survive binning and accumulation.
 
     Same toy as the geometry sign gate, now run through `shell_dipole` with the
-    neighbour radial velocities as weights. The dipole of the single occupied
-    shell must be negative, and normalising it by the pair count must recover
+    neighbor radial velocities as weights. The dipole of the single occupied
+    shell must be negative, and normalizing it by the pair count must recover
     the imposed infall speed (the factor 3 = 2*ell + 1 picks up <mu^2> = 1/3).
     """
     s_center, s_neighbors, u = _infall_shell()
@@ -55,7 +55,7 @@ def test_estimator_preserves_the_infall_sign():
     result = shell_dipole(s_center, s_neighbors, shell_edges, weights=u)
 
     assert result.dipole.shape == (1,)
-    assert result.pair_count[0] == N_SHELL          # every neighbour in one shell
+    assert result.pair_count[0] == N_SHELL          # every neighbor in one shell
 
     assert result.dipole[0] < 0.0
     assert np.sign(result.dipole[0]) == config.INFALL_DIPOLE_SIGN
@@ -67,11 +67,11 @@ def test_estimator_preserves_the_infall_sign():
 def test_reversed_pair_orientation_would_flip_the_estimator_dipole():
     """Guard the silent failure mode at the estimator level.
 
-    Swapping the roles of centre and neighbour reverses r, hence mu, hence the
+    Swapping the roles of center and neighbor reverses r, hence mu, hence the
     dipole. Nothing raises -- only the sign changes -- so this documents that
     the estimator inherits the primitive-level hazard rather than curing it.
-    Here the single 'neighbour' is the former centre and vice versa, so the
-    weight cannot be per-neighbour in the same way; we instead check the sign
+    Here the single 'neighbor' is the former center and vice versa, so the
+    weight cannot be per-neighbor in the same way; we instead check the sign
     flip on a symmetric two-point pair.
     """
     s_center, s_neighbors, u = _infall_shell()
@@ -79,7 +79,7 @@ def test_reversed_pair_orientation_would_flip_the_estimator_dipole():
 
     forward = shell_dipole(s_center, s_neighbors, shell_edges, weights=u)
 
-    # Mirror every neighbour through the centre: s' = 2*s_center - s. This
+    # Mirror every neighbor through the center: s' = 2*s_center - s. This
     # sends r -> -r and mu -> -mu while keeping |r| (and thus the shell) fixed,
     # so the dipole must flip sign and the count must not change.
     s_mirrored = 2.0 * s_center - s_neighbors
@@ -98,8 +98,8 @@ def test_reversed_pair_orientation_would_flip_the_estimator_dipole():
 def test_isotropic_shell_has_vanishing_dipole_but_finite_monopole():
     """An isotropic shell with no infall structure has zero dipole.
 
-    Neighbours are spread uniformly on a shell (a Fibonacci sphere, so the
-    residual anisotropy is a fixed small quantity) and every neighbour is given
+    Neighbors are spread uniformly on a shell (a Fibonacci sphere, so the
+    residual anisotropy is a fixed small quantity) and every neighbor is given
     the SAME nonzero weight -- a pure monopole with no angular structure. The
     monopole must be large (weight times count) while the dipole is consistent
     with zero to sampling noise. This is the monopole-vs-dipole contrast made
@@ -122,15 +122,15 @@ def test_isotropic_shell_has_vanishing_dipole_but_finite_monopole():
 
     # Normalised dipole: 3 * <w mu> / <w> = 3 * <mu> since the weight is
     # uniform, and <mu> -> 0 for an isotropic shell.
-    normalised_dipole = 3.0 * result.dipole[0] / result.monopole[0]
-    assert normalised_dipole == pytest.approx(0.0, abs=1e-2)
+    normalized_dipole = 3.0 * result.dipole[0] / result.monopole[0]
+    assert normalized_dipole == pytest.approx(0.0, abs=1e-2)
 
 
 def test_random_velocities_uncorrelated_with_position_give_zero_dipole():
     """A velocity-shuffle-style null: weights unrelated to geometry cancel.
 
     Isotropic positions, but now the weights are random (mean zero) and carry
-    no angular information. Both the raw dipole and the normalised dipole must
+    no angular information. Both the raw dipole and the normalized dipole must
     sit at zero within sampling noise, while the geometry (count) is unchanged.
     """
     observer = np.asarray(config.OBSERVER_POSITION, dtype=float)
@@ -147,8 +147,8 @@ def test_random_velocities_uncorrelated_with_position_give_zero_dipole():
 
     assert result.pair_count[0] == N_SHELL
     # <w mu> ~ 0 because w and mu are independent, each mean ~0.
-    normalised_dipole = 3.0 * result.dipole[0] / result.pair_count[0]
-    assert normalised_dipole == pytest.approx(0.0, abs=30.0)  # << 250 km/s
+    normalized_dipole = 3.0 * result.dipole[0] / result.pair_count[0]
+    assert normalized_dipole == pytest.approx(0.0, abs=30.0)  # << 250 km/s
 
 
 # ---------------------------------------------------------------------------
@@ -163,10 +163,10 @@ def _line_of_sight_center() -> tuple[np.ndarray, np.ndarray]:
     return observer, s_center
 
 
-def test_neighbours_land_in_the_shell_their_radius_dictates():
-    """Hand-placed neighbours at known radii fall in the expected shells."""
+def test_neighbors_land_in_the_shell_their_radius_dictates():
+    """Hand-placed neighbors at known radii fall in the expected shells."""
     _, s_center = _line_of_sight_center()
-    # One neighbour at r = 5, 15, 25 along +y (perpendicular to the line of
+    # One neighbor at r = 5, 15, 25 along +y (perpendicular to the line of
     # sight, so mu = 0 and the placement is a pure binning check).
     radii = np.array([5.0, 15.0, 25.0])
     s_neighbors = s_center + np.column_stack(
@@ -180,7 +180,7 @@ def test_neighbours_land_in_the_shell_their_radius_dictates():
     np.testing.assert_allclose(result.shell_centers, [5.0, 15.0, 25.0])
 
 
-def test_neighbours_outside_the_edge_range_are_excluded():
+def test_neighbors_outside_the_edge_range_are_excluded():
     """Below the innermost edge and beyond the outermost edge are both dropped."""
     _, s_center = _line_of_sight_center()
     radii = np.array([5.0, 15.0, 25.0, 35.0])  # 5 below edges[0]=10, 35 above 30
@@ -197,7 +197,7 @@ def test_neighbours_outside_the_edge_range_are_excluded():
 
 
 def test_outermost_edge_is_included_in_the_last_shell():
-    """A neighbour sitting exactly on the outer edge is not silently dropped."""
+    """A neighbor sitting exactly on the outer edge is not silently dropped."""
     _, s_center = _line_of_sight_center()
     s_neighbors = s_center + np.array([[0.0, 30.0, 0.0]])  # r = 30 == edges[-1]
     shell_edges = np.array([10.0, 20.0, 30.0])
@@ -213,7 +213,7 @@ def test_outermost_edge_is_included_in_the_last_shell():
 
 
 def test_empty_shell_returns_zero_not_nan():
-    """A shell no neighbour reaches has count 0 and dipole 0.0, never NaN."""
+    """A shell no neighbor reaches has count 0 and dipole 0.0, never NaN."""
     _, s_center = _line_of_sight_center()
     s_neighbors = s_center + np.array([[0.0, 5.0, 0.0]])  # only in the first shell
     shell_edges = np.array([0.0, 10.0, 20.0])
@@ -228,8 +228,8 @@ def test_empty_shell_returns_zero_not_nan():
     assert np.all(np.isfinite(result.monopole))
 
 
-def test_no_neighbours_at_all_returns_all_zero_shells():
-    """Zero neighbours is a valid, NaN-free result of all-empty shells."""
+def test_no_neighbors_at_all_returns_all_zero_shells():
+    """Zero neighbors is a valid, NaN-free result of all-empty shells."""
     _, s_center = _line_of_sight_center()
     s_neighbors = np.empty((0, 3))
     shell_edges = np.array([10.0, 20.0, 30.0])
@@ -256,10 +256,10 @@ def test_uniform_weights_make_monopole_equal_count():
     np.testing.assert_array_equal(result.pair_count, [1.0, 2.0])
 
 
-def test_coincident_neighbour_contributes_to_count_but_not_dipole():
+def test_coincident_neighbor_contributes_to_count_but_not_dipole():
     """r = 0 has no direction: mu = 0, so it counts but adds nothing to Q."""
     _, s_center = _line_of_sight_center()
-    # One neighbour on top of the centre (r = 0), one at r = 5 with mu != 0.
+    # One neighbor on top of the center (r = 0), one at r = 5 with mu != 0.
     s_offset = unit_vector(s_center - np.asarray(config.OBSERVER_POSITION, float))
     s_neighbors = np.vstack([s_center, s_center + 5.0 * s_offset])
     shell_edges = np.array([0.0, 10.0])
@@ -269,8 +269,8 @@ def test_coincident_neighbour_contributes_to_count_but_not_dipole():
 
     assert result.pair_count[0] == 2.0                    # both are in the shell
     assert result.monopole[0] == pytest.approx(200.0)
-    # The coincident one carries mu = 0; only the r = 5 neighbour (mu = +1,
-    # directly behind the centre) contributes to the dipole.
+    # The coincident one carries mu = 0; only the r = 5 neighbor (mu = +1,
+    # directly behind the center) contributes to the dipole.
     assert result.dipole[0] == pytest.approx(100.0)
 
 

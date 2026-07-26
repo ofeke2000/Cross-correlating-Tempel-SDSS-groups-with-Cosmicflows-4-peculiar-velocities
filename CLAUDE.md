@@ -2,7 +2,7 @@
 
 Research code measuring the **density–velocity cross-correlation dipole** ξ_Tu,1 between
 Tempel et al. (2017) SDSS groups and Cosmicflows-4 peculiar velocities, following
-Nusser (2017) in a group-centred rather than velocity-centred construction.
+Nusser (2017) in a group-centered rather than velocity-centered construction.
 
 The current phase is the **simulation-validation arm**: reproduce the estimator inside the
 MDPL2 box, where halo peculiar velocities and the halo density field are both known exactly
@@ -22,7 +22,7 @@ Read these for context before non-trivial work:
 - [literature/1988ApJ...332L...7G.pdf](literature/1988ApJ...332L...7G.pdf) — Górski (1988),
   the Ψ∥/Ψ⊥ velocity-correlation formalism used in the later CF4×CF4 analysis
 - [literature/1704.04477v1.pdf](literature/1704.04477v1.pdf) — Tempel et al. (2017), the
-  group catalogue
+  group catalog
 
 ## Code layout
 
@@ -30,12 +30,14 @@ Read these for context before non-trivial work:
 config.py            frozen conventions — sign, pair orientation, observer, box, columns
 settings.py          tunable settings in dataclasses — paths, cosmology, shell binning, selection
 geometry.py          pure geometry primitives (unit_vector, pair_separation, mu_cosine)
-estimators/          shell_dipole.py — monopole + dipole accumulators per radial shell
-selection/           masks, selection functions, random catalogues (empty)
+estimators/          shell_dipole.py — monopole + dipole accumulators per radial shell,
+                     group-centered (xi_Tu) and velocity-centered (zeta, Nusser eq. 23-24)
+selection/           masks, selection functions, random catalogs (empty)
 mocks/               MDPL2 observers, halo selection, mock covariance (empty)
 tests/               unit tests, including the spherical-infall sign gate
 notebooks/           exploration only — nothing load-bearing
-data/                input catalogues (gitignored, see README)
+scripts/             runnable, load-bearing scripts (e.g. plot_velocity_centered_dipole.py)
+data/                input catalogs (gitignored, see README)
 literature/          papers and the methodological note
 Imports from old repo/   reference code from the bulk-flow project; not importable, read only
 ```
@@ -52,9 +54,9 @@ Work inside the project virtual environment — it isolates the pinned dependenc
 session; don't `pip install` into the system interpreter.
 
 ```bash
-python -m venv venv                    # once
-source venv/bin/activate               # every session
-pip install -r requirements.txt        # once, inside the venv
+python -m venv .venv                    # once
+source .venv/bin/activate               # every session
+pip install -r requirements.txt        # once, inside the .venv
 
 pytest                                 # geometry and sign-convention tests
 ```
@@ -106,7 +108,7 @@ task needs it, and ask before running anything long.
    residual bulk motion). Never return or plot a dipole alone.
 
 7. **Cache-and-skip for derived columns.** Derived quantities computed once, written back to
-   the catalogue, existence-checked before recomputation: check column → skip if present →
+   the catalog, existence-checked before recomputation: check column → skip if present →
    compute → save.
 
 8. **Keep docs in sync.** Any change to code structure — a new module, a moved
@@ -116,12 +118,27 @@ task needs it, and ask before running anything long.
    and [docs/research_notes.md](docs/research_notes.md) exist to complete the doc structure
    but are **not actively maintained yet** — leave them until explicitly asked.
 
+9. **Check every name for typos before writing it — even one you were given.** Any new name
+   — a file, function, variable, column, class, or dict key — is spell-checked before it
+   lands, *including when I asked for that exact name*. If a requested or proposed name looks
+   like a typo (e.g. `veloctiy`, `seperation`, `analyis`, `dipoel`), do not silently adopt
+   it: flag it, ask whether it is intentional, and if it is not, fix it to the correct
+   spelling. Assume a misspelling is accidental unless I confirm otherwise. A wrong name
+   cached to a catalog column (rule 7) or frozen into a public signature is expensive to
+   rename later, so catch it at the point of writing.
+
 ## Coding conventions
 
+- **Prefer functions over class methods.** Default to module-level functions for anything
+  that transforms inputs to outputs. Reach for a class only to *hold* things — a catalog,
+  a KDTree, a run's worth of state, or stable data like configs, settings, and numbers (see
+  the two bullets below) — never to house behavior that could stand alone as a function.
+  When a piece of logic doesn't need `self`, it is a function, not a method. This is the
+  general default; the more specific rules that follow are instances of it.
 - **Geometry and estimator primitives are pure free functions.** `geometry.py` and the
-  estimator cores are stateless, array-vectorised, and fully unit-testable — that is what
+  estimator cores are stateless, array-vectorized, and fully unit-testable — that is what
   makes the sign gate possible. Do not wrap them in classes.
-- **Stateful pipeline stages are classes.** Anything holding a catalogue, a KDTree, a
+- **Stateful pipeline stages are classes.** Anything holding a catalog, a KDTree, a
   configuration, or a run's worth of intermediate state gets encapsulated (cf. the old
   repo's `MaskMaker`, `OverdensityCalculator`).
 - **Numbers and stable configuration are stored in classes.** Parameters and settings
@@ -144,7 +161,7 @@ Fixed project-wide; see the README table and `config.py`.
   and is never used for Legendre polynomials.
 - `r = s_V − s_T`, `r = |r|`, `µ = n̂_T · r̂`, `R = |s_T|`, `u = v · n̂_V`
 - `ξ_Tu,ℓ` — density–velocity multipoles; `Ψ∥`, `Ψ⊥` — Górski velocity–velocity functions
-- Nusser (2017) centres on the velocity object, so his multipoles relate to ours by
+- Nusser (2017) centers on the velocity object, so his multipoles relate to ours by
   `(−1)^ℓ` — see `config.nusser_multipole_sign`. Apply the factor explicitly when comparing;
   never absorb it into an estimator.
 

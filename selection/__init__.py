@@ -1,1 +1,1 @@
-"""Selection functions, masks, and random catalogues. Empty for now."""
+"""Selection functions, masks, and random catalogs. Empty for now."""

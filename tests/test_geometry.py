@@ -34,7 +34,7 @@ from estimators.shell_dipole import shell_dipole
 # The configuration is deliberately the simplest one in which the dipole is
 # non-zero and its sign is known analytically:
 #
-#   - The observer sits at the box centre (config.OBSERVER_POSITION).
+#   - The observer sits at the box center (config.OBSERVER_POSITION).
 #
 #   - One central density object T sits at a known distance R along +x from the
 #     observer. R is large compared with the shell radius so that the
@@ -42,25 +42,25 @@ from estimators.shell_dipole import shell_dipole
 #     which is O(r/R), stays small. It is NOT infinite, so the leakage is real
 #     and the monopole is not expected to be exactly zero.
 #
-#   - N neighbours are placed on a single thin shell of radius r around T,
+#   - N neighbors are placed on a single thin shell of radius r around T,
 #     spread as uniformly as possible over the sphere. Uniformity matters: an
 #     anisotropic shell produces a dipole from geometry alone, which is
 #     precisely the systematic the monopole diagnostic exists to catch.
 #
-#   - Pure radial infall is imposed by hand: every neighbour moves toward T
+#   - Pure radial infall is imposed by hand: every neighbor moves toward T
 #     with the same speed, v_i = V_INFALL * r_hat_i with V_INFALL < 0. No
 #     random component, no bulk flow, no Hubble term -- this is not a physical
 #     velocity field, it is a controlled input whose answer is known.
 #
 # Expected outcome: u_i = v_i . n_hat_V,i is positive on the near side (mu < 0)
-# and negative on the far side (mu > 0), so u_i * mu_i < 0 for every neighbour
+# and negative on the far side (mu > 0), so u_i * mu_i < 0 for every neighbor
 # and the summed dipole is negative. In the distant-observer limit the
-# normalised dipole recovers V_INFALL itself.
+# normalized dipole recovers V_INFALL itself.
 
 R_CENTER = 200.0     # observer -> central object distance, h^-1 Mpc
 R_SHELL = 20.0       # shell radius around the central object, h^-1 Mpc
-V_INFALL = -200.0    # infall speed, km/s; negative = toward the centre
-N_SHELL = 2048       # neighbours on the shell
+V_INFALL = -200.0    # infall speed, km/s; negative = toward the center
+N_SHELL = 2048       # neighbors on the shell
 
 
 def _sphere_directions(n: int) -> np.ndarray:
@@ -85,8 +85,8 @@ def _infall_shell() -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     Returns
     -------
     s_center : (3,) central object position, box coordinates
-    s_neighbors : (N_SHELL, 3) neighbour positions on the shell
-    u : (N_SHELL,) observer-centred radial peculiar velocities, km/s
+    s_neighbors : (N_SHELL, 3) neighbor positions on the shell
+    u : (N_SHELL,) observer-centered radial peculiar velocities, km/s
     """
     observer = np.asarray(config.OBSERVER_POSITION, dtype=float)
     s_center = observer + np.array([R_CENTER, 0.0, 0.0])
@@ -94,14 +94,44 @@ def _infall_shell() -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     r_hat = _sphere_directions(N_SHELL)
     s_neighbors = s_center + R_SHELL * r_hat
 
-    # Pure radial infall toward the centre, then projected onto each
-    # neighbour's OWN line of sight -- that projection is what a peculiar
-    # velocity catalogue actually measures, and it is where the sign is set.
+    # Pure radial infall toward the center, then projected onto each
+    # neighbor's OWN line of sight -- that projection is what a peculiar
+    # velocity catalog actually measures, and it is where the sign is set.
     v_vec = V_INFALL * r_hat
     n_hat_v = unit_vector(s_neighbors - observer)
     u = np.einsum("ij,ij->i", v_vec, n_hat_v)
 
     return s_center, s_neighbors, u
+
+
+def _infall_shell_with_velocities() -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """`_infall_shell`, plus the 3-D infall velocity vectors of the members.
+
+    Built directly on top of `_infall_shell` -- same R_CENTER/R_SHELL/
+    V_INFALL/N_SHELL constants, same positions, same u -- rather than a
+    parallel construction that could drift out of agreement with it. Exists
+    for the velocity-centered estimator's sign gate
+    (tests/test_velocity_centered_dipole.py), which needs the full 3-D
+    velocity of each shell member (its projection u alone is not enough: the
+    velocity-centered estimator uses each member as a CENTRE, and needs its
+    own line of sight to project onto, not the group-centered one baked into
+    `u`).
+
+    Returns
+    -------
+    s_center : (3,) central object position, box coordinates
+    s_neighbors : (N_SHELL, 3) neighbor positions on the shell
+    u : (N_SHELL,) observer-centered radial peculiar velocities, km/s
+    v_vec : (N_SHELL, 3) 3-D peculiar velocity vectors, km/s
+        v_vec = V_INFALL * r_hat, the same imposed infall `_infall_shell`
+        used to build `u` -- recovered here from the neighbor positions
+        rather than recomputed from scratch, so it cannot silently drift out
+        of sync with the shell radius `_infall_shell` actually used.
+    """
+    s_center, s_neighbors, u = _infall_shell()
+    r_hat = unit_vector(s_neighbors - s_center)
+    v_vec = V_INFALL * r_hat
+    return s_center, s_neighbors, u, v_vec
 
 
 def test_spherical_infall_gives_negative_dipole():
@@ -116,7 +146,7 @@ def test_spherical_infall_gives_negative_dipole():
         weights=u,
     )
 
-    # Every neighbour is in the single shell.
+    # Every neighbor is in the single shell.
     assert result.pair_count.shape == (1,)
     assert result.dipole.shape == (1,)
 
@@ -138,7 +168,7 @@ def test_reversing_the_pair_vector_flips_the_dipole():
     """r = s_T - s_V instead of s_V - s_T must flip the dipole's sign.
 
     Documents the failure mode rather than guarding against it: the flip is
-    mathematically correct behaviour, which is exactly why it is dangerous. If
+    mathematically correct behavior, which is exactly why it is dangerous. If
     someone swaps the arguments to `pair_separation`, no error appears anywhere
     -- only this sign changes.
     """
@@ -180,7 +210,7 @@ R_CENTER_GEOM = 100.0    # observer -> central object distance, h^-1 Mpc
 R_SHELL_GEOM = 20.0      # shell radius around the central object (<< R_CENTER)
 V_INFALL_SPEED = 300.0   # infall SPEED, km/s; a positive magnitude, direction
 #                          imposed inward by construction below
-N_SHELL_GEOM = 2048      # neighbours on the shell
+N_SHELL_GEOM = 2048      # neighbors on the shell
 
 
 def test_infall_dipole_is_negative_from_geometry_alone():
@@ -188,21 +218,21 @@ def test_infall_dipole_is_negative_from_geometry_alone():
 
     Builds coherent radial infall onto a central object and forms the raw
     dipole sum D = sum_i u_i * mu_i using ONLY the geometry primitives -- no
-    shell estimator, no binning, no normalisation. If D < 0 here, the frozen
+    shell estimator, no binning, no normalization. If D < 0 here, the frozen
     convention (r = s_V - s_T, mu = n_hat_T . r_hat, infall -> negative dipole)
     is self-consistent independently of any downstream accumulator.
 
     Why D < 0 for infall (see config.py for the full argument):
-      Each neighbour's imposed velocity is v_i = -V_INFALL_SPEED * r_hat_i,
-      i.e. directed inward along -r_hat. What the catalogue measures is the
-      projection onto the neighbour's OWN observer line of sight,
+      Each neighbor's imposed velocity is v_i = -V_INFALL_SPEED * r_hat_i,
+      i.e. directed inward along -r_hat. What the catalog measures is the
+      projection onto the neighbor's OWN observer line of sight,
       u_i = v_i . n_hat_V,i. In the distant-observer limit n_hat_V,i -> n_hat_T
       = z_hat, so u_i -> -V_INFALL_SPEED * (r_hat_i . z_hat) = -V_INFALL_SPEED
       * mu_i, giving u_i * mu_i -> -V_INFALL_SPEED * mu_i^2 <= 0 for EVERY
-      neighbour. Concretely:
-        - Far side (mu > 0): neighbour lies beyond the centre and falls back
+      neighbor. Concretely:
+        - Far side (mu > 0): neighbor lies beyond the center and falls back
           toward the observer, so u < 0; u*mu < 0.
-        - Near side (mu < 0): neighbour lies in front and falls away from the
+        - Near side (mu < 0): neighbor lies in front and falls away from the
           observer, so u > 0; u*mu < 0.
       Both hemispheres carry the same sign, which is exactly why the dipole
       survives the shell average while the monopole cancels.
@@ -215,18 +245,18 @@ def test_infall_dipole_is_negative_from_geometry_alone():
     n_T_hat = unit_vector(s_center - observer)
     np.testing.assert_allclose(n_T_hat, z_hat, atol=1e-15)
 
-    # Neighbours (velocity objects) on an isotropic shell around the centre.
+    # Neighbors (velocity objects) on an isotropic shell around the center.
     r_hat = _sphere_directions(N_SHELL_GEOM)
     s_neighbors = s_center + R_SHELL_GEOM * r_hat
 
-    # Pure radial infall toward the centre: direction is (s_center - s_neighbor)
-    # normalised, i.e. inward = -r_hat; magnitude is the fixed infall speed.
+    # Pure radial infall toward the center: direction is (s_center - s_neighbor)
+    # normalized, i.e. inward = -r_hat; magnitude is the fixed infall speed.
     infall_dir = unit_vector(s_center - s_neighbors)
     np.testing.assert_allclose(infall_dir, -r_hat, atol=1e-12)
     v_vec = V_INFALL_SPEED * infall_dir
 
     # CF4 measures only the line-of-sight component: project onto each
-    # neighbour's OWN observer direction n_hat_V, not the central object's.
+    # neighbor's OWN observer direction n_hat_V, not the central object's.
     n_hat_v = unit_vector(s_neighbors - observer)
     u = np.einsum("ij,ij->i", v_vec, n_hat_v)
 
@@ -268,7 +298,7 @@ def test_infall_dipole_is_negative_from_geometry_alone():
 
 
 class TestUnitVector:
-    def test_known_vector_normalises(self):
+    def test_known_vector_normalizes(self):
         np.testing.assert_allclose(
             unit_vector(np.array([3.0, 4.0, 0.0])), [0.6, 0.8, 0.0]
         )
@@ -276,7 +306,7 @@ class TestUnitVector:
     def test_single_vector_keeps_shape(self):
         assert unit_vector(np.array([1.0, 2.0, 3.0])).shape == (3,)
 
-    def test_batch_normalises_rowwise(self):
+    def test_batch_normalizes_rowwise(self):
         vec = np.array([[3.0, 4.0, 0.0], [0.0, 0.0, 5.0], [-1.0, 0.0, 0.0]])
         out = unit_vector(vec)
 
@@ -305,7 +335,7 @@ class TestUnitVector:
         np.testing.assert_array_equal(out, np.zeros(3))
         assert np.all(np.isfinite(out))
 
-    def test_zero_row_in_batch_does_not_poison_neighbours(self):
+    def test_zero_row_in_batch_does_not_poison_neighbors(self):
         """A zero row must be contained -- the other rows are still correct."""
         vec = np.array([[3.0, 4.0, 0.0], [0.0, 0.0, 0.0], [0.0, 2.0, 0.0]])
         out = unit_vector(vec)
@@ -334,7 +364,7 @@ class TestPairSeparation:
     def test_points_from_center_to_others(self):
         """The frozen orientation r = s_V - s_T, asserted directionally.
 
-        Displacing a neighbour further along +x must make r more positive in x.
+        Displacing a neighbor further along +x must make r more positive in x.
         If the subtraction were reversed this test fails while every norm-based
         check above still passes -- which is the whole point of having it.
         """
@@ -343,8 +373,8 @@ class TestPairSeparation:
 
         r_vec, _ = pair_separation(s_center, s_others)
 
-        assert r_vec[0, 0] > 0.0   # neighbour beyond the centre
-        assert r_vec[1, 0] < 0.0   # neighbour in front of the centre
+        assert r_vec[0, 0] > 0.0   # neighbor beyond the center
+        assert r_vec[1, 0] < 0.0   # neighbor in front of the center
         np.testing.assert_allclose(r_vec[:, 0], [5.0, -5.0])
 
     def test_magnitude_matches_norm_of_vector(self):
@@ -361,7 +391,7 @@ class TestPairSeparation:
         assert r_vec.shape == (7, 3)
         assert r_mag.shape == (7,)
 
-    def test_single_neighbour_still_returns_stacked_shapes(self):
+    def test_single_neighbor_still_returns_stacked_shapes(self):
         """N == 1 must not collapse to (3,) and (), per the shape contract."""
         r_vec, r_mag = pair_separation(np.zeros(3), np.array([[3.0, 4.0, 0.0]]))
 
@@ -370,7 +400,7 @@ class TestPairSeparation:
         np.testing.assert_allclose(r_mag, [5.0])
 
     def test_coincident_pair_gives_zero_not_nan(self):
-        """Self-pairs are a normal neighbour-query product; caller filters them."""
+        """Self-pairs are a normal neighbor-query product; caller filters them."""
         r_vec, r_mag = pair_separation(np.array([2.0, 2.0, 2.0]),
                                        np.array([[2.0, 2.0, 2.0]]))
 
@@ -380,7 +410,7 @@ class TestPairSeparation:
     def test_no_periodic_wrapping_is_applied(self):
         """Coordinates are taken at face value -- periodicity is upstream.
 
-        A neighbour unwrapped past the box face sits at a large positive
+        A neighbor unwrapped past the box face sits at a large positive
         offset. Minimum-imaging here would report a short separation with the
         opposite sign, so this pins the documented contract.
         """
@@ -448,8 +478,8 @@ class TestMuCosine:
         np.testing.assert_array_equal(mu, [1.0, -1.0])
         assert np.all(np.abs(mu) <= 1.0)
 
-    def test_clip_is_not_a_normalisation(self):
-        """A short un-normalised input is passed through, not rescaled to 1.
+    def test_clip_is_not_a_normalization(self):
+        """A short un-normalized input is passed through, not rescaled to 1.
 
         Documents that the clip only bounds; it does not repair bad input.
         """
@@ -483,10 +513,10 @@ class TestMuCosine:
 
 
 class TestPrimitivesCompose:
-    def test_mu_is_plus_one_directly_behind_the_centre(self):
+    def test_mu_is_plus_one_directly_behind_the_center(self):
         """End-to-end orientation check with no velocities involved.
 
-        A neighbour placed further from the observer than the centre, along the
+        A neighbor placed further from the observer than the center, along the
         same ray, must give mu = +1 ("far side"). This is the composition the
         estimator performs, and it fixes the sign of the geometry independently
         of the infall gate above.

@@ -7,20 +7,20 @@
 
 ## What we're working on now
 
-The **simulation-validation arm**: get the group-centred density–velocity dipole estimator
+The **simulation-validation arm**: get the group-centered density–velocity dipole estimator
 working and sign-verified inside the MDPL2 box before it touches data.
 
 ## Done so far
 
 - Frozen conventions pinned in `config.py`.
 - Geometry primitives (`unit_vector`, `pair_separation`, `mu_cosine`) with the sign gate.
-- Shell estimator (`shell_dipole`) returning raw, un-normalised per-shell monopole and
+- Shell estimator (`shell_dipole`) returning raw, un-normalized per-shell monopole and
   dipole; estimator-level sign gate and null tests passing.
 
 ## Open threads / next steps
 
-- **Sub-volume carving + PBC.** The primitives assume neighbours are already unwrapped into
-  each centre's continuous frame. The carving/minimum-image step that guarantees this is not
+- **Sub-volume carving + PBC.** The primitives assume neighbors are already unwrapped into
+  each center's continuous frame. The carving/minimum-image step that guarantees this is not
   yet written; it is the correct home for periodic handling (see the PBC note in
   architecture.md and CLAUDE.md hard rule 3).
 - **Selection** (`selection/`): CF4-like masks, φ(r), randoms.
@@ -30,5 +30,5 @@ working and sign-verified inside the MDPL2 box before it touches data.
 
 ## Questions to resolve
 
-- Exact normalisation and random-subtraction scheme for `ξ_Tu,1` downstream of the raw sums.
+- Exact normalization and random-subtraction scheme for `ξ_Tu,1` downstream of the raw sums.
 - Scale cut and binning for the linear-theory comparison (first pass r ≳ 20 h⁻¹ Mpc).

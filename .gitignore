@@ -6,7 +6,6 @@ __pycache__/
 
 # Environments
 .venv/
-venv/
 
 # Notebooks
 .ipynb_checkpoints/

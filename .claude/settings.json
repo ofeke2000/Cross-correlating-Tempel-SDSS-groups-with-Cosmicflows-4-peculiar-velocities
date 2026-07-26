@@ -16,16 +16,16 @@
       "Bash(tail *)",
       "Bash(python -c *)",
       "Bash(python3 -c *)",
-      "Bash(venv/bin/python -c *)",
+      "Bash(.venv/bin/python -c *)",
       "Bash(pip list*)",
       "Bash(pip show*)",
       "Bash(pip freeze*)",
       "Bash(pip3 list*)",
       "Bash(pip3 show*)",
       "Bash(pip3 freeze*)",
-      "Bash(venv/bin/pip list*)",
-      "Bash(venv/bin/pip show*)",
-      "Bash(venv/bin/pip freeze*)"
+      "Bash(.venv/bin/pip list*)",
+      "Bash(.venv/bin/pip show*)",
+      "Bash(.venv/bin/pip freeze*)"
     ],
     "ask": [
       "Bash(rm *)"

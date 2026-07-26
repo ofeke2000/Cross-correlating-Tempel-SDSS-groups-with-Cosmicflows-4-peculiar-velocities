@@ -12,8 +12,8 @@ Measure the **density–velocity cross-correlation dipole** ξ_Tu,1(r) between T
 (2017) SDSS groups (the density tracers, T) and Cosmicflows-4 peculiar velocities (the
 velocity objects, V). In linear theory this dipole is proportional to the growth rate of
 structure, so it is a probe of gravity on large scales. We follow Nusser (2017) but in a
-**group-centred** construction (centre on the density object T) rather than his
-velocity-centred one; the two differ by (−1)^ℓ per multipole.
+**group-centered** construction (center on the density object T) rather than his
+velocity-centered one; the two differ by (−1)^ℓ per multipole.
 
 ## Current phase — simulation validation
 
@@ -27,16 +27,16 @@ speed. This is the sign gate the project is built around.
 
 - Pair separation `r = s_V − s_T`, pointing from the density object to the velocity object.
 - Cosine `µ = n̂_T · r̂`, using the *central* (density) object's line of sight.
-- CMB frame; observer at a single fixed position (default box centre).
+- CMB frame; observer at a single fixed position (default box center).
 - Infall → negative dipole. Reversing the pair vector silently flips all odd multipoles.
 - Legendre `L_ℓ`; `P` is reserved for the matter power spectrum `P_m(k)`.
 
 ## Pipeline (target)
 
-1. **Selection** — CF4-like masks and the selection function φ(r); random catalogues.
-2. **Geometry** — group-centred pair separations and cosines (`geometry.py`, done).
+1. **Selection** — CF4-like masks and the selection function φ(r); random catalogs.
+2. **Geometry** — group-centered pair separations and cosines (`geometry.py`, done).
 3. **Estimator** — per-shell monopole and dipole accumulators (`estimators/shell_dipole.py`,
-   done); normalise `ξ_Tu,1 = 3·dipole/count`, report the monopole alongside.
+   done); normalize `ξ_Tu,1 = 3·dipole/count`, report the monopole alongside.
 4. **Mocks** — MDPL2 observers, halo selection matched to the survey, mock covariance.
 5. **Inference** — compare to the linear-theory prediction with a conservative scale cut
    (r ≳ 20 h⁻¹ Mpc), mock-based covariance.
@@ -45,5 +45,5 @@ speed. This is the sign gate the project is built around.
 
 - Velocity shuffle: permuting u across positions must kill the cross-correlation.
 - Isotropic shell: the dipole vanishes while the count does not.
-- Periodic-wrap: a centre near a box face must agree once the sub-volume is carved.
+- Periodic-wrap: a center near a box face must agree once the sub-volume is carved.
 - Finite-distance monopole leakage `U₀ = (2r/3R) v_inf` as a diagnostic, not an assumed zero.

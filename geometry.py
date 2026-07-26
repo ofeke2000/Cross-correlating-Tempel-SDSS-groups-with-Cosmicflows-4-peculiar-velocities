@@ -1,10 +1,10 @@
 """
 geometry.py
 -----------
-Geometry primitives for the group-centred pair construction.
+Geometry primitives for the group-centered pair construction.
 
-Every function here is a pure, array-vectorised free function: no state, no
-catalogue knowledge, no I/O. They are the layer the sign convention actually
+Every function here is a pure, array-vectorized free function: no state, no
+catalog knowledge, no I/O. They are the layer the sign convention actually
 lives in, so they are deliberately small enough to be fully covered by unit
 tests (see tests/test_geometry.py).
 
@@ -30,17 +30,17 @@ The box is periodic with side config.BOX_SIZE, but **none of the functions in
 this module apply the minimum-image convention.** They are pure Euclidean
 geometry on whatever coordinates they are handed.
 
-Periodicity is discharged one level up, at the point where neighbours are
-selected: the pipeline carves a sub-volume around each centre and unwraps it
-into that centre's local continuous frame, so coordinates reaching this module
+Periodicity is discharged one level up, at the point where neighbors are
+selected: the pipeline carves a sub-volume around each center and unwraps it
+into that center's local continuous frame, so coordinates reaching this module
 may legitimately lie outside [0, BOX_SIZE) and are already the nearest image of
-their centre. Re-applying a minimum-image reduction to such coordinates would
-wrap correctly-unwrapped neighbours back across the box -- a silent corruption
+their center. Re-applying a minimum-image reduction to such coordinates would
+wrap correctly-unwrapped neighbors back across the box -- a silent corruption
 of r_hat, since the result still looks like a short, plausible separation.
 
 The contract this module depends on, and cannot check:
 
-    every position handed in is the image nearest the relevant centre,
+    every position handed in is the image nearest the relevant center,
     expressed continuously with it.
 
 Hard rule 3 (PBC everywhere) is therefore honoured by the carving step, not by
@@ -78,9 +78,9 @@ def unit_vector(vec: np.ndarray) -> np.ndarray:
     answer. A row of zeros propagates into `mu_cosine` as mu = 0 -- a
     perfectly ordinary-looking cosine -- so coincident pairs must still be
     excluded upstream. The reason for returning zeros rather than raising is
-    that self-pairs are a routine, expected product of a neighbour query and
+    that self-pairs are a routine, expected product of a neighbor query and
     are filtered by the caller on r_mag; making the primitive raise would force
-    every caller to pre-filter before it can normalise.
+    every caller to pre-filter before it can normalize.
     """
     vec = np.asarray(vec, dtype=float)
     norm = np.linalg.norm(vec, axis=-1, keepdims=True)
@@ -91,7 +91,7 @@ def pair_separation(
     s_center: np.ndarray,
     s_others: np.ndarray,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Separation vectors from one central object to many neighbours.
+    """Separation vectors from one central object to many neighbors.
 
     Implements the frozen orientation r = s_V - s_T: the vector points FROM
     the central density object TO each velocity object. Reversing it would flip
@@ -104,7 +104,7 @@ def pair_separation(
         coordinates, h^-1 Mpc. Must already be in the same unwrapped frame as
         `s_others` (see Notes).
     s_others : ndarray, shape (N, 3)
-        Positions of the N neighbour (velocity) objects, s_V, same units and
+        Positions of the N neighbor (velocity) objects, s_V, same units and
         same frame.
 
     Returns
@@ -120,15 +120,15 @@ def pair_separation(
     here would be a bug, not a fix.**
 
     Periodicity is resolved one level up: the pipeline carves a sub-volume
-    around each centre and hands down neighbour coordinates already unwrapped
-    into that centre's local frame, so images near a box face arrive with
+    around each center and hands down neighbor coordinates already unwrapped
+    into that center's local frame, so images near a box face arrive with
     coordinates outside [0, BOX_SIZE). A minimum-image reduction applied to
-    those coordinates would wrap a legitimately unwrapped neighbour back across
+    those coordinates would wrap a legitimately unwrapped neighbor back across
     the box and corrupt both r_mag and r_hat -- silently, since the result is
     still a plausible short separation.
 
     The invariant the caller owes this function is therefore stronger than
-    "coordinates are in the box": every neighbour must be the image nearest
+    "coordinates are in the box": every neighbor must be the image nearest
     `s_center`, expressed continuously with it. Given that, a plain difference
     is the correct and complete answer, and hard rule 3 is satisfied by the
     carving step rather than by this primitive.
@@ -146,39 +146,39 @@ def pair_separation(
 
 
 def mu_cosine(r_hat: np.ndarray, n_T_hat: np.ndarray) -> np.ndarray:
-    """Group-centred angular cosine mu = n_hat_T . r_hat.
+    """Group-centered angular cosine mu = n_hat_T . r_hat.
 
     Parameters
     ----------
     r_hat : ndarray, shape (3,) or (N, 3)
         Unit separation direction(s) from the central object to the
-        neighbour(s), i.e. unit_vector of the output of `pair_separation`.
+        neighbor(s), i.e. unit_vector of the output of `pair_separation`.
     n_T_hat : ndarray, shape (3,) or (N, 3)
         Unit line-of-sight direction observer -> CENTRAL object. This is the
-        central object's line of sight, not the neighbour's; using the
-        neighbour's is a different (and, at finite distance, unequal)
+        central object's line of sight, not the neighbor's; using the
+        neighbor's is a different (and, at finite distance, unequal)
         statistic. Broadcasts against r_hat, so a single (3,) line of sight may
         be paired with an (N, 3) stack of separations.
 
     Returns
     -------
     ndarray, shape (N,)
-        Cosines in [-1, 1]. mu > 0 places the neighbour beyond the central
+        Cosines in [-1, 1]. mu > 0 places the neighbor beyond the central
         object along the line of sight (far side); mu < 0 places it between the
         observer and the central object (near side).
 
     Notes
     -----
     Both arguments must already be unit vectors -- this function does not
-    normalise, so that an un-normalised input shows up as a wrong correlation
+    normalize, so that an un-normalized input shows up as a wrong correlation
     amplitude at the point of use rather than being quietly rescaled here.
 
     The returned cosines are clipped to [-1, 1]. The clip is a guard against
     floating-point overshoot of order 1e-16 in the dot product of two unit
-    vectors; it is not a normalisation, and it will not rescue genuinely
-    un-normalised input, which simply saturates at +-1.
+    vectors; it is not a normalization, and it will not rescue genuinely
+    un-normalized input, which simply saturates at +-1.
 
-    In the distant-observer limit (r << R = |s_T|) the neighbour's own line of
+    In the distant-observer limit (r << R = |s_T|) the neighbor's own line of
     sight n_hat_V coincides with n_hat_T and the observed radial velocity of a
     pure infall reduces to u ~= v_inf(r) * mu. Since v_inf < 0 for infall, the
     product u * L_1(mu) = u * mu is negative on BOTH hemispheres, which is the

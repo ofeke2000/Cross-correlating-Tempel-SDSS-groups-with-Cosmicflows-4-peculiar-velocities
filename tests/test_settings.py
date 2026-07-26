@@ -38,7 +38,7 @@ class TestPathsConfig:
         assert paths.data_dir == paths.project_root / "data"
         assert paths.output_dir == paths.project_root / "output"
 
-    def test_catalogue_filenames(self) -> None:
+    def test_catalog_filenames(self) -> None:
         paths = PathsConfig()
         assert paths.mdpl2_catalog.name == "mdpl2_rockstar_125_pid-1_mvir12.csv"
         assert paths.cf4_groups_catalog.name == "CF4_Groups.csv"
@@ -154,7 +154,7 @@ class TestShellConfig:
             ShellConfig(max_radius=config.MAX_ANALYSIS_RADIUS + 1.0)
 
     def test_shell_edges_feed_shell_dipole(self) -> None:
-        # A tiny toy: one central object, a couple of neighbours, using the
+        # A tiny toy: one central object, a couple of neighbors, using the
         # edges ShellConfig produces. This is only exercising that the
         # produced edges are well-formed inputs to shell_dipole, not the
         # sign gate (see tests/test_geometry.py, tests/test_shell_dipole.py).
