@@ -1,6 +1,6 @@
 """
-config.py
----------
+conventions.py
+---------------
 Single source of truth for the FROZEN conventions of this project.
 
 This is the simulation-validation arm of the Tempel x CF4 analysis: we

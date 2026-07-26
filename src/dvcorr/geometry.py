@@ -8,8 +8,8 @@ catalog knowledge, no I/O. They are the layer the sign convention actually
 lives in, so they are deliberately small enough to be fully covered by unit
 tests (see tests/test_geometry.py).
 
-Conventions are frozen in config.py and restated in each docstring below; do
-not re-derive them locally.
+Conventions are frozen in dvcorr.conventions and restated in each docstring
+below; do not re-derive them locally.
 
 Shape contract
 --------------
@@ -26,7 +26,7 @@ downstream binning code does not need to special-case single-object input.
 
 Periodic boundary conditions
 ----------------------------
-The box is periodic with side config.BOX_SIZE, but **none of the functions in
+The box is periodic with side conventions.BOX_SIZE, but **none of the functions in
 this module apply the minimum-image convention.** They are pure Euclidean
 geometry on whatever coordinates they are handed.
 
@@ -45,7 +45,7 @@ The contract this module depends on, and cannot check:
 
 Hard rule 3 (PBC everywhere) is therefore honoured by the carving step, not by
 these primitives. Do not "fix" a minimum-image reduction into `pair_separation`.
-Separations must still stay below config.MAX_ANALYSIS_RADIUS = BOX_SIZE / 2,
+Separations must still stay below conventions.MAX_ANALYSIS_RADIUS = BOX_SIZE / 2,
 beyond which the nearest image is not unique and the carving is ill-defined.
 """
 
@@ -95,7 +95,7 @@ def pair_separation(
 
     Implements the frozen orientation r = s_V - s_T: the vector points FROM
     the central density object TO each velocity object. Reversing it would flip
-    the sign of every odd multipole downstream (see config.py).
+    the sign of every odd multipole downstream (see dvcorr.conventions).
 
     Parameters
     ----------
@@ -133,7 +133,7 @@ def pair_separation(
     is the correct and complete answer, and hard rule 3 is satisfied by the
     carving step rather than by this primitive.
 
-    Shells must still be restricted to config.MAX_ANALYSIS_RADIUS, beyond which
+    Shells must still be restricted to conventions.MAX_ANALYSIS_RADIUS, beyond which
     the nearest image is not unique and the carving itself is ill-defined.
     """
     s_center = np.asarray(s_center, dtype=float)

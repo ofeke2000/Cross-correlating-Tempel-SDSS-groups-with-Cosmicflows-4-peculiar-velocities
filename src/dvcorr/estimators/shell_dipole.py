@@ -15,7 +15,7 @@ Q_alpha = sum_beta w_beta mu_alpha,beta, and the statistic is Q_alpha * u_alpha.
 The two are the same two-point information with the separation reversed and are
 related multipole by multipole by
 
-    xi_Tu,ell = (-1)^ell * xi_uT,ell          (config.nusser_multipole_sign)
+    xi_Tu,ell = (-1)^ell * xi_uT,ell          (conventions.nusser_multipole_sign)
 
 so their monopoles agree and their dipoles differ in sign. The distinction is
 not cosmetic here: in the group-centered form the velocity is a PER-NEIGHBOUR
@@ -79,7 +79,7 @@ The same accumulator serves two statistics, distinguished only by w_i:
 
 Sign
 ----
-Under the frozen convention (config.py) r points outward from the central
+Under the frozen convention (dvcorr.conventions) r points outward from the central
 object and mu = n_hat_T . r_hat. For coherent infall, u and mu have opposite
 signs on both the near and the far side of the shell, so every pair contributes
 u * mu < 0 and the dipole is NEGATIVE. If a validated infall mock returns a
@@ -93,11 +93,11 @@ periodic minimum image is resolved one level up, where the neighbor sub-volume
 around each center is carved and unwrapped into that center's local continuous
 frame. The neighbors handed in must already be the images nearest s_center.
 The only periodicity obligation enforced here is that the outermost shell edge
-must not exceed config.MAX_ANALYSIS_RADIUS, beyond which the nearest image --
+must not exceed conventions.MAX_ANALYSIS_RADIUS, beyond which the nearest image --
 and hence the carving itself -- is not unique.
 
 Nusser (2017) centers on the velocity object rather than the density object, so
-his dipole is the negative of this one; see config.nusser_multipole_sign before
+his dipole is the negative of this one; see conventions.nusser_multipole_sign before
 comparing amplitudes.
 
 
@@ -123,7 +123,7 @@ the production target -- xi_Tu is the simulation-validation cross-check.
 
 Orientation: the REVERSED separation, not the frozen r
 ----------------------------------------------------------
-config.py freezes r = s_V - s_T (density -> velocity) and mu = n_hat_T . r_hat
+dvcorr.conventions freezes r = s_V - s_T (density -> velocity) and mu = n_hat_T . r_hat
 (n_hat_T = observer -> density object). NEITHER symbol is redefined here, or
 anywhere. This velocity-centered path instead reuses the same primitives on a
 deliberately different construction:
@@ -138,7 +138,7 @@ deliberately different construction:
     object's line of sight).
 
 Both substitutions are deliberate, and together are what "velocity-centered"
-means. The resulting local cosine is therefore NOT config.MU_CONVENTION's
+means. The resulting local cosine is therefore NOT conventions.MU_CONVENTION's
 frozen mu -- same primitives (`pair_separation`, `unit_vector`, `mu_cosine`),
 different orientation and different reference direction, by design. See
 `velocity_centered_shell_dipole`'s docstring for the exact construction.
@@ -148,7 +148,7 @@ Multipole relation and its sign consequence
 The two constructions are the same two-point information with the pair
 reversed, so multipole by multipole
 
-    zeta_ell = (-1)**ell * xi_Tu,ell          (config.nusser_multipole_sign)
+    zeta_ell = (-1)**ell * xi_Tu,ell          (conventions.nusser_multipole_sign)
 
 monopoles agree (ell even); dipoles are opposite in sign (ell odd). Hard rule
 2 says coherent infall gives a NEGATIVE group-centered xi_Tu,1; it follows that
@@ -167,8 +167,8 @@ from dataclasses import dataclass
 import numpy as np
 from scipy.spatial import cKDTree
 
-import config
-from geometry import mu_cosine, pair_separation, unit_vector
+from dvcorr import conventions
+from dvcorr.geometry import mu_cosine, pair_separation, unit_vector
 
 
 @dataclass(frozen=True)
@@ -235,7 +235,7 @@ def shell_dipole(
         Strictly increasing shell boundaries in h^-1 Mpc, defining B shells.
         Bins are left-closed / right-open, [edge_low, edge_high), with the
         outermost edge included in the last shell. The outermost edge must not
-        exceed config.MAX_ANALYSIS_RADIUS.
+        exceed conventions.MAX_ANALYSIS_RADIUS.
     weights : ndarray, shape (N,), optional
         Per-neighbor weight w_i. None (the default) means uniform weights of
         1, giving the purely geometric shell dipole. Pass the radial peculiar
@@ -245,7 +245,7 @@ def shell_dipole(
         a non-finite weight is a ValueError here, not a silent zero.
     observer : ndarray, shape (3,), optional
         Observer position defining n_hat_T = observer -> s_center. Defaults to
-        config.OBSERVER_POSITION. There is one observer per run; pass this
+        conventions.OBSERVER_POSITION. There is one observer per run; pass this
         explicitly only in tests.
 
     Returns
@@ -260,7 +260,7 @@ def shell_dipole(
     ValueError
         If shell_edges is not one-dimensional with at least two entries, is not
         strictly increasing, or has an outermost edge exceeding
-        config.MAX_ANALYSIS_RADIUS; or if `weights` is given with a shape that
+        conventions.MAX_ANALYSIS_RADIUS; or if `weights` is given with a shape that
         does not match s_neighbors, or contains a non-finite value.
 
     Notes
@@ -275,7 +275,7 @@ def shell_dipole(
     `np.bincount` calls, with no Python-level loop over neighbors.
     """
     observer = (
-        config.OBSERVER_POSITION if observer is None
+        conventions.OBSERVER_POSITION if observer is None
         else np.asarray(observer, dtype=float)
     )
 
@@ -284,10 +284,10 @@ def shell_dipole(
         raise ValueError("shell_edges must be 1-D with at least two entries.")
     if not np.all(np.diff(edges) > 0.0):
         raise ValueError("shell_edges must be strictly increasing.")
-    if edges[-1] > config.MAX_ANALYSIS_RADIUS:
+    if edges[-1] > conventions.MAX_ANALYSIS_RADIUS:
         raise ValueError(
             f"outermost shell edge {edges[-1]} exceeds "
-            f"config.MAX_ANALYSIS_RADIUS = {config.MAX_ANALYSIS_RADIUS}."
+            f"conventions.MAX_ANALYSIS_RADIUS = {conventions.MAX_ANALYSIS_RADIUS}."
         )
     n_bins = edges.size - 1
 
@@ -377,7 +377,7 @@ def real_y10(direction_cosine: np.ndarray) -> np.ndarray:
     -----
     sqrt(3 / (4*pi)) is the Y_10 normalization constant -- pure mathematics
     (CLAUDE.md hard rule 4's exemption for constants that are part of a
-    derivation), kept inline rather than promoted to config.py or a settings
+    derivation), kept inline rather than promoted to dvcorr.conventions or a settings
     dataclass.
 
     Pinned in tests/test_velocity_centered_dipole.py against
@@ -424,7 +424,7 @@ def core_center_mask(
         entire shell -- out to r_max in every direction -- is guaranteed to
         lie inside the carved sub-volume.
     observer : ndarray, shape (3,), optional
-        Observer position. Defaults to config.OBSERVER_POSITION.
+        Observer position. Defaults to conventions.OBSERVER_POSITION.
 
     Returns
     -------
@@ -450,7 +450,7 @@ def core_center_mask(
     `.n_centers` rather than hidden inside the estimator.
     """
     observer = (
-        config.OBSERVER_POSITION if observer is None
+        conventions.OBSERVER_POSITION if observer is None
         else np.asarray(observer, dtype=float)
     )
     s_centers = np.atleast_2d(np.asarray(s_centers, dtype=float))
@@ -655,7 +655,7 @@ def velocity_centered_shell_dipole(
 
     Orientation -- READ THIS BEFORE CHANGING ANYTHING HERE
     ----------------------------------------------------------
-    config.py's frozen r = s_V - s_T and mu = n_hat_T . r_hat are NOT
+    dvcorr.conventions's frozen r = s_V - s_T and mu = n_hat_T . r_hat are NOT
     redefined here, or anywhere. This function instead reuses the SAME
     primitives, unmodified, on a deliberately REVERSED construction:
 
@@ -673,12 +673,12 @@ def velocity_centered_shell_dipole(
     `mu_cosine` is a plain row-wise dot product; passing n_hat_V (this
     center's OWN line of sight) instead of n_hat_T (the frozen convention's
     density-object line of sight) is the second deliberate substitution. The
-    resulting cos_theta is therefore NOT config.MU_CONVENTION's frozen mu --
+    resulting cos_theta is therefore NOT conventions.MU_CONVENTION's frozen mu --
     same primitives, different orientation and different reference
     direction, by design.
 
     Multipole relation: zeta_ell = (-1)**ell * xi_Tu,ell
-    (config.nusser_multipole_sign). Monopoles agree; dipoles are opposite in
+    (conventions.nusser_multipole_sign). Monopoles agree; dipoles are opposite in
     sign. Consequence: coherent infall gives xi_Tu,1 < 0 (hard rule 2) and
     therefore zeta_1 > 0. A NEGATIVE zeta_1 from an infall mock is the
     orientation bug, not a result -- see the joint sign gate in
@@ -711,10 +711,10 @@ def velocity_centered_shell_dipole(
         Strictly increasing shell boundaries, h^-1 Mpc, defining B shells.
         Left-closed / right-open, [edge_low, edge_high), outermost edge
         folded into the last shell. Outermost edge must not exceed
-        config.MAX_ANALYSIS_RADIUS.
+        conventions.MAX_ANALYSIS_RADIUS.
     sub_volume_radius : float
         Radius of the spherical sub-volume carved around the observer,
-        h^-1 Mpc. Must be > 0 and <= config.MAX_ANALYSIS_RADIUS.
+        h^-1 Mpc. Must be > 0 and <= conventions.MAX_ANALYSIS_RADIUS.
     core_margin : float, optional
         Minimum clearance to the sub-volume boundary required of a surviving
         center (see `core_center_mask`). None (the default) uses
@@ -722,7 +722,7 @@ def velocity_centered_shell_dipole(
         surviving center's full shell fits inside the sub-volume. Must be
         >= 0.
     observer : ndarray, shape (3,), optional
-        Observer position. Defaults to config.OBSERVER_POSITION.
+        Observer position. Defaults to conventions.OBSERVER_POSITION.
 
     Returns
     -------
@@ -738,8 +738,8 @@ def velocity_centered_shell_dipole(
     ValueError
         If shell_edges is not 1-D with at least two entries, is not strictly
         increasing, or has an outermost edge exceeding
-        config.MAX_ANALYSIS_RADIUS; if sub_volume_radius is not in
-        (0, config.MAX_ANALYSIS_RADIUS]; if core_margin < 0; if
+        conventions.MAX_ANALYSIS_RADIUS; if sub_volume_radius is not in
+        (0, conventions.MAX_ANALYSIS_RADIUS]; if core_margin < 0; if
         v_centers.shape does not match s_centers.shape; or if v_centers
         contains a non-finite value.
 
@@ -764,7 +764,7 @@ def velocity_centered_shell_dipole(
     excluded).
     """
     observer = (
-        config.OBSERVER_POSITION if observer is None
+        conventions.OBSERVER_POSITION if observer is None
         else np.asarray(observer, dtype=float)
     )
 
@@ -773,17 +773,17 @@ def velocity_centered_shell_dipole(
         raise ValueError("shell_edges must be 1-D with at least two entries.")
     if not np.all(np.diff(edges) > 0.0):
         raise ValueError("shell_edges must be strictly increasing.")
-    if edges[-1] > config.MAX_ANALYSIS_RADIUS:
+    if edges[-1] > conventions.MAX_ANALYSIS_RADIUS:
         raise ValueError(
             f"outermost shell edge {edges[-1]} exceeds "
-            f"config.MAX_ANALYSIS_RADIUS = {config.MAX_ANALYSIS_RADIUS}."
+            f"conventions.MAX_ANALYSIS_RADIUS = {conventions.MAX_ANALYSIS_RADIUS}."
         )
     n_bins = edges.size - 1
 
-    if not (0.0 < sub_volume_radius <= config.MAX_ANALYSIS_RADIUS):
+    if not (0.0 < sub_volume_radius <= conventions.MAX_ANALYSIS_RADIUS):
         raise ValueError(
-            "sub_volume_radius must be > 0 and <= config.MAX_ANALYSIS_RADIUS "
-            f"({config.MAX_ANALYSIS_RADIUS}), got {sub_volume_radius}."
+            "sub_volume_radius must be > 0 and <= conventions.MAX_ANALYSIS_RADIUS "
+            f"({conventions.MAX_ANALYSIS_RADIUS}), got {sub_volume_radius}."
         )
 
     if core_margin is None:

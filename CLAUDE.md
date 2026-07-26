@@ -26,19 +26,27 @@ Read these for context before non-trivial work:
 
 ## Code layout
 
+Editable-installed package (`pip install -e .`, setuptools src layout, `pyproject.toml`):
+`import dvcorr…` works identically in scripts, notebooks, and tests, no `sys.path` hacks.
+
 ```
-config.py            frozen conventions — sign, pair orientation, observer, box, columns
-settings.py          tunable settings in dataclasses — paths, cosmology, shell binning, selection
-geometry.py          pure geometry primitives (unit_vector, pair_separation, mu_cosine)
-estimators/          shell_dipole.py — monopole + dipole accumulators per radial shell,
-                     group-centered (xi_Tu) and velocity-centered (zeta, Nusser eq. 23-24)
-selection/           masks, selection functions, random catalogs (empty)
-mocks/               MDPL2 observers, halo selection, mock covariance (empty)
-tests/               unit tests, including the spherical-infall sign gate
-notebooks/           exploration only — nothing load-bearing
-scripts/             runnable, load-bearing scripts (e.g. plot_velocity_centered_dipole.py)
-data/                input catalogs (gitignored, see README)
-literature/          papers and the methodological note
+pyproject.toml        package metadata, deps, pytest config — the one dependency source
+src/dvcorr/
+  conventions.py       frozen conventions — sign, pair orientation, observer, box, columns
+  config/              tunable settings, one dataclass per file — paths, cosmology,
+                       shell binning, selection — plus a Settings aggregator
+  geometry.py          pure geometry primitives (unit_vector, pair_separation, mu_cosine)
+  estimators/          shell_dipole.py — monopole + dipole accumulators per radial shell,
+                       group-centered (xi_Tu) and velocity-centered (zeta, Nusser eq. 23-24)
+  pipeline/            velocity_centered.py — reusable stage functions shared by the script
+                       and its notebook twin (load/carve, run, normalize, plot)
+  selection/           masks, selection functions, random catalogs (empty)
+  mocks/               MDPL2 observers, halo selection, mock covariance (empty)
+tests/                 unit tests, including the spherical-infall sign gate
+notebooks/             exploration only — nothing load-bearing
+scripts/               runnable, load-bearing scripts (e.g. plot_velocity_centered_dipole.py)
+data/                  input catalogs (gitignored, see README)
+literature/            papers and the methodological note
 Imports from old repo/   reference code from the bulk-flow project; not importable, read only
 ```
 
@@ -46,6 +54,25 @@ Imports from old repo/   reference code from the bulk-flow project; not importab
 deliberately — do not wire imports into it. `vector3d.py`, `overdensity.py` (periodic
 KDTree overdensity), `masks.py` (CF4-like selection), and `data_loader.py` are the pieces
 most likely to be worth porting.
+
+### Library, scripts, notebooks — one source of truth, two thin consumers
+
+`src/dvcorr/` is the single source of truth: all reusable logic — geometry, estimators,
+pipeline stage functions, plotting helpers — lives here, importable and tested. The other
+two directories are thin consumers and hold **no** load-bearing logic.
+
+- **`scripts/`** are thin, headless, reproducible drivers: they wire library stage functions
+  together and write outputs (PNG/HDF5). Orchestration only, no algorithm. Run as
+  `python -m scripts.<name>`.
+- **`notebooks/`** are for interactive exploration and presentation: they import the *same*
+  library stage functions and call them, adding plots and narrative — they never reimplement
+  pipeline logic. `notebooks/05_velocity_centered_dipole.ipynb` is the model to follow;
+  `notebooks/04_first_mdpl2_run.ipynb` still carries a duplicated copy of the pipeline and is
+  the exception to be fixed.
+
+Graduation rule: any function written in a script or notebook that is worth reusing moves
+into `src/dvcorr/` and is imported back — a script or notebook is never the definition site.
+This is what keeps the same logic from being duplicated across the two.
 
 ## Running
 
@@ -56,7 +83,7 @@ session; don't `pip install` into the system interpreter.
 ```bash
 python -m venv .venv                    # once
 source .venv/bin/activate               # every session
-pip install -r requirements.txt        # once, inside the .venv
+pip install -e .[dev]                  # once, inside the .venv — editable install, dvcorr + pytest
 
 pytest                                 # geometry and sign-convention tests
 ```
@@ -78,11 +105,11 @@ task needs it, and ask before running anything long.
    Copy and adapt deliberately; never wire live imports into it. The folder is gitignored
    and not a package.
 
-1. **Frozen conventions live in `config.py`, nowhere else.** The pair orientation
+1. **Frozen conventions live in `conventions.py`, nowhere else.** The pair orientation
    `r = s_V − s_T`, the cosine `µ = n̂_T · r̂`, the CMB frame, and the observer position are
    defined once. Never redefine them locally, never flip a sign at the point of use to make
-   a plot look right. If a convention genuinely needs to change, change `config.py`, say so
-   explicitly, and re-run the sign gate.
+   a plot look right. If a convention genuinely needs to change, change `conventions.py`, say
+   so explicitly, and re-run the sign gate.
 
 2. **The dipole is negative for infall.** This follows from rule 1 and is asserted by
    `tests/test_geometry.py`. Reversing the pair vector flips all odd multipoles *silently* —
@@ -92,9 +119,9 @@ task needs it, and ask before running anything long.
 3. **Periodic boundary conditions everywhere.** The MDPL2 box is 1000 h⁻¹ Mpc with PBC.
    Every spatial calculation — separations, KDTree queries, lines of sight, masks — uses the
    minimum-image convention. A plain Euclidean difference on box coordinates is a bug.
-   Corollary: no shell may exceed `config.MAX_ANALYSIS_RADIUS` = BOX_SIZE/2.
+   Corollary: no shell may exceed `conventions.MAX_ANALYSIS_RADIUS` = BOX_SIZE/2.
 
-4. **No bare numbers.** Any numeric literal in analysis code belongs in `config.py` or in a
+4. **No bare numbers.** Any numeric literal in analysis code belongs in `conventions.py` or in a
    class attribute — never inline. For each new number, ask where it belongs before writing
    the code. (Pure-mathematics constants inside a formula, like the 1/3 from ⟨µ²⟩ over a
    uniform shell, are part of the derivation and stay in the expression, with a comment.)
@@ -146,7 +173,7 @@ task needs it, and ask before running anything long.
   dataclass, cf. the old repo's `src/config/`), not as inline literals or scattered
   module globals. This is the storage counterpart to keeping *compute* primitives free
   functions, and the mechanism behind hard rule 4. The frozen module-level constants in
-  `config.py` are the deliberate exception: single-source-of-truth conventions, not
+  `conventions.py` are the deliberate exception: single-source-of-truth conventions, not
   tunables.
 - **Explicit array-shape contracts in every docstring.** `(3,)` for one vector, `(N, 3)` for
   many, `(N,)` for scalars-per-object. Shapes are stable: a function documented as returning
@@ -155,14 +182,14 @@ task needs it, and ask before running anything long.
 
 ## Notation
 
-Fixed project-wide; see the README table and `config.py`.
+Fixed project-wide; see the README table and `conventions.py`.
 
 - `L_ell` — Legendre polynomials. **`P` is reserved for the matter power spectrum `P_m(k)`**
   and is never used for Legendre polynomials.
 - `r = s_V − s_T`, `r = |r|`, `µ = n̂_T · r̂`, `R = |s_T|`, `u = v · n̂_V`
 - `ξ_Tu,ℓ` — density–velocity multipoles; `Ψ∥`, `Ψ⊥` — Górski velocity–velocity functions
 - Nusser (2017) centers on the velocity object, so his multipoles relate to ours by
-  `(−1)^ℓ` — see `config.nusser_multipole_sign`. Apply the factor explicitly when comparing;
+  `(−1)^ℓ` — see `conventions.nusser_multipole_sign`. Apply the factor explicitly when comparing;
   never absorb it into an estimator.
 
 ## Units

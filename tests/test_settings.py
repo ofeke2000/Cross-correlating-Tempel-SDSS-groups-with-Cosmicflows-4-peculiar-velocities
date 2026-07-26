@@ -1,11 +1,11 @@
 """
 test_settings.py
 -----------------
-Unit tests for settings.py: PathsConfig, CosmologyConfig, ShellConfig,
-SelectionConfig, and the Settings aggregator.
+Unit tests for the dvcorr.config dataclasses: PathsConfig, CosmologyConfig,
+ShellConfig, SelectionConfig, and the Settings aggregator.
 
 These are ordinary dataclass/validation tests, not part of the sign gate
-(tests/test_geometry.py); nothing here touches config.py's frozen conventions.
+(tests/test_geometry.py); nothing here touches conventions.py's frozen conventions.
 """
 
 from __future__ import annotations
@@ -15,9 +15,9 @@ import dataclasses
 import numpy as np
 import pytest
 
-import config
-from estimators.shell_dipole import shell_dipole
-from settings import (
+from dvcorr import conventions
+from dvcorr.estimators.shell_dipole import shell_dipole
+from dvcorr.config import (
     CosmologyConfig,
     PathsConfig,
     SelectionConfig,
@@ -73,7 +73,7 @@ class TestPathsConfig:
 class TestCosmologyConfig:
     def test_h_matches_config_hubble_param(self) -> None:
         cosmology = CosmologyConfig()
-        assert cosmology.h == pytest.approx(config.HUBBLE_PARAM, abs=1e-9)
+        assert cosmology.h == pytest.approx(conventions.HUBBLE_PARAM, abs=1e-9)
 
     def test_to_colossus_dict_keys(self) -> None:
         cosmology = CosmologyConfig()
@@ -88,7 +88,7 @@ class TestCosmologyConfig:
             cosmology.H0 = 70.0
 
     def test_inconsistent_h0_raises(self) -> None:
-        # H0 = 70.0 gives h = 0.70, which does not match config.HUBBLE_PARAM
+        # H0 = 70.0 gives h = 0.70, which does not match conventions.HUBBLE_PARAM
         # (0.6777); __post_init__ must catch this rather than silently
         # accepting a cosmology that disagrees with the frozen convention.
         with pytest.raises(ValueError):
@@ -111,7 +111,7 @@ class TestShellConfig:
 
     def test_shell_edges_respect_max_analysis_radius(self) -> None:
         shells = ShellConfig()
-        assert shells.shell_edges[-1] <= config.MAX_ANALYSIS_RADIUS
+        assert shells.shell_edges[-1] <= conventions.MAX_ANALYSIS_RADIUS
 
     def test_shell_centers_shape_and_bounds(self) -> None:
         shells = ShellConfig()
@@ -151,7 +151,7 @@ class TestShellConfig:
 
     def test_max_radius_beyond_max_analysis_radius_raises(self) -> None:
         with pytest.raises(ValueError):
-            ShellConfig(max_radius=config.MAX_ANALYSIS_RADIUS + 1.0)
+            ShellConfig(max_radius=conventions.MAX_ANALYSIS_RADIUS + 1.0)
 
     def test_shell_edges_feed_shell_dipole(self) -> None:
         # A tiny toy: one central object, a couple of neighbors, using the

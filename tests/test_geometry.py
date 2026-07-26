@@ -22,9 +22,9 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-import config
-from geometry import mu_cosine, pair_separation, unit_vector
-from estimators.shell_dipole import shell_dipole
+from dvcorr import conventions
+from dvcorr.geometry import mu_cosine, pair_separation, unit_vector
+from dvcorr.estimators.shell_dipole import shell_dipole
 
 
 # ---------------------------------------------------------------------------
@@ -34,7 +34,7 @@ from estimators.shell_dipole import shell_dipole
 # The configuration is deliberately the simplest one in which the dipole is
 # non-zero and its sign is known analytically:
 #
-#   - The observer sits at the box center (config.OBSERVER_POSITION).
+#   - The observer sits at the box center (conventions.OBSERVER_POSITION).
 #
 #   - One central density object T sits at a known distance R along +x from the
 #     observer. R is large compared with the shell radius so that the
@@ -88,7 +88,7 @@ def _infall_shell() -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     s_neighbors : (N_SHELL, 3) neighbor positions on the shell
     u : (N_SHELL,) observer-centered radial peculiar velocities, km/s
     """
-    observer = np.asarray(config.OBSERVER_POSITION, dtype=float)
+    observer = np.asarray(conventions.OBSERVER_POSITION, dtype=float)
     s_center = observer + np.array([R_CENTER, 0.0, 0.0])
 
     r_hat = _sphere_directions(N_SHELL)
@@ -152,7 +152,7 @@ def test_spherical_infall_gives_negative_dipole():
 
     # The assertion the project rests on.
     assert result.dipole[0] < 0.0
-    assert np.sign(result.dipole[0]) == config.INFALL_DIPOLE_SIGN
+    assert np.sign(result.dipole[0]) == conventions.INFALL_DIPOLE_SIGN
 
     # And it should recover the imposed infall speed, not merely its sign.
     # Normalising the L_1 accumulator by the PAIR COUNT (result.pair_count, not the
@@ -173,7 +173,7 @@ def test_reversing_the_pair_vector_flips_the_dipole():
     -- only this sign changes.
     """
     s_center, s_neighbors, u = _infall_shell()
-    observer = np.asarray(config.OBSERVER_POSITION, dtype=float)
+    observer = np.asarray(conventions.OBSERVER_POSITION, dtype=float)
 
     n_T_hat = unit_vector(s_center - observer)
     r_vec, _ = pair_separation(s_center, s_neighbors)
@@ -189,7 +189,7 @@ def test_reversing_the_pair_vector_flips_the_dipole():
 def test_mu_is_a_cosine_and_spans_the_shell():
     """mu must lie in [-1, 1] and cover both hemispheres for a full shell."""
     s_center, s_neighbors, _ = _infall_shell()
-    observer = np.asarray(config.OBSERVER_POSITION, dtype=float)
+    observer = np.asarray(conventions.OBSERVER_POSITION, dtype=float)
 
     n_T_hat = unit_vector(s_center - observer)
     r_vec, r_mag = pair_separation(s_center, s_neighbors)
@@ -222,7 +222,7 @@ def test_infall_dipole_is_negative_from_geometry_alone():
     convention (r = s_V - s_T, mu = n_hat_T . r_hat, infall -> negative dipole)
     is self-consistent independently of any downstream accumulator.
 
-    Why D < 0 for infall (see config.py for the full argument):
+    Why D < 0 for infall (see conventions.py for the full argument):
       Each neighbor's imposed velocity is v_i = -V_INFALL_SPEED * r_hat_i,
       i.e. directed inward along -r_hat. What the catalog measures is the
       projection onto the neighbor's OWN observer line of sight,
@@ -237,7 +237,7 @@ def test_infall_dipole_is_negative_from_geometry_alone():
       Both hemispheres carry the same sign, which is exactly why the dipole
       survives the shell average while the monopole cancels.
     """
-    observer = np.asarray(config.OBSERVER_POSITION, dtype=float)
+    observer = np.asarray(conventions.OBSERVER_POSITION, dtype=float)
 
     # Central density object out along +z; its radial direction is z_hat.
     z_hat = np.array([0.0, 0.0, 1.0])
@@ -269,14 +269,14 @@ def test_infall_dipole_is_negative_from_geometry_alone():
     dipole = np.sum(u * mu)
 
     assert dipole < 0.0
-    assert np.sign(dipole) == config.INFALL_DIPOLE_SIGN
+    assert np.sign(dipole) == conventions.INFALL_DIPOLE_SIGN
 
     # Stronger than the sign: the dipole must not be a near-cancellation that
     # merely tips negative, it must RECOVER the imposed infall speed. With
     # u ~ -V_INFALL_SPEED * mu in the distant-observer limit, the raw sum is
     #     D = sum_i u_i mu_i ~ -V_INFALL_SPEED * sum_i mu_i^2 = -V * N * <mu^2>,
     # and <mu^2> = 1/3 over a uniform shell (the 1/3 is pure shell geometry,
-    # kept inline per the config.py rule on mathematical constants). Hence
+    # kept inline per the conventions.py rule on mathematical constants). Hence
     # 3 D / N recovers -V_INFALL_SPEED. Tolerance is loose because the setup is
     # at finite R = 5 * r_shell, where the recovery is exact only to O(r/R):
     # the same O(0.2) line-of-sight tilt that puts a thin positive tail near
@@ -414,8 +414,8 @@ class TestPairSeparation:
         offset. Minimum-imaging here would report a short separation with the
         opposite sign, so this pins the documented contract.
         """
-        s_center = np.array([config.BOX_SIZE - 10.0, 0.0, 0.0])
-        s_others = np.array([[config.BOX_SIZE + 10.0, 0.0, 0.0]])
+        s_center = np.array([conventions.BOX_SIZE - 10.0, 0.0, 0.0])
+        s_others = np.array([[conventions.BOX_SIZE + 10.0, 0.0, 0.0]])
 
         r_vec, r_mag = pair_separation(s_center, s_others)
 
@@ -433,9 +433,9 @@ class TestPairSeparation:
         np.testing.assert_array_equal(s_others, before_others)
 
     def test_accepts_readonly_observer_constant(self):
-        """config.OBSERVER_POSITION is write-locked; it must still be usable."""
+        """conventions.OBSERVER_POSITION is write-locked; it must still be usable."""
         r_vec, r_mag = pair_separation(
-            config.OBSERVER_POSITION, config.OBSERVER_POSITION[None, :]
+            conventions.OBSERVER_POSITION, conventions.OBSERVER_POSITION[None, :]
         )
         np.testing.assert_array_equal(r_mag, [0.0])
 
@@ -503,7 +503,7 @@ class TestMuCosine:
         np.testing.assert_allclose(mu_cosine(r_hat, n_T_hat), [1.0, 0.0])
 
     def test_reversing_r_hat_negates_mu(self):
-        """The primitive-level statement of the sign hazard in config.py."""
+        """The primitive-level statement of the sign hazard in conventions.py."""
         r_hat = _sphere_directions(128)
         n_T_hat = unit_vector(np.array([0.3, -0.5, 0.8]))
 
@@ -521,7 +521,7 @@ class TestPrimitivesCompose:
         estimator performs, and it fixes the sign of the geometry independently
         of the infall gate above.
         """
-        observer = np.asarray(config.OBSERVER_POSITION, dtype=float)
+        observer = np.asarray(conventions.OBSERVER_POSITION, dtype=float)
         s_center = observer + np.array([R_CENTER, 0.0, 0.0])
         s_far = s_center + np.array([[R_SHELL, 0.0, 0.0]])
         s_near = s_center - np.array([[R_SHELL, 0.0, 0.0]])

@@ -8,7 +8,7 @@ the joint sign gate: the group-centered xi_Tu and the velocity-centered zeta
 run on the IDENTICAL toy infall configuration
 (tests.test_geometry._infall_shell_with_velocities) and must come out with
 OPPOSITE signs -- the zeta_ell = (-1)**ell * xi_Tu,ell relation
-(config.nusser_multipole_sign) made concrete on real numbers, not just
+(conventions.nusser_multipole_sign) made concrete on real numbers, not just
 asserted in a docstring. If this fails while the group-centered gate
 (tests/test_shell_dipole.py) still passes, the bug is in the new estimator's
 orientation bookkeeping, not in the shared convention.
@@ -27,9 +27,9 @@ import numpy as np
 import pytest
 from scipy.special import sph_harm_y
 
-import config
-from geometry import mu_cosine, pair_separation, unit_vector
-from estimators.shell_dipole import (
+from dvcorr import conventions
+from dvcorr.geometry import mu_cosine, pair_separation, unit_vector
+from dvcorr.estimators.shell_dipole import (
     center_standard_error,
     core_center_mask,
     expected_shell_occupancy,
@@ -82,10 +82,10 @@ def _joint_gate_toy() -> tuple[np.ndarray, np.ndarray, np.ndarray]:
 def test_joint_sign_gate_group_and_velocity_centered_are_opposite():
     """Both estimators on the IDENTICAL toy infall configuration.
 
-    Group-centered xi_Tu,1 must be negative (config.INFALL_DIPOLE_SIGN, the
+    Group-centered xi_Tu,1 must be negative (conventions.INFALL_DIPOLE_SIGN, the
     project's load-bearing sign gate); velocity-centered zeta_1 must be
     POSITIVE, since zeta_ell = (-1)**ell * xi_Tu,ell
-    (config.nusser_multipole_sign) flips every odd multipole. If either sign
+    (conventions.nusser_multipole_sign) flips every odd multipole. If either sign
     is wrong, or the two magnitudes disagree, the orientation bookkeeping in
     `velocity_centered_shell_dipole` has a bug -- this is the test the whole
     velocity-centered estimator hangs on.
@@ -96,7 +96,7 @@ def test_joint_sign_gate_group_and_velocity_centered_are_opposite():
     # --- group-centered xi_Tu: unchanged estimator, frozen orientation ------
     gc_result = shell_dipole(s_center, s_neighbors, shell_edges, weights=u)
     assert gc_result.dipole[0] < 0.0
-    assert np.sign(gc_result.dipole[0]) == config.INFALL_DIPOLE_SIGN
+    assert np.sign(gc_result.dipole[0]) == conventions.INFALL_DIPOLE_SIGN
     recovered_gc = 3.0 * gc_result.dipole[0] / gc_result.pair_count[0]
     assert recovered_gc == pytest.approx(V_INFALL, rel=0.1)
 
@@ -202,7 +202,7 @@ def test_amplitude_matches_independent_geometry_and_pins_the_reversal():
         sub_volume_radius=_VC_SUB_VOLUME_RADIUS,
     )
 
-    observer = np.asarray(config.OBSERVER_POSITION, dtype=float)
+    observer = np.asarray(conventions.OBSERVER_POSITION, dtype=float)
     n_hat_V = unit_vector(vc_centers - observer)  # (N_SHELL, 3)
 
     # (1) Independent hand-assembled path, through the SAME primitives the
@@ -249,7 +249,7 @@ def test_isotropic_shell_around_each_center_gives_vanishing_normalized_dipole():
     group-centered null already tolerates; pair_count is exact geometry and
     must match on the nose.
     """
-    observer = np.asarray(config.OBSERVER_POSITION, dtype=float)
+    observer = np.asarray(conventions.OBSERVER_POSITION, dtype=float)
     directions = unit_vector(
         np.array([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0], [-1.0, 0.0, 0.0]])
     )
@@ -266,7 +266,7 @@ def test_isotropic_shell_around_each_center_gives_vanishing_normalized_dipole():
         v_centers=v_centers,
         s_tracers=s_tracers,
         shell_edges=shell_edges,
-        sub_volume_radius=config.MAX_ANALYSIS_RADIUS,  # generous: no core cut in play here
+        sub_volume_radius=conventions.MAX_ANALYSIS_RADIUS,  # generous: no core cut in play here
     )
 
     assert result.n_centers == n_centers
@@ -290,7 +290,7 @@ def test_mirroring_tracers_flips_the_amplitude_sign():
     RADIUS is unchanged (|s' - s_alpha| = |s - s_alpha|), so occupancy is
     untouched.
     """
-    observer = np.asarray(config.OBSERVER_POSITION, dtype=float)
+    observer = np.asarray(conventions.OBSERVER_POSITION, dtype=float)
     s_center = observer + np.array([[250.0, 0.0, 0.0]])  # (1, 3), one center
     v_center = np.array([[123.0, -45.0, 67.0]])           # arbitrary nonzero velocity
 
@@ -304,7 +304,7 @@ def test_mirroring_tracers_flips_the_amplitude_sign():
         v_centers=v_center,
         s_tracers=tracers,
         shell_edges=shell_edges,
-        sub_volume_radius=config.MAX_ANALYSIS_RADIUS,
+        sub_volume_radius=conventions.MAX_ANALYSIS_RADIUS,
     )
     assert abs(result.per_center_amplitude[0, 0]) > 1e-6  # anisotropic: nonzero to begin with
 
@@ -314,7 +314,7 @@ def test_mirroring_tracers_flips_the_amplitude_sign():
         v_centers=v_center,
         s_tracers=mirrored,
         shell_edges=shell_edges,
-        sub_volume_radius=config.MAX_ANALYSIS_RADIUS,
+        sub_volume_radius=conventions.MAX_ANALYSIS_RADIUS,
     )
 
     np.testing.assert_allclose(result_mirrored.per_center_count, result.per_center_count)
@@ -330,7 +330,7 @@ def test_mirroring_tracers_flips_the_amplitude_sign():
 
 def _single_vc_center() -> tuple[np.ndarray, np.ndarray]:
     """One velocity-centered center with an arbitrary nonzero velocity."""
-    observer = np.asarray(config.OBSERVER_POSITION, dtype=float)
+    observer = np.asarray(conventions.OBSERVER_POSITION, dtype=float)
     s_center = (observer + np.array([200.0, 0.0, 0.0]))[None, :]
     v_center = np.array([[100.0, 0.0, 0.0]])
     return s_center, v_center
@@ -350,7 +350,7 @@ def test_tracers_land_in_the_shell_their_radius_dictates():
         v_centers=v_center,
         s_tracers=tracers,
         shell_edges=shell_edges,
-        sub_volume_radius=config.MAX_ANALYSIS_RADIUS,
+        sub_volume_radius=conventions.MAX_ANALYSIS_RADIUS,
     )
 
     np.testing.assert_array_equal(result.pair_count, [1.0, 1.0, 1.0])
@@ -371,7 +371,7 @@ def test_tracers_outside_the_edge_range_are_excluded():
         v_centers=v_center,
         s_tracers=tracers,
         shell_edges=shell_edges,
-        sub_volume_radius=config.MAX_ANALYSIS_RADIUS,
+        sub_volume_radius=conventions.MAX_ANALYSIS_RADIUS,
     )
 
     np.testing.assert_array_equal(result.pair_count, [1.0, 1.0])
@@ -389,7 +389,7 @@ def test_outermost_edge_is_included_in_the_last_shell():
         v_centers=v_center,
         s_tracers=tracers,
         shell_edges=shell_edges,
-        sub_volume_radius=config.MAX_ANALYSIS_RADIUS,
+        sub_volume_radius=conventions.MAX_ANALYSIS_RADIUS,
     )
 
     np.testing.assert_array_equal(result.pair_count, [0.0, 1.0])
@@ -410,7 +410,7 @@ def test_empty_shell_returns_zero_not_nan():
         v_centers=v_center,
         s_tracers=tracers,
         shell_edges=shell_edges,
-        sub_volume_radius=config.MAX_ANALYSIS_RADIUS,
+        sub_volume_radius=conventions.MAX_ANALYSIS_RADIUS,
     )
 
     np.testing.assert_array_equal(result.pair_count, [1.0, 0.0])
@@ -431,7 +431,7 @@ def test_zero_tracers_gives_all_zero_shells():
         v_centers=v_center,
         s_tracers=tracers,
         shell_edges=shell_edges,
-        sub_volume_radius=config.MAX_ANALYSIS_RADIUS,
+        sub_volume_radius=conventions.MAX_ANALYSIS_RADIUS,
     )
 
     np.testing.assert_array_equal(result.pair_count, [0.0, 0.0])
@@ -494,7 +494,7 @@ def _sample_ball(rng: np.random.Generator, n: int, radius: float) -> np.ndarray:
     """
     directions = unit_vector(rng.normal(size=(n, 3)))
     r = radius * rng.uniform(0.0, 1.0, size=n) ** (1.0 / 3.0)  # 1/3: inverse-CDF for r^2 dr
-    observer = np.asarray(config.OBSERVER_POSITION, dtype=float)
+    observer = np.asarray(conventions.OBSERVER_POSITION, dtype=float)
     return observer + r[:, None] * directions
 
 
@@ -519,7 +519,7 @@ def test_core_margin_reduces_outer_shell_truncation_bias():
 
     candidate_idx = rng.choice(_BOUNDARY_N_TRACERS, size=_BOUNDARY_N_CANDIDATES, replace=False)
     s_candidates = tracers[candidate_idx]
-    observer = np.asarray(config.OBSERVER_POSITION, dtype=float)
+    observer = np.asarray(conventions.OBSERVER_POSITION, dtype=float)
     n_hat_V = unit_vector(s_candidates - observer)
     v_candidates = _BOUNDARY_CONST_SPEED * n_hat_V  # coherent radial signal
 
@@ -596,7 +596,7 @@ class TestValidation:
                 v_centers=bad_v,
                 s_tracers=s_center,
                 shell_edges=np.array([0.0, 10.0]),
-                sub_volume_radius=config.MAX_ANALYSIS_RADIUS,
+                sub_volume_radius=conventions.MAX_ANALYSIS_RADIUS,
             )
 
     def test_mismatched_shapes_raises(self):
@@ -608,7 +608,7 @@ class TestValidation:
                 v_centers=bad_v,
                 s_tracers=s_center,
                 shell_edges=np.array([0.0, 10.0]),
-                sub_volume_radius=config.MAX_ANALYSIS_RADIUS,
+                sub_volume_radius=conventions.MAX_ANALYSIS_RADIUS,
             )
 
     def test_non_increasing_edges_raises(self):
@@ -619,19 +619,19 @@ class TestValidation:
                 v_centers=v_center,
                 s_tracers=s_center,
                 shell_edges=np.array([20.0, 10.0]),
-                sub_volume_radius=config.MAX_ANALYSIS_RADIUS,
+                sub_volume_radius=conventions.MAX_ANALYSIS_RADIUS,
             )
 
     def test_edge_beyond_max_analysis_radius_raises(self):
         s_center, v_center = _single_vc_center()
-        too_far = np.array([0.0, config.MAX_ANALYSIS_RADIUS + 1.0])
+        too_far = np.array([0.0, conventions.MAX_ANALYSIS_RADIUS + 1.0])
         with pytest.raises(ValueError):
             velocity_centered_shell_dipole(
                 s_centers=s_center,
                 v_centers=v_center,
                 s_tracers=s_center,
                 shell_edges=too_far,
-                sub_volume_radius=config.MAX_ANALYSIS_RADIUS,
+                sub_volume_radius=conventions.MAX_ANALYSIS_RADIUS,
             )
 
     def test_non_positive_sub_volume_radius_raises(self):
@@ -653,7 +653,7 @@ class TestValidation:
                 v_centers=v_center,
                 s_tracers=s_center,
                 shell_edges=np.array([0.0, 10.0]),
-                sub_volume_radius=config.MAX_ANALYSIS_RADIUS,
+                sub_volume_radius=conventions.MAX_ANALYSIS_RADIUS,
                 core_margin=-1.0,
             )
 
@@ -695,7 +695,7 @@ class TestCenterStandardError:
 class TestCoreCenterMask:
     def test_hand_checked_boundary(self):
         """Distance exactly at the cut is included (<=, not <)."""
-        observer = np.asarray(config.OBSERVER_POSITION, dtype=float)
+        observer = np.asarray(conventions.OBSERVER_POSITION, dtype=float)
         s_centers = observer + np.array(
             [[100.0, 0.0, 0.0], [150.0, 0.0, 0.0], [151.0, 0.0, 0.0]]
         )
@@ -704,7 +704,7 @@ class TestCoreCenterMask:
         np.testing.assert_array_equal(mask, [True, True, False])
 
     def test_shape_is_n_c(self):
-        observer = np.asarray(config.OBSERVER_POSITION, dtype=float)
+        observer = np.asarray(conventions.OBSERVER_POSITION, dtype=float)
         s_centers = observer + np.zeros((5, 3))
         mask = core_center_mask(s_centers, sub_volume_radius=100.0, core_margin=10.0)
         assert mask.shape == (5,)

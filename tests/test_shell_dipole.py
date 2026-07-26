@@ -21,9 +21,9 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-import config
-from geometry import unit_vector
-from estimators.shell_dipole import shell_dipole
+from dvcorr import conventions
+from dvcorr.geometry import unit_vector
+from dvcorr.estimators.shell_dipole import shell_dipole
 
 # Reuse the SAME infall toy the geometry sign gate is built on, rather than
 # rebuilding a parallel one that could drift out of agreement with it.
@@ -58,7 +58,7 @@ def test_estimator_preserves_the_infall_sign():
     assert result.pair_count[0] == N_SHELL          # every neighbor in one shell
 
     assert result.dipole[0] < 0.0
-    assert np.sign(result.dipole[0]) == config.INFALL_DIPOLE_SIGN
+    assert np.sign(result.dipole[0]) == conventions.INFALL_DIPOLE_SIGN
 
     recovered = 3.0 * result.dipole[0] / result.pair_count[0]
     assert recovered == pytest.approx(V_INFALL, rel=0.1)
@@ -105,7 +105,7 @@ def test_isotropic_shell_has_vanishing_dipole_but_finite_monopole():
     with zero to sampling noise. This is the monopole-vs-dipole contrast made
     concrete: the count survives, the dipole cancels.
     """
-    observer = np.asarray(config.OBSERVER_POSITION, dtype=float)
+    observer = np.asarray(conventions.OBSERVER_POSITION, dtype=float)
     s_center = observer + np.array([200.0, 0.0, 0.0])
 
     r_hat = _sphere_directions(N_SHELL)
@@ -133,7 +133,7 @@ def test_random_velocities_uncorrelated_with_position_give_zero_dipole():
     no angular information. Both the raw dipole and the normalized dipole must
     sit at zero within sampling noise, while the geometry (count) is unchanged.
     """
-    observer = np.asarray(config.OBSERVER_POSITION, dtype=float)
+    observer = np.asarray(conventions.OBSERVER_POSITION, dtype=float)
     s_center = observer + np.array([200.0, 0.0, 0.0])
 
     r_hat = _sphere_directions(N_SHELL)
@@ -158,7 +158,7 @@ def test_random_velocities_uncorrelated_with_position_give_zero_dipole():
 
 def _line_of_sight_center() -> tuple[np.ndarray, np.ndarray]:
     """Central object and the +x radial direction from the observer."""
-    observer = np.asarray(config.OBSERVER_POSITION, dtype=float)
+    observer = np.asarray(conventions.OBSERVER_POSITION, dtype=float)
     s_center = observer + np.array([200.0, 0.0, 0.0])
     return observer, s_center
 
@@ -260,7 +260,7 @@ def test_coincident_neighbor_contributes_to_count_but_not_dipole():
     """r = 0 has no direction: mu = 0, so it counts but adds nothing to Q."""
     _, s_center = _line_of_sight_center()
     # One neighbor on top of the center (r = 0), one at r = 5 with mu != 0.
-    s_offset = unit_vector(s_center - np.asarray(config.OBSERVER_POSITION, float))
+    s_offset = unit_vector(s_center - np.asarray(conventions.OBSERVER_POSITION, float))
     s_neighbors = np.vstack([s_center, s_center + 5.0 * s_offset])
     shell_edges = np.array([0.0, 10.0])
     weights = np.array([100.0, 100.0])
@@ -287,7 +287,7 @@ def test_non_increasing_edges_raise():
 
 def test_edge_beyond_max_analysis_radius_raises():
     _, s_center = _line_of_sight_center()
-    too_far = np.array([0.0, config.MAX_ANALYSIS_RADIUS + 1.0])
+    too_far = np.array([0.0, conventions.MAX_ANALYSIS_RADIUS + 1.0])
     with pytest.raises(ValueError):
         shell_dipole(s_center, s_center[None, :] + 5.0, too_far)
 

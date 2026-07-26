@@ -14,9 +14,13 @@ The primary science target is the dipole $\xi_{Tu,1}$, whose large-scale amplitu
 - Tempel et al. 2017, A&A 602, A100 — the SDSS group catalog.
 - Tully et al. 2023, ApJ 944, 94 — Cosmicflows-4.
 
+## Status
+
+The project is in its **simulation-validation arm**: the estimator is being reproduced inside the MDPL2 box, where halo peculiar velocities and the halo density field are both known, so every sign and normalization can be checked before the method is trusted on data. What exists today is the installable `dvcorr` library (frozen conventions, geometry primitives, the group- and velocity-centered shell-dipole estimators, and the velocity-centered pipeline), its sign-gate test suite, and one runnable driver — `scripts/plot_velocity_centered_dipole.py`. The numbered data-arm pipeline, the EDD data download, and the `io/`, `theory.py`, `errors.py`, and null-test modules described below are the **planned** end-to-end analysis, not yet implemented.
+
 ## Frozen conventions
 
-These are fixed project-wide in `src/tempelcf4/config.py` and `geometry.py` and enforced by unit tests. Do not redefine them locally.
+These are fixed project-wide in `src/dvcorr/conventions.py` and `src/dvcorr/geometry.py` and enforced by unit tests. Do not redefine them locally.
 
 | Symbol | Meaning |
 |---|---|
@@ -41,29 +45,32 @@ Consequences that follow from these choices and must not be violated:
 
 ## Repository layout
 
-```
-data/raw/         EDD catalog downloads — never committed (see Data below)
-data/external/    Cosmological parameter files, P_m(k) tables
-data/processed/   Unique group catalog, harmonized positions — rebuilt by scripts
-src/tempelcf4/
-  config.py       Cosmology and frozen conventions
-  geometry.py     Sky → redshift-space positions, exact curved-sky pair geometry
-  io/             Catalog loaders (Tempel collapse, CF4 velocity definitions)
-  selection/      Angular masks, radial selection functions, random catalogs
-  estimators/     ξ_Tu,ℓ pair estimator; Ψ∥/Ψ⊥ per-bin regression; ξ_TT
-  theory.py       Linear-theory predictions for ξ_Tvr, Ψ∥, Ψ⊥
-  mocks/          MDPL2 halo selection, mock observers, mock covariance
-  errors.py       Monte Carlo propagation of distance-modulus errors
-  nulltests.py    Shuffle, sign, duplicate, random-catalog, overlap, velocity-definition tests
-scripts/          Numbered pipeline stages (00–07), one per analysis step
-notebooks/        Exploration only (footprint maps, depth checks) — nothing load-bearing
+```text
+pyproject.toml    Package metadata, dependencies, pytest config — the single dependency source
+src/dvcorr/       The installable package (editable install: pip install -e .)
+  conventions.py    Frozen conventions — sign, pair orientation, observer, box, catalog columns
+  config/           Tunable settings, one dataclass per file (paths, cosmology, shell
+                    binning, selection) plus a Settings aggregator
+  geometry.py       Pure geometry primitives (unit_vector, pair_separation, mu_cosine)
+  estimators/       shell_dipole.py — group-centered (ξ_Tu) and velocity-centered (Nusser ζ)
+                    monopole + dipole accumulators per radial shell
+  pipeline/         velocity_centered.py — reusable stage functions shared by the driver
+                    script and its notebook (load/carve, draw, run, normalize, plot)
+  selection/        Angular masks, radial selection functions, random catalogs (planned)
+  mocks/            MDPL2 halo selection, mock observers, mock covariance (planned)
+scripts/          Runnable, load-bearing drivers (e.g. plot_velocity_centered_dipole.py)
+notebooks/        Exploration and presentation — thin consumers of the library, nothing load-bearing
 tests/            Unit tests, including the spherical-infall sign gate
-results/          Final figures and products
+data/             Input catalogs — gitignored, never committed (see Data below)
+output/           Derived products and figures
+literature/       Papers and the project methodological note
 ```
 
-## Pipeline
+The `io/`, `theory.py`, `errors.py`, and `nulltests.py` modules of the planned data arm (see Status) do not exist yet; the layout above is the current package.
 
-Run the numbered scripts in order; each writes to `data/processed/` or `results/` and each is re-runnable from scratch.
+## Pipeline (planned data arm)
+
+The numbered stages below are the **planned** end-to-end data-arm analysis — none exist yet (see Status). Once built, they run in order; each writes to `data/` or `output/` and each is re-runnable from scratch.
 
 1. `00_download_data.py` — fetch the EDD tables (`ktempel17`, `kcf4allvel`) into `data/raw/`.
 2. `01_build_unique_groups.py` — collapse Tempel rows to one row per `IDg`; choose and record the group-center definition (default: `Rg = 1` member; robustness alternatives logged).
@@ -88,17 +95,18 @@ Independent-pair error bars are invalid: pairs share objects and large-scale vel
 
 ```bash
 git clone <repo-url>
-cd tempel-cf4-xcorr
-conda env create -f environment.yml   # or: pip install -e .
-conda activate tempelcf4
+cd Cross-correlating-Tempel-SDSS-groups-with-Cosmicflows-4-peculiar-velocities
+python -m venv .venv                  # once
+source .venv/bin/activate             # every session
+pip install -e .[dev]                 # once, inside the .venv — editable install, dvcorr + pytest
 pytest                                # geometry and sign-convention tests must pass
 ```
 
-Core dependencies: numpy, scipy, astropy, healpy, pandas; Corrfunc for the group autocorrelation; CAMB or CLASS for $P_m(k)$; halotools for the MDPL2 side.
+Core dependencies, declared in `pyproject.toml`: numpy, pandas, scipy, astropy, healpy, matplotlib, h5py (plus pytest for the test suite). The data arm will additionally need Corrfunc (group autocorrelation), CAMB or CLASS ($P_m(k)$), and halotools (MDPL2), added when those stages are built.
 
 ## Data
 
-**No catalog data is committed to this repository.** The raw tables are obtained from the Extragalactic Distance Database via `scripts/00_download_data.py`:
+**No catalog data is committed to this repository.** The raw tables will be obtained from the Extragalactic Distance Database via the planned `scripts/00_download_data.py`:
 
 - Tempel17 SDSS DR12 Clipped: https://edd.ifa.hawaii.edu/describe_columns.php?table=ktempel17
 - CF4 All Group Velocities: https://edd.ifa.hawaii.edu/describe_columns.php?table=kcf4allvel
