@@ -19,6 +19,14 @@ without reimplementing any of them:
   code cell calls one of the stage functions below in sequence and adds plots
   / narrative, never reimplementing the pipeline.
 
+This module's scope now also supports the velocity-frame comparison built on
+top of it in `dvcorr.pipeline.velocity_frame_comparison`, which reuses
+`RunConfig`, `load_and_carve`, `draw_candidates`, `global_number_density`,
+`NormalizedDipole`, and `normalize_stacked_dipole` rather than duplicating
+any of them (CLAUDE.md's "one library, two thin consumers" model, applied a
+second time within the library itself: the comparison pipeline is additive
+on top of this one, not a fork of it).
+
 Matplotlib backend discipline
 ------------------------------
 Importing this module does NOT select a matplotlib backend: `matplotlib.use`
@@ -100,6 +108,25 @@ class RunConfig:
         Output figure filename, written under `PathsConfig().output_dir`.
     dpi : int
         Figure resolution.
+    min_center_speed : float
+        Minimum |v_alpha| (km/s) for a center to have a well-defined flow
+        direction v_hat_alpha. Centers below it are dropped from BOTH
+        frames' center sets at the ORCHESTRATION level
+        (`dvcorr.pipeline.velocity_frame_comparison.select_shared_centers`),
+        never inside an estimator, so both frames measure the identical
+        center set and the only difference between them is the axis and the
+        velocity scalar (see
+        `dvcorr.estimators.velocity_frame_dipole.velocity_frame_shell_dipole`'s
+        zero-speed ValueError, which this floor exists to prevent a caller
+        from ever triggering). This is a TUNABLE data-quality knob, not a
+        convention: the default (1.0 km/s) only removes pathologically slow
+        halos (effectively zero-speed, within floating-point noise), not a
+        physically meaningful cut; raise it to test sensitivity to poorly
+        determined flow directions. It lives on `RunConfig` -- shared by both
+        frames -- rather than on
+        `dvcorr.pipeline.velocity_frame_comparison.ComparisonRunConfig`,
+        because it filters the shared CENTER SET consumed by both estimators,
+        not a comparison-only plotting or null-test knob.
     """
 
     sub_volume_radius: float = 300.0
@@ -109,6 +136,7 @@ class RunConfig:
     shuffle_seed: int = 43
     output_name: str = "velocity_centered_dipole.png"
     dpi: int = 150
+    min_center_speed: float = 1.0
 
     def __post_init__(self) -> None:
         if (
@@ -124,6 +152,12 @@ class RunConfig:
         # > 0, and max_radius <= dvcorr.conventions.MAX_ANALYSIS_RADIUS -- not
         # re-checked here, so there is exactly one place that ceiling is
         # enforced.
+        if self.min_center_speed < 0.0:
+            raise ValueError(
+                f"RunConfig: min_center_speed ({self.min_center_speed}) must be "
+                ">= 0. 0.0 is allowed and means 'drop only exactly-zero-speed "
+                "centers'."
+            )
 
 
 # Plot styling -- named here rather than inline (hard rule 4).
@@ -360,6 +394,138 @@ class NormalizedDipole:
     monopole_norm: np.ndarray
 
 
+def shell_dipole_norm_scale(shell_edges: np.ndarray, n_bar: float) -> np.ndarray:
+    """The per-shell dipole normalization scale, `3 / (sqrt(3/4pi) * nbar*V_b)`.
+
+    ONE home for this factor (CLAUDE.md's DRY spirit, extracted specifically
+    because two call sites now need it): `normalize_stacked_dipole` uses it
+    for the STACKED curve, and
+    `dvcorr.pipeline.velocity_frame_comparison.normalize_comparison` uses the
+    identical factor for its per-center summary
+    (`per_center_dipole * shell_dipole_norm_scale(...)`, deliberately without
+    the `/ n_centers` stacking average). Before this was extracted, the two
+    call sites carried the same three lines independently -- a genuine risk
+    that the normalization convention could drift between the plotted stack
+    and the per-center breakdown that is supposed to sum back to it.
+
+        3 = 2*ell + 1, picks up <mu^2> = 1/3 over a full shell
+        sqrt(3/4pi) = the Y_10 normalization constant, undone here so the
+                      number is comparable (up to the (-1)^ell relation,
+                      dvcorr.conventions.nusser_multipole_sign) to the
+                      group-centered 3*Sum(u*mu)/N of
+                      `dvcorr.estimators.shell_dipole.shell_dipole`.
+
+    Parameters
+    ----------
+    shell_edges : ndarray, shape (B + 1,)
+        Radial shell boundaries, h^-1 Mpc.
+    n_bar : float
+        Global tracer number density over the sub-volume, e.g. from
+        `global_number_density`.
+
+    Returns
+    -------
+    ndarray, shape (B,)
+        The per-shell scale factor; multiplying a raw (per-center or
+        stacked) dipole moment by this, after dividing by `n_centers` where
+        a stacked average is wanted, gives the normalized zeta_hat_1.
+    """
+    nbar_v_b = expected_shell_occupancy(n_bar, shell_edges)
+    y10_norm = np.sqrt(3.0 / (4.0 * np.pi))
+    return 3.0 / (y10_norm * nbar_v_b)  # per-shell scale, (B,)
+
+
+def normalize_stacked_dipole(
+    shell_edges: np.ndarray,
+    dipole: np.ndarray,
+    monopole: np.ndarray,
+    per_center_dipole: np.ndarray,
+    null_dipole: np.ndarray,
+    null_per_center_dipole: np.ndarray,
+    n_centers: int,
+    n_bar: float,
+) -> NormalizedDipole:
+    """The normalization arithmetic, factored out to ONE home.
+
+    This contains exactly the arithmetic that used to live inline inside
+    `normalize_result` (see that function, which now delegates here). It is
+    pulled out to a stand-alone function because
+    `dvcorr.pipeline.velocity_frame_comparison` needs the identical
+    normalization for the velocity-frame result, and that frame's NULL is a
+    different construction (a random-axis re-run, not a scalar permutation --
+    see `dvcorr.pipeline.velocity_frame_comparison.run_random_axis_null` for
+    why) -- so the one piece that legitimately differs between the two
+    call sites, the null, is a parameter here rather than built inside this
+    function.
+
+        zeta_hat_1(r_b) = 3 * (dipole_b / n_centers) / (sqrt(3/4pi) * nbar*V_b)
+          3            = 2*ell + 1, picks up <mu^2> = 1/3 over a full shell
+          sqrt(3/4pi)  = the Y_10 normalization constant, undone here so the
+                         number is comparable (up to the (-1)^ell relation,
+                         dvcorr.conventions.nusser_multipole_sign) to the
+                         group-centered 3*Sum(u*mu)/N of
+                         `dvcorr.estimators.shell_dipole.shell_dipole`.
+    The n_bar*V_b division happens HERE, at the call site, visibly and
+    swappably -- never inside an estimator.
+
+    Parameters
+    ----------
+    shell_edges : ndarray, shape (B + 1,)
+        Radial shell boundaries, h^-1 Mpc, e.g. `result.shell_edges`.
+    dipole : ndarray, shape (B,)
+        Raw stacked dipole numerator, e.g. `result.dipole`.
+    monopole : ndarray, shape (B,)
+        Raw stacked monopole (ell=0 companion, hard rule 6), e.g.
+        `result.monopole`.
+    per_center_dipole : ndarray, shape (N_c, B)
+        Per-center dipole breakdown, e.g. `result.per_center_dipole`, used
+        for the across-center standard error via `center_standard_error`.
+    null_dipole : ndarray, shape (B,)
+        The raw stacked dipole of whatever NULL the caller has already
+        built -- a shuffled/permuted recombination for the observer frame
+        (`normalize_result`'s velocity-shuffle), or a random-axis re-run of
+        the estimator for the velocity frame
+        (`dvcorr.pipeline.velocity_frame_comparison.run_random_axis_null`).
+        This function does not know or care which; it only normalizes
+        whatever it is handed. `zeta_hat_shuffle` on the returned
+        `NormalizedDipole` therefore names "whatever null the caller built",
+        not specifically a scalar permutation -- read it as the null curve,
+        not as a promise about its construction.
+    null_per_center_dipole : ndarray, shape (N_c, B)
+        Per-center breakdown of the same null, for its own standard error.
+    n_centers : int
+        Number of surviving centers, e.g. `result.n_centers`. Shared by the
+        signal and the null: both are stacks over the SAME center set.
+    n_bar : float
+        Global tracer number density over the sub-volume, e.g. from
+        `global_number_density`.
+
+    Returns
+    -------
+    NormalizedDipole
+    """
+    nbar_v_b = expected_shell_occupancy(n_bar, shell_edges)
+    norm_scale = shell_dipole_norm_scale(shell_edges, n_bar)
+
+    zeta_hat = (dipole / n_centers) * norm_scale
+    sem = center_standard_error(per_center_dipole) * norm_scale
+
+    zeta_hat_shuffle = (null_dipole / n_centers) * norm_scale
+    sem_shuffle = center_standard_error(null_per_center_dipole) * norm_scale
+
+    # ell=0 companion, same normalization convention minus the 3/Y10 factors
+    # (hard rule 6: never plot the dipole without it).
+    monopole_norm = (monopole / n_centers) / nbar_v_b
+
+    return NormalizedDipole(
+        zeta_hat=zeta_hat,
+        sem=sem,
+        zeta_hat_shuffle=zeta_hat_shuffle,
+        sem_shuffle=sem_shuffle,
+        monopole_norm=monopole_norm,
+    )
+
+
 def normalize_result(
     result: VelocityCenteredShellDipoleResult,
     n_bar: float,
@@ -367,15 +533,15 @@ def normalize_result(
 ) -> NormalizedDipole:
     """Turn a raw estimator result + n_bar into the plotted, normalized curves.
 
-    zeta_hat_1(r_b) = 3 * (dipole_b / n_centers) / (sqrt(3/4pi) * nbar*V_b)
-      3            = 2*ell + 1, picks up <mu^2> = 1/3 over a full shell
-      sqrt(3/4pi)  = the Y_10 normalization constant, undone here so the
-                     number is comparable (up to the (-1)^ell relation,
-                     dvcorr.conventions.nusser_multipole_sign) to the
-                     group-centered 3*Sum(u*mu)/N of
-                     `dvcorr.estimators.shell_dipole.shell_dipole`.
-    The n_bar*V_b division happens HERE, at the call site, visibly and
-    swappably -- never inside the estimator.
+    Builds the velocity-shuffle null (a seeded permutation of
+    `result.per_center_u`, recombined with `result.per_center_amplitude` --
+    no second estimator pass needed) and delegates the actual normalization
+    arithmetic to `normalize_stacked_dipole`, which is now the single home
+    for it (see that function's docstring for the formula). This function's
+    public signature, return type, and numerical output are UNCHANGED by
+    that refactor -- it is a pure extraction, verified by construction (the
+    arithmetic moved verbatim) and numerically in the task that introduced
+    `normalize_stacked_dipole`.
 
     Parameters
     ----------
@@ -392,31 +558,22 @@ def normalize_result(
     -------
     NormalizedDipole
     """
-    nbar_v_b = expected_shell_occupancy(n_bar, result.shell_edges)
-    y10_norm = np.sqrt(3.0 / (4.0 * np.pi))
-    norm_scale = 3.0 / (y10_norm * nbar_v_b)  # per-shell scale, (B,)
-
-    zeta_hat = (result.dipole / result.n_centers) * norm_scale
-    sem = center_standard_error(result.per_center_dipole) * norm_scale
-
     shuffle_rng = np.random.default_rng(shuffle_seed)
     perm = shuffle_rng.permutation(result.per_center_u.size)
     shuffled_per_center_dipole = (
         result.per_center_u[perm][:, None] * result.per_center_amplitude
     )
-    zeta_hat_shuffle = (shuffled_per_center_dipole.sum(axis=0) / result.n_centers) * norm_scale
-    sem_shuffle = center_standard_error(shuffled_per_center_dipole) * norm_scale
+    null_dipole = shuffled_per_center_dipole.sum(axis=0)
 
-    # ell=0 companion, same normalization convention minus the 3/Y10 factors
-    # (hard rule 6: never plot the dipole without it).
-    monopole_norm = (result.monopole / result.n_centers) / nbar_v_b
-
-    return NormalizedDipole(
-        zeta_hat=zeta_hat,
-        sem=sem,
-        zeta_hat_shuffle=zeta_hat_shuffle,
-        sem_shuffle=sem_shuffle,
-        monopole_norm=monopole_norm,
+    return normalize_stacked_dipole(
+        shell_edges=result.shell_edges,
+        dipole=result.dipole,
+        monopole=result.monopole,
+        per_center_dipole=result.per_center_dipole,
+        null_dipole=null_dipole,
+        null_per_center_dipole=shuffled_per_center_dipole,
+        n_centers=result.n_centers,
+        n_bar=n_bar,
     )
 
 

@@ -193,6 +193,66 @@ flip — coherent infall gives `ξ_Tu,1 < 0` and therefore `ζ_1 > 0`.
   semantics as `shell_dipole`). `v_centers` must be finite everywhere (hard rule 5). Zero
   surviving centers is a valid all-zero/empty-array result, never NaN.
 
+**ℓ=0 exposure, consumed unchanged by the two-frame comparison:**
+`VelocityCenteredShellDipoleResult.monopole` → `NormalizedDipole.monopole_norm`
+(`dvcorr.pipeline.velocity_centered.normalize_stacked_dipole`) → the monopole panel of
+`dvcorr.pipeline.velocity_frame_comparison.make_comparison_figure` is the exact plumbing
+already built for the single-frame figure (`make_figure`'s bottom panel) — the comparison
+pipeline needed no new plumbing for the observer-frame monopole, only a second (twin-axis)
+curve alongside it for the velocity frame.
+
+### `src/dvcorr/estimators/velocity_frame_dipole.py` — velocity-frame dipole **[done]**
+An OBSERVER-FREE variant of `velocity_centered_shell_dipole`, in its own file (imports
+`from dvcorr import conventions`, `from dvcorr.geometry import mu_cosine, pair_separation,
+unit_vector`, and reuses `core_center_mask` / `real_y10` from `shell_dipole.py` UNCHANGED —
+`shell_dipole.py` itself was not touched). Same reversed-orientation construction
+(`pair_separation(s_alpha, s_near)` with the center in the "center" slot, i.e. center→tracer)
+and the same `real_y10`/binning machinery as the observer frame; the ONLY differences are the
+axis and the scalar:
+
+- axis: `z_hat_alpha = unit_vector(v_alpha)` (the center's OWN flow direction) instead of
+  `n_hat_V,alpha = unit_vector(s_alpha − observer)`.
+- scalar: `speed_alpha = |v_alpha|` (positive-definite) instead of the observer-frame radial
+  projection `u_alpha = v_alpha · n̂_V,alpha`.
+
+**Observer role:** the observer enters this estimator in exactly two places, both
+deliberate — (a) `core_center_mask`, reused identically to the observer frame so both frames
+see the identical candidate set before either estimator runs, and (b) the diagnostic
+`per_center_axis_angle = arccos(clip(z_hat_alpha · n̂_V,alpha, −1, 1))`, which never feeds
+back into `dipole`/`monopole`/`per_center_dipole`/`per_center_amplitude`. Outside those two
+places there is no observer in the module at all — that is the entire point of the variant.
+
+- `VelocityFrameShellDipoleResult` (frozen dataclass): mirrors
+  `VelocityCenteredShellDipoleResult` field-for-field (`shell_edges`, `shell_centers`,
+  `pair_count`, `monopole`, `dipole`, the `per_center_*` breakdown, `n_candidates`,
+  `n_centers`), with `per_center_speed (N_c,)` in place of `per_center_u`, plus
+  `per_center_axis_angle (N_c,)` (radians, `[0, π]`) — the pure diagnostic above. Invariants
+  by construction: `dipole == per_center_dipole.sum(axis=0)`,
+  `pair_count == per_center_count.sum(axis=0)`,
+  `monopole == (per_center_speed[:, None] * per_center_count).sum(axis=0)`.
+- `velocity_frame_shell_dipole(s_centers, v_centers, s_tracers, shell_edges, sub_volume_radius, core_margin=None, observer=None)`:
+  copies `velocity_centered_shell_dipole`'s validation block, `cKDTree` loop, and binning
+  semantics exactly. NEW validation: after the core cut, any SURVIVING center with
+  `|v_alpha| == 0.0` raises `ValueError` naming
+  `dvcorr.pipeline.velocity_centered.RunConfig.min_center_speed` as the place such centers
+  are dropped upstream — `unit_vector` would otherwise silently return a zero row (A=0,
+  speed=0), diluting the across-center mean/SEM rather than crashing (the same class of bug
+  as hard rule 5). Zero surviving centers is a valid, NaN-free, all-zero `(0, B)`/`(0,)`
+  result, identical contract to the observer frame.
+- **Sign:** coherent infall gives a POSITIVE velocity-frame dipole — the SAME sign as the
+  observer-frame ζ₁ (unlike the `(−1)^ℓ` flip between ζ and group-centered ξ_Tu), because the
+  two frames coincide exactly in the pure-radial-flow limit (see
+  `tests/test_velocity_frame_dipole.py`'s frame-agreement test). A negative dipole from an
+  infall mock is an orientation bug, not a result.
+- **Monopole:** `Σ_alpha |v_alpha| · N_alpha,b` is FLAT in `r` for a complete shell but offset
+  to roughly the mean halo speed `⟨|v|⟩` (hundreds of km/s), not to zero, because `|v|` is
+  positive-definite and cannot cancel across centers the way the observer frame's signed
+  `u_alpha` does. The diagnostic content is the ABSENCE of the observer frame's r-dependent
+  `2r/3R` finite-distance leakage trend, not proximity to zero — see the module docstring's
+  Monopole section for the full argument, consumed by
+  `dvcorr.pipeline.velocity_frame_comparison.make_comparison_figure`'s twin-axis monopole
+  panel.
+
 ---
 
 ## `src/dvcorr/pipeline/` — reusable stage functions
@@ -219,7 +279,13 @@ backend (e.g. an inline one) it already has.
   time; `_default_shells()`'s `min_radius` defaults to `radii_step`, not 0 — candidates are
   subsampled from the tracer array, so every candidate is its own tracer at r = 0, and
   excluding that self-pair keeps it out of the monopole diagnostic panel; also
-  `n_candidate_centers`, `seed`/`shuffle_seed`, output filename, `dpi`.
+  `n_candidate_centers`, `seed`/`shuffle_seed`, output filename, `dpi`, and
+  `min_center_speed` (default `1.0` km/s, `__post_init__`-validated `>= 0`) — the minimum
+  `|v_alpha|` for a center to have a well-defined flow direction, consumed by
+  `dvcorr.pipeline.velocity_frame_comparison.select_shared_centers` to drop centers from
+  BOTH frames' shared center set at the orchestration level (never inside an estimator). It
+  lives here rather than on `ComparisonRunConfig` because it filters the center set both
+  frames consume, not a comparison-only knob.
 - `load_and_carve(cfg, paths) -> (pos, vel)` — loads only
   `dvcorr.conventions.POSITION_COLUMNS + dvcorr.conventions.VELOCITY_COLUMNS`, carves a
   sphere of `sub_volume_radius` around `dvcorr.conventions.OBSERVER_POSITION` (plain
@@ -234,18 +300,104 @@ backend (e.g. an inline one) it already has.
   centers survive.
 - `global_number_density(n_tracers, sub_volume_radius) -> float` — n̄ = N /
   ((4π/3)·R_sub³).
-- `NormalizedDipole` (frozen dataclass) / `normalize_result(result, n_bar, shuffle_seed) ->
-  NormalizedDipole` — turns a raw result + n̄ into `zeta_hat`, `sem`, `zeta_hat_shuffle`,
-  `sem_shuffle`, `monopole_norm`, all `(B,)`. Normalises via `expected_shell_occupancy`
-  visibly at the call site (`ζ̂₁ = 3·(dipole/n_centers) / (√(3/4π)·n̄V_b)`), SEM via
-  `center_standard_error`, and the shuffle null via a seeded permutation of `per_center_u`
-  recombined with `per_center_amplitude` (no second estimator pass).
+- `NormalizedDipole` (frozen dataclass) — `zeta_hat`, `sem`, `zeta_hat_shuffle`, `sem_shuffle`,
+  `monopole_norm`, all `(B,)`.
+- `shell_dipole_norm_scale(shell_edges, n_bar) -> ndarray (B,)` — the ONE home for the
+  per-shell scale `3 / (√(3/4π)·n̄V_b)` (via `expected_shell_occupancy`). Extracted (in a
+  post-review pass on this task) specifically because `normalize_stacked_dipole` (below) AND
+  `dvcorr.pipeline.velocity_frame_comparison.normalize_comparison`'s per-center summary both
+  need the identical factor — before the extraction each computed its own copy of the same
+  three lines, a drift risk between the plotted stack and the per-center breakdown that is
+  supposed to sum back to it.
+- `normalize_stacked_dipole(shell_edges, dipole, monopole, per_center_dipole, null_dipole,
+  null_per_center_dipole, n_centers, n_bar) -> NormalizedDipole` — the ONE home for the
+  normalization arithmetic (`ζ̂₁ = 3·(dipole/n_centers) / (√(3/4π)·n̄V_b)` via
+  `shell_dipole_norm_scale`, SEM via `center_standard_error`), factored out so
+  `dvcorr.pipeline.velocity_frame_comparison` can reuse it for the velocity frame, whose
+  NULL is a different construction (a random-axis re-run, not a scalar permutation) — the
+  null is therefore a parameter (`null_dipole`/`null_per_center_dipole`), supplied
+  already-built by the caller, rather than constructed inside this function.
+  `zeta_hat_shuffle`/`sem_shuffle` on the returned `NormalizedDipole` name "whatever null the
+  caller built", not specifically a scalar permutation.
+- `normalize_result(result, n_bar, shuffle_seed) -> NormalizedDipole` — UNCHANGED public
+  signature, return type, and numerical output. Now builds the velocity-shuffle null (a
+  seeded permutation of `per_center_u` recombined with `per_center_amplitude`, no second
+  estimator pass) and delegates the arithmetic to `normalize_stacked_dipole`.
 - `make_figure(cfg, result, normalized) -> Figure` — the two-panel figure (ζ̂₁ with SEM +
   shuffle null; the normalized monopole companion below, hard rule 6); builds and returns
   only, never saves or calls `plt.show`.
 
-`src/dvcorr/pipeline/__init__.py` is a one-line docstring; no public re-exports needed since
-there is currently one pipeline module.
+`src/dvcorr/pipeline/__init__.py` is a one-line docstring; no public re-exports needed — there
+are now two pipeline modules (`velocity_centered.py` and `velocity_frame_comparison.py`, the
+latter additive on top of the former, not a fork of it), each imported directly by name.
+
+### `src/dvcorr/pipeline/velocity_frame_comparison.py` **[done]**
+The single source of truth for the two-frame comparison (observer-frame ζ₁ vs. the
+observer-free velocity-frame dipole), consumed by
+`scripts/plot_velocity_frame_comparison.py`. Deliberately does NOT reimplement
+`velocity_centered.py`'s earlier stages: `RunConfig` (subclassed), `NormalizedDipole`,
+`normalize_result`, and `normalize_stacked_dipole` are imported from there; `load_and_carve`,
+`draw_candidates`, and `global_number_density` are consumed directly by the script instead
+(this module's own stage functions start one step later, from already-loaded candidates).
+Same matplotlib-backend discipline as `velocity_centered.py` (never calls `matplotlib.use`).
+
+- `ComparisonRunConfig(RunConfig)` — adds `comparison_output_name`,
+  `angle_diagnostic_output_name`, and `axis_null_seed` (distinct from `seed`/`shuffle_seed` so
+  the random-axis null never reuses another stream); `min_center_speed` stays on the parent
+  `RunConfig` since it filters the shared center set, not a comparison-only knob.
+- `SharedCenterSet` (frozen dataclass) / `select_shared_centers(cfg, s_candidates,
+  v_candidates, observer) -> SharedCenterSet` — applies `core_center_mask` (identical function
+  and `core_margin = cfg.shells.max_radius`, matching each estimator's own default), THEN the
+  speed floor `keep = (speeds > 0.0) & (speeds >= cfg.min_center_speed)` (the explicit
+  `speeds > 0.0` conjunct is a post-review fix: `speeds >= cfg.min_center_speed` alone is
+  trivially true when `min_center_speed == 0.0`, since a norm can never be negative, which
+  would silently keep exact-zero-speed centers despite that field's documented "0.0 means
+  drop only exactly-zero-speed centers" contract); reports the funnel (`n_candidates` →
+  `n_core` → `n_centers`, with `n_dropped_slow = n_core - n_centers` a returned field, not
+  merely printed); `RuntimeError` if `s_candidates` is empty (checked BEFORE the survival
+  percentage is printed, to avoid a bare `ZeroDivisionError`) or if zero centers survive both
+  cuts. Selecting once here and handing the identical arrays to both estimators is what
+  guarantees the only difference between the two frames is the axis and the scalar.
+- `run_both_frames(cfg, centers, s_tracers, observer) -> FrameRunResults` — runs
+  `velocity_centered_shell_dipole` and `velocity_frame_shell_dipole` on the IDENTICAL
+  `centers.s_centers`/`v_centers`; asserts both estimators' `n_centers == centers.n_centers`
+  (`RuntimeError` if not — the row-alignment invariant the comparison depends on); also runs
+  `run_random_axis_null`.
+- `run_random_axis_null(cfg, centers, s_tracers, observer) -> VelocityFrameShellDipoleResult`
+  — replaces each center's velocity DIRECTION with an isotropic random unit vector
+  (`np.random.default_rng(cfg.axis_null_seed)`) while keeping its speed and position, then
+  reruns `velocity_frame_shell_dipole`. Why this null and not a scalar shuffle: the
+  velocity-frame statistic is SELF-ALIGNED (the axis is built from the same vector that
+  supplies the scalar), so permuting `|v_alpha|` among centers leaves every center's
+  axis-density alignment intact and retains essentially the signal itself (`|v|` is
+  positive-definite, unlike the observer frame's `u_alpha` which averages to ~0). Randomizing
+  the AXIS is the actual guard against align-then-measure bias; it costs one extra estimator
+  pass, deliberately.
+- `FrameRunResults` (frozen dataclass): `obs_result`, `vel_result`, `vel_null_result`,
+  `centers`.
+- `normalize_velocity_frame_result(result, null_result, n_bar) -> NormalizedDipole` — thin
+  delegate to `normalize_stacked_dipole` for the velocity frame; its `zeta_hat_shuffle` holds
+  the random-axis null.
+- `FrameComparison` (frozen dataclass): `obs`, `vel` (both `NormalizedDipole`),
+  `shell_centers`, `per_center_delta` (radians), `per_center_dipole_difference`.
+- `normalize_comparison(cfg, results, n_bar) -> FrameComparison` — normalizes both frames and
+  builds the per-center frame-gap breakdown: each center's own normalized curve
+  (`per_center_dipole * norm_scale_b`, no `/n_centers`) averaged over shells, differenced
+  vel − obs, so the per-center decomposition sums back to the plotted stack
+  (`mean_alpha(summary_alpha) == mean_b(zeta_hat_b)`).
+- `make_comparison_figure(cfg, results, comparison) -> Figure` — the main deliverable: top
+  panel overlays both frames' ζ̂₁ with SEM bands and their own (differently-constructed) nulls;
+  bottom panel plots both frames' monopoles on a TWIN y-axis (obs left, vel right, each
+  y-label colored to match), because the two monopoles sit at incomparable offsets (near zero
+  vs. near `⟨|v|⟩`) by construction — a shared axis would hide the presence/absence of the
+  r-dependent leakage trend that is the comparison's core finite-distance diagnostic.
+- `make_angle_diagnostic_figure(cfg, comparison) -> Figure` — top panel bins
+  `per_center_dipole_difference` by `per_center_delta` (`_N_ANGLE_BINS` bins over `[0, π]`,
+  degrees on the axis) with an SEM errorbar over a scatter of individual centers; bottom panel
+  histograms `delta` against the isotropic `P(delta) ∝ sin(delta)` reference. A few high-delta
+  outliers driving the top-panel gap ⇒ bulk-flow contamination; a smooth spread ⇒ genuine
+  projection geometry; an excess at low delta relative to the isotropic reference ⇒ flow
+  directions aligned with the lines of sight (residual bulk motion).
 
 ---
 
@@ -280,6 +432,20 @@ fast and safe (no data load), used as a smoke test.
 
 Usage: `.venv/bin/python -m scripts.plot_velocity_centered_dipole`.
 
+### `scripts/plot_velocity_frame_comparison.py` — thin driver **[done]**
+Mirrors `plot_velocity_centered_dipole.py`'s structure exactly. All algorithmic content lives
+in `dvcorr.pipeline.velocity_frame_comparison` (plus `load_and_carve`/`draw_candidates`/
+`global_number_density` reused from `dvcorr.pipeline.velocity_centered`); this script only
+wires it together. Module body: `import matplotlib; matplotlib.use("Agg")` before importing
+either pipeline module, then a single `main()` that chains `load_and_carve` →
+`draw_candidates` → `select_shared_centers` → `run_both_frames` → `global_number_density` →
+`normalize_comparison` → `make_comparison_figure` and `make_angle_diagnostic_figure`, saving
+BOTH PNGs (`cfg.comparison_output_name`, `cfg.angle_diagnostic_output_name`) under
+`PathsConfig().output_dir`. Never runs at import time (`if __name__ == "__main__"`); importing
+it is fast and safe, used as a smoke test.
+
+Usage: `.venv/bin/python -m scripts.plot_velocity_frame_comparison`.
+
 ---
 
 ## `tests/`
@@ -309,6 +475,30 @@ Usage: `.venv/bin/python -m scripts.plot_velocity_centered_dipole`.
   / zero-tracer / zero-surviving-center edge cases; a boundary test showing the default core
   cut reduces the outer-shell truncation-bias residual versus `core_margin=0`; a shuffle
   null; input validation; `center_standard_error` and `core_center_mask` unit checks.
+- `tests/test_velocity_frame_dipole.py` **[done]** — tests for the observer-free
+  velocity-frame dipole (`dvcorr.estimators.velocity_frame_dipole`) and its pipeline
+  (`dvcorr.pipeline.velocity_frame_comparison`). Imports the shared toys from
+  `tests.test_geometry` (`_infall_shell_with_velocities`, `_sphere_directions`, `R_CENTER`,
+  `R_SHELL`, `V_INFALL`, `N_SHELL`); reimplements (does not import) the private
+  `_joint_gate_toy`/`_sample_ball` helpers from `test_velocity_centered_dipole.py`. Sign gate:
+  the velocity-frame dipole is positive under infall and agrees in sign with the
+  observer-frame ζ₁ on the identical toy — magnitude pinned via `dipole[0] /
+  (√(3/4π)·pair_count[0]) == |V_INFALL|` (note: WITHOUT the observer-frame gate's `3×`
+  prefactor, and to a TIGHT rather than loose tolerance — that toy's tracer sits exactly on
+  the flow axis, `cos_theta ≡ 1` for every center by construction with no `⟨mu²⟩ = 1/3`
+  shell-averaging to undo, so the `3×` used by the observer-frame recovery formula would be a
+  spurious factor here, not a correction). Frame-agreement limit: purely radial flow makes the
+  two frames agree exactly for both outbound and inbound velocities (the two sign flips in the
+  inbound case cancel). Pipeline-level degenerate-center handling
+  (`select_shared_centers`'s speed floor, reported via `n_dropped_slow`; the estimator's own
+  zero-speed `ValueError`). `run_both_frames` row-alignment: identical `n_centers`,
+  independently-recomputed per-center scalars, and identical `per_center_count` between
+  frames. Null tests: an uncorrelated (uniformly random) density field gives both frames a
+  null-consistent dipole; `run_random_axis_null` collapses the velocity-frame dipole on a
+  clustered configuration with a genuine nonzero signal (documenting why a scalar permutation
+  is not a valid null for this self-aligned statistic). Binning/empty-input/input-validation
+  mechanics mirroring `test_velocity_centered_dipole.py`. `per_center_axis_angle` shape/range
+  contract plus a hand-checked perpendicular case (`delta == pi/2`).
 - `tests/test_settings.py` **[done]** — `dvcorr.config` dataclass tests (filename predates
   the `settings.py` → `dvcorr/config/*.py` split; left as-is, not renamed in this pass):
   `PathsConfig` derived paths and `ensure_output_dir` (via `tmp_path`, never the real
@@ -346,6 +536,26 @@ Nothing load-bearing; diagnostics that import the real modules, never reimplemen
   the shuffle null). Final cell saves the PNG via the same `paths.output_dir` / `cfg` logic as
   the script's `main()`, then displays the returned `Figure` inline (never `plt.show`). Not
   executed as part of authoring — outputs are cleared.
+- `06_velocity_frame_comparison.ipynb` **[done]** — exploratory twin of
+  `scripts/plot_velocity_frame_comparison.py`, and the notebook that actually *runs* the
+  two-frame comparison. Every code cell calls one stage of
+  `dvcorr.pipeline.velocity_frame_comparison` (`select_shared_centers`, `run_both_frames`,
+  `normalize_comparison`, `make_comparison_figure`, `make_angle_diagnostic_figure`) plus the
+  three stages it imports unchanged from `dvcorr.pipeline.velocity_centered`
+  (`load_and_carve`, `draw_candidates`, `global_number_density`) — nothing is reimplemented,
+  and the notebook and the script drive the identical library functions. One stage per cell,
+  markdown between them covering: the observer-free axis construction; the **three**
+  contributors to an amplitude gap (self-alignment/no ⟨cos²θ⟩=1/3 dilution ≈ 3×, `|v|` vs
+  `v·n̂_V`, then axis rotation proper — not attributable to rotation alone); why the velocity
+  frame needs a **random-axis** null rather than a scalar shuffle; the twin-axis monopole
+  panel (both monopoles inherit the `1+ξ_hh(r)` occupancy ratio and so both decline — the
+  frames separate only after dividing it out, leaving the observer-frame `2r/3R` trend
+  against a velocity-frame residual flat at ⟨|v|⟩); and the
+  δ_α diagnostic's reading (few high-δ outliers ⇒ bulk-flow contamination, smooth spread ⇒
+  projection geometry; low-δ excess over the isotropic `sin δ` reference ⇒ residual bulk
+  motion). Saves both PNGs via the same `paths.output_dir` / `cfg` logic as the script's
+  `main()` and displays each returned `Figure` inline (never `plt.show`). Unlike 04/05 this
+  one **is** executed and its outputs are kept — it is the record of the comparison run.
 
 ## `Imports from old repo/` — reference dump (read only)
 The bulk-flow project's working code, not a package and not importable. Copy and adapt
