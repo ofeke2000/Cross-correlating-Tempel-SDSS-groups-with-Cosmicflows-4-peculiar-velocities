@@ -29,7 +29,8 @@ These are fixed project-wide in `src/dvcorr/conventions.py` and `src/dvcorr/geom
 | $\mu = \hat{n}_T \cdot \hat{r}$ | Configuration-space, group-centered angular cosine |
 | $r_\parallel$, $r_\perp$ | $r\mu$ and $r\sqrt{1-\mu^2}$ |
 | $R = \|s_T\|$ | Observer-to-group distance |
-| $u = \mathbf{v} \cdot \hat{n}_V$ | Observer-centered radial peculiar velocity (CF4 `Vpec`) |
+| $u = \mathbf{v} \cdot \hat{n}_V$ | Observer-centered radial peculiar velocity (CF4 `Vpec`), **signed** |
+| $\hat{z} = \mathrm{sign}(u)\,\hat{n}_V$ | Polar axis of a velocity-object shell expansion: along the object's **motion**, not its line of sight. Companion weight is the **speed** $\lvert u\rvert$ |
 | $\xi_{Tu,\ell}$ | Multipoles of the Tempel-density × CF4-velocity correlation |
 | $\Psi_\parallel$, $\Psi_\perp$ | Górski velocity–velocity correlation functions |
 | $L_\ell$ | Legendre polynomials; $P_m(k)$ is reserved for the matter power spectrum |
@@ -39,6 +40,7 @@ Consequences that follow from these choices and must not be violated:
 
 - Coherent infall gives a **negative** dipole $\xi_{Tu,1}$.
 - Reversing the pair orientation flips the sign of all odd multipoles.
+- A halo approaching the observer is axed on $\hat{z} = -\hat{r}$. The sign lives in the axis, so the weight is the speed $\lvert u\rvert$ — entering the sign in both places cancels the statistic. One definition site: `dvcorr.geometry.radial_flow_axis`.
 - Distance-indicator distances are **never** used as pair-position coordinates; positions are redshift-space only.
 - Missing peculiar-velocity measurements are missing data, never $u = 0$.
 - Every Tempel group enters exactly once (`IDg` collapsed); using all member rows silently produces a richness-weighted statistic.

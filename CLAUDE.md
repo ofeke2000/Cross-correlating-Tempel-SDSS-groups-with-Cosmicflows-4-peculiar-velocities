@@ -186,7 +186,13 @@ Fixed project-wide; see the README table and `conventions.py`.
 
 - `L_ell` — Legendre polynomials. **`P` is reserved for the matter power spectrum `P_m(k)`**
   and is never used for Legendre polynomials.
-- `r = s_V − s_T`, `r = |r|`, `µ = n̂_T · r̂`, `R = |s_T|`, `u = v · n̂_V`
+- `r = s_V − s_T`, `r = |r|`, `µ = n̂_T · r̂`, `R = |s_T|`, `u = v · n̂_V` (signed)
+- `ẑ = sign(u) · n̂_V` — the polar axis of a velocity-object shell expansion follows the
+  object's **motion**, not its line of sight: a halo approaching the observer has `ẑ = −r̂`.
+  The companion weight is the **speed** `|u|`, never the signed `u` — the sign lives in the
+  axis, and entering it twice cancels the statistic. One definition site,
+  `geometry.radial_flow_axis`; the observer-free variant is the same statement with the full
+  3-vector, `ẑ = v̂`, weight `|v|`.
 - `ξ_Tu,ℓ` — density–velocity multipoles; `Ψ∥`, `Ψ⊥` — Górski velocity–velocity functions
 - Nusser (2017) centers on the velocity object, so his multipoles relate to ours by
   `(−1)^ℓ` — see `conventions.nusser_multipole_sign`. Apply the factor explicitly when comparing;

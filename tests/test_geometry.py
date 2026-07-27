@@ -23,7 +23,7 @@ import numpy as np
 import pytest
 
 from dvcorr import conventions
-from dvcorr.geometry import mu_cosine, pair_separation, unit_vector
+from dvcorr.geometry import mu_cosine, pair_separation, radial_flow_axis, unit_vector
 from dvcorr.estimators.shell_dipole import shell_dipole
 
 
@@ -510,6 +510,62 @@ class TestMuCosine:
         np.testing.assert_allclose(
             mu_cosine(-r_hat, n_T_hat), -mu_cosine(r_hat, n_T_hat), atol=1e-15
         )
+
+
+class TestRadialFlowAxis:
+    """z_hat = sign(u) n_hat_V -- conventions.VELOCITY_AXIS_CONVENTION.
+
+    The primitive-level statement of the axis convention: the polar axis of a
+    velocity object follows its MOTION along the line of sight, not the line
+    of sight itself. Getting this backwards does not raise -- it silently
+    reflects every inbound center's amplitude -- so it is pinned here, at the
+    one definition site, as well as in the estimators that consume it.
+    """
+
+    def test_outbound_axis_is_the_line_of_sight(self):
+        n_hat = np.array([[1.0, 0.0, 0.0]])
+        v = np.array([[300.0, 0.0, 0.0]])  # receding
+
+        z_hat, u = radial_flow_axis(v, n_hat)
+
+        np.testing.assert_allclose(z_hat, n_hat)
+        np.testing.assert_allclose(u, [300.0])
+
+    def test_inbound_axis_is_the_reversed_line_of_sight(self):
+        """The change this convention exists for: approaching => z_hat = -r_hat."""
+        n_hat = np.array([[1.0, 0.0, 0.0]])
+        v = np.array([[-300.0, 0.0, 0.0]])  # approaching the observer
+
+        z_hat, u = radial_flow_axis(v, n_hat)
+
+        np.testing.assert_allclose(z_hat, -n_hat)
+        np.testing.assert_allclose(u, [-300.0])
+
+    def test_axis_is_unit_length_and_u_is_the_signed_projection(self):
+        """Batch contract: (N, 3) axis, (N,) signed u, |u| the speed."""
+        rng = np.random.default_rng(20260727)
+        n_hat = unit_vector(rng.normal(size=(32, 3)))
+        v = rng.normal(scale=300.0, size=(32, 3))
+
+        z_hat, u = radial_flow_axis(v, n_hat)
+
+        assert z_hat.shape == (32, 3)
+        assert u.shape == (32,)
+        np.testing.assert_allclose(np.linalg.norm(z_hat, axis=1), 1.0, atol=1e-12)
+        np.testing.assert_allclose(u, np.einsum("ij,ij->i", v, n_hat), atol=1e-12)
+        # The axis always points along the motion: v . z_hat = |u| >= 0.
+        np.testing.assert_allclose(np.einsum("ij,ij->i", v, z_hat), np.abs(u), atol=1e-12)
+
+    def test_transverse_velocity_gives_a_zero_axis_not_an_invented_direction(self):
+        """u == 0 leaves the axis undefined; documented as a zero row, no NaN."""
+        n_hat = np.array([[1.0, 0.0, 0.0]])
+        v = np.array([[0.0, 400.0, 0.0]])  # exactly transverse
+
+        z_hat, u = radial_flow_axis(v, n_hat)
+
+        np.testing.assert_array_equal(z_hat, np.zeros((1, 3)))
+        np.testing.assert_allclose(u, [0.0])
+        assert np.all(np.isfinite(z_hat))
 
 
 class TestPrimitivesCompose:

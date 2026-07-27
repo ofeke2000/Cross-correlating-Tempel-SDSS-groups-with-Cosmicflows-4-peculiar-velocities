@@ -239,21 +239,24 @@ def test_frame_agreement_for_purely_radial_flow_outbound_and_inbound():
     """v_alpha = c * n_hat_V,alpha (pure radial flow) makes the two frames
     agree EXACTLY, for either sign of c.
 
-    Outbound (c > 0): v_hat_alpha == n_hat_V,alpha exactly, so the two
-    frames' axes coincide (per_center_axis_angle ~= 0) and |v_alpha| ==
-    u_alpha == c, so per_center_dipole (and the stack) must agree to tight
-    tolerance.
+    Outbound (c > 0): both axes are +n_hat_V,alpha -- the velocity frame's
+    v_hat_alpha trivially, the observer frame's because sign(u_alpha) = +1
+    (conventions.VELOCITY_AXIS_CONVENTION) -- so they coincide
+    (per_center_axis_angle ~= 0), and both scalars are |c|.
 
-    Inbound (c < 0, the COMPANION case, same test): the axis flips to
-    -n_hat_V,alpha (per_center_axis_angle ~= pi) AND the amplitude flips
-    sign (cos_theta -> -cos_theta, since the axis itself flipped), while the
-    scalar goes from u = c < 0 (observer frame) to |v| = -c > 0 (velocity
-    frame). The two sign flips cancel exactly: per_center_dipole_vel =
-    |v| * (-A) = (-c) * (-A) = c * A = u * A = per_center_dipole_obs. So the
-    two frames STILL agree exactly. Pure-radial flow gives exact frame
-    agreement regardless of direction; the frames can only diverge through
-    the TRANSVERSE velocity component, which this toy deliberately has none
-    of.
+    Inbound (c < 0, the COMPANION case, same test): BOTH axes flip together,
+    to -n_hat_V,alpha -- the velocity frame's because v_hat_alpha points back
+    at the observer, the observer frame's because sign(u_alpha) = -1. They
+    coincide again, so per_center_axis_angle is ~0 HERE TOO, not ~pi. Both
+    scalars are again |c| (|v_alpha| and |u_alpha| respectively). This is the
+    whole point of signing the axis: the two frames agree about which way an
+    inbound center is moving, and the old ~pi reading was an artifact of
+    axing the observer frame on the unsigned line of sight.
+
+    Either way, pure-radial flow gives exact frame agreement regardless of
+    direction; the frames can only diverge through the TRANSVERSE velocity
+    component, which this toy deliberately has none of. The dipole equality
+    below is asserted for both signs and pins that.
     """
     rng = np.random.default_rng(20260724)
 
@@ -285,8 +288,14 @@ def test_frame_agreement_for_purely_radial_flow_outbound_and_inbound():
         np.testing.assert_allclose(vf_result.per_center_dipole, obs_result.per_center_dipole, atol=_FA_ATOL)
         np.testing.assert_allclose(vf_result.dipole, obs_result.dipole, atol=_FA_ATOL)
 
-        expected_angle = 0.0 if speed_sign > 0.0 else np.pi
-        np.testing.assert_allclose(vf_result.per_center_axis_angle, expected_angle, atol=_FA_ATOL)
+        # Zero for BOTH signs: the observer-frame axis carries sign(u_alpha),
+        # so an inbound center's two axes flip together rather than apart.
+        np.testing.assert_allclose(vf_result.per_center_axis_angle, 0.0, atol=_FA_ATOL)
+        # The observer frame's own weight is the radial SPEED, and for a purely
+        # radial flow it is the full speed.
+        np.testing.assert_allclose(
+            obs_result.per_center_speed, vf_result.per_center_speed, atol=_FA_ATOL
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -922,7 +931,12 @@ class TestValidation:
 
 
 def test_per_center_axis_angle_hand_checked_perpendicular_case():
-    """v perpendicular to n_hat_V,alpha must give delta_alpha == pi/2 exactly."""
+    """v perpendicular to n_hat_V,alpha must give delta_alpha == pi/2 exactly.
+
+    This is delta's CEILING, not a point in its interior: cos(delta) =
+    |u_alpha| / |v_alpha|, which is zero exactly when the flow is purely
+    transverse -- the case the observer frame is blind to.
+    """
     observer = np.asarray(conventions.OBSERVER_POSITION, dtype=float)
     s_center = (observer + np.array([200.0, 0.0, 0.0]))[None, :]  # n_hat_V = +x
     v_center = np.array([[0.0, 50.0, 0.0]])                        # perpendicular to +x
@@ -941,7 +955,17 @@ def test_per_center_axis_angle_hand_checked_perpendicular_case():
 
 
 def test_per_center_axis_angle_shape_and_range_for_a_batch():
-    """(N_c,) shape and [0, pi] range hold over a generic, non-hand-picked batch."""
+    """(N_c,) shape and the [0, pi/2] range hold over a generic batch.
+
+    pi/2, NOT pi: the observer-frame axis the angle is measured against is
+    sign(u_alpha) * n_hat_V,alpha (conventions.VELOCITY_AXIS_CONVENTION), so
+    cos(delta) = |u_alpha| / |v_alpha| >= 0 and delta cannot exceed a right
+    angle. A random batch like this one -- isotropic velocities, isotropic
+    positions -- would routinely produce delta > pi/2 against the UNSIGNED
+    line of sight, so this is a real discriminator between the two readings,
+    not a vacuous bound. `velocity_frame_shell_dipole` enforces the same
+    ceiling internally; the assertion here is the independent check.
+    """
     rng = np.random.default_rng(20260728)
     observer = np.asarray(conventions.OBSERVER_POSITION, dtype=float)
     n = 25
@@ -961,4 +985,16 @@ def test_per_center_axis_angle_shape_and_range_for_a_batch():
 
     assert result.per_center_axis_angle.shape == (result.n_centers,)
     assert np.all(result.per_center_axis_angle >= 0.0)
-    assert np.all(result.per_center_axis_angle <= np.pi)
+    assert np.all(result.per_center_axis_angle <= np.pi / 2.0 + 1e-9)
+
+    # Independent reconstruction: cos(delta) == |u| / |v|, exactly.
+    n_hat_V = unit_vector(s_centers - observer)
+    u = np.einsum("ij,ij->i", v_centers, n_hat_V)
+    speed = np.linalg.norm(v_centers, axis=1)
+    expected = np.arccos(np.clip(np.abs(u) / speed, -1.0, 1.0))
+    np.testing.assert_allclose(result.per_center_axis_angle, expected, atol=1e-9)
+
+    # Not a vacuous bound: against the UNSIGNED line of sight this same batch
+    # would put centers past a right angle, which is the reading being fixed.
+    unsigned = np.arccos(np.clip(u / speed, -1.0, 1.0))
+    assert np.any(unsigned > np.pi / 2.0)

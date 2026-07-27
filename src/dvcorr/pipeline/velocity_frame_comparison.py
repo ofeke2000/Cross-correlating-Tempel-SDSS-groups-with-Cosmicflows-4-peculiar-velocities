@@ -77,7 +77,8 @@ _COLOR_VEL = "#7b2d8e"        # distinct hue for the velocity frame's curves
 _COLOR_VEL_NULL = "#cdb0d8"   # lighter tint of _COLOR_VEL: the vel-frame's own null (random-axis)
 _SCATTER_ALPHA = 0.35         # low-alpha individual-center scatter, angle diagnostic top panel
 _FIGSIZE_ANGLE = (8.0, 8.0)   # angle-diagnostic figure size, matches the comparison figure
-_N_ANGLE_BINS = 12            # equal-width bins over [0, pi] for both angle-diagnostic panels
+_N_ANGLE_BINS = 12            # equal-width bins over [0, pi/2] for both angle-diagnostic panels
+_MAX_ANGLE_DEG = 90.0         # delta's ceiling: cos(delta) = |u|/|v| >= 0 (per_center_axis_angle)
 
 
 @dataclass
@@ -352,30 +353,33 @@ def run_random_axis_null(
     WHY THIS NULL, AND NOT A SCALAR SHUFFLE -- important, read before
     "simplifying" this to match `normalize_result`'s pattern
     --------------------------------------------------------------------------
-    `normalize_result`'s velocity-shuffle null permutes `per_center_u` among
-    centers and recombines with the UNCHANGED `per_center_amplitude` -- no
-    second estimator pass needed, because in the observer frame the axis
-    (n_hat_V,alpha, fixed by each center's POSITION) and the scalar (u_alpha,
-    the center's OWN radial velocity) are logically separable: the amplitude
-    A_alpha,b depends only on the axis, so permuting only the scalar breaks
-    the alpha <-> A_alpha,b pairing while leaving every A_alpha,b intact.
-    That works as a null specifically because u_alpha averages to ~0 across
-    an isotropic sample of centers (the sign of a radial projection is as
-    likely to be positive as negative), so a random recombination collapses
-    the stacked sum toward zero.
+    `normalize_result`'s velocity-shuffle null undoes the observer frame's
+    axis flip (recovering the amplitude against the fixed +n_hat_V,alpha,
+    `np.sign(per_center_u) * per_center_amplitude`) and then permutes the
+    SIGNED `per_center_u` against it -- no second estimator pass needed. That
+    works because the observer frame's axis is only PARTIALLY velocity-
+    derived: it takes a sign from u_alpha and its line from the center's
+    POSITION, so once the sign is divided back out, what remains
+    (n_hat_V,alpha and hence the fixed-axis amplitude) is a pure function of
+    position and can be held fixed while the velocity is permuted. And the
+    permuted quantity is SIGNED, so it averages to ~0 across an isotropic
+    sample of centers and the recombined stack collapses.
 
     The velocity frame has NO such separation available. Its axis
-    z_hat_alpha = v_hat_alpha is built from the SAME velocity vector that
-    supplies the scalar |v_alpha| -- the statistic is SELF-ALIGNED by
-    construction. Permuting only |v_alpha| among centers would leave every
-    center's z_hat_alpha (and therefore every A_alpha,b) exactly as it was;
-    the recombined sum would be Sigma_alpha |v_permuted,alpha| * A_alpha,b,
-    which is essentially the SAME quantity as the real signal, because
-    |v_alpha| is positive-definite and cannot cancel the way u_alpha does --
-    permuting a set of positive numbers among a set of amplitudes that never
-    changed does not scramble the alignment that produced the signal in the
-    first place. A scalar permutation is therefore not a null here at all;
-    it would retain N_c * <|v|> * <A>, essentially the signal itself.
+    z_hat_alpha = v_hat_alpha is built ENTIRELY from the velocity vector that
+    also supplies the scalar |v_alpha| -- there is no position-derived
+    remainder to hold fixed, and no sign to divide out. Permuting |v_alpha|
+    among centers would leave every center's z_hat_alpha (and therefore every
+    A_alpha,b) exactly as it was; the recombined sum would be Sigma_alpha
+    |v_permuted,alpha| * A_alpha,b, which is essentially the SAME quantity as
+    the real signal, because |v_alpha| is positive-definite and cannot cancel
+    the way a signed scalar does -- permuting a set of positive numbers among
+    a set of amplitudes that never changed does not scramble the alignment
+    that produced the signal in the first place. A scalar permutation is
+    therefore not a null here at all; it would retain N_c * <|v|> * <A>,
+    essentially the signal itself. (This is also precisely why the observer
+    frame's null must NOT be written as a permutation of its
+    `per_center_speed`: that version would fall into the same trap.)
 
     Randomizing the AXIS instead is the correct guard against
     align-then-measure bias: it breaks the one thing that makes the
@@ -495,9 +499,9 @@ class FrameComparison:
         Shell midpoints, h^-1 Mpc, shared by both frames (they were run on
         identical `shell_edges`).
     per_center_delta : ndarray, shape (N_c,)
-        `vel_result.per_center_axis_angle`, RADIANS, in [0, pi] -- the angle
-        between each center's own flow direction and its observer line of
-        sight (see
+        `vel_result.per_center_axis_angle`, RADIANS, in [0, pi/2] -- the
+        angle between each center's own flow direction and the observer
+        frame's axis sign(u_alpha) * n_hat_V,alpha for that same center (see
         `dvcorr.estimators.velocity_frame_dipole.VelocityFrameShellDipoleResult
         .per_center_axis_angle`).
     per_center_dipole_difference : ndarray, shape (N_c,)
@@ -634,26 +638,33 @@ def make_comparison_figure(
     fixed observer distance R -- while the velocity-frame monopole has no
     observer distance R anywhere in its construction (see
     `dvcorr.estimators.velocity_frame_dipole`'s module docstring, Monopole
-    section) and so has NO such leakage term. It sits at roughly the mean
-    halo speed <|v|> (hundreds of km/s), not at zero, because |v| is
-    positive-definite and cannot cancel across centers the way the
-    observer-frame's signed u_alpha does. A single shared y-axis would either
-    crush the near-zero obs-frame curve flat or clip the vel-frame curve
-    off-scale -- either way hiding the PRESENCE-VS-ABSENCE of the r-dependent
-    trend, which is exactly the core finite-distance diagnostic this
+    section) and so has NO such leakage term.
+
+    Neither curve sits at zero. Both frames weight by a SPEED -- |u_alpha|
+    for the observer frame since the axis carries the sign
+    (`dvcorr.conventions.VELOCITY_AXIS_CONVENTION`), |v_alpha| for the
+    velocity frame -- and a positive-definite weight has no near/far
+    cancellation available to it, so the two curves sit near <|u|> and <|v|>
+    respectively. They are the same kind of quantity now, but still a
+    projection factor apart in magnitude, so a single shared y-axis would
+    compress the smaller one and hide the PRESENCE-VS-ABSENCE of the
+    r-dependent trend -- exactly the core finite-distance diagnostic this
     comparison exists to show.
 
     What BOTH plotted curves decline with, and what that does NOT mean: on a
-    clustered tracer field each monopole is its mean scalar times the
+    clustered tracer field each monopole is its mean speed times the
     occupancy ratio 1 + xi_hh(r), so both curves fall steeply at small r from
-    halo clustering alone -- the velocity frame is NOT flat here, and its
-    decline is not a systematic. The frames separate only once that shared
-    factor is divided out; on the first MDPL2 run
-    (notebooks/06_velocity_frame_comparison.ipynb) that leaves the obs-frame
-    residual trending -13.6 -> -2.7 km/s (the finite-distance leakage) while
-    the vel-frame residual is flat at 546.7 -> 504.0 km/s against
-    <|v_alpha|> = 504.5 km/s. Read the panel as "which curve keeps a trend
-    after clustering is accounted for", not "which curve is flat on the page".
+    halo clustering alone -- neither frame is flat here, and neither decline
+    is a systematic. Dividing that ratio out leaves, in BOTH frames, the same
+    genuine speed-density correlation (-7.9% and -7.8% over the shells on the
+    first MDPL2 run with the signed axis).
+
+    The finite-distance (2r/3R) leakage is NOT visible in this panel. It is a
+    SIGNED effect, and both frames now weight by a speed -- see
+    `dvcorr.estimators.velocity_frame_dipole`'s Monopole section for the full
+    argument and for the signed monopole, `(per_center_u[:, None] *
+    per_center_count).sum(axis=0)`, which does still carry it and is what to
+    reach for when that is the question being asked.
 
     Reading the TOP panel's amplitude gap: a larger vel-frame amplitude is
     NOT automatically a physically larger signal. Besides axis rotation and
@@ -731,9 +742,10 @@ def make_comparison_figure(
     # --- bottom panel: the two monopoles, twin y-axis (see docstring) ------
     ax_mono_vel = ax_mono_obs.twinx()
 
+    # No zero reference line: with the |u_alpha| weight the obs-frame
+    # monopole sits near <|u|>, not near zero (see this function's docstring).
     ax_mono_obs.plot(r, comparison.obs.monopole_norm, "o-", color=_COLOR_OBS)
-    ax_mono_obs.axhline(0.0, color=_COLOR_ZERO_LINE, lw=_ZERO_LINE_WIDTH)
-    ax_mono_obs.set_ylabel(r"$\hat\zeta_0^{obs}$  [km/s]", color=_COLOR_OBS)
+    ax_mono_obs.set_ylabel(r"$\hat\zeta_0^{obs} \simeq \langle|u|\rangle$  [km/s]", color=_COLOR_OBS)
     ax_mono_obs.tick_params(axis="y", labelcolor=_COLOR_OBS)
     ax_mono_obs.set_xlabel(r"separation $r$  [$h^{-1}$ Mpc]")
     ax_mono_obs.grid(alpha=_GRID_ALPHA)
@@ -757,13 +769,16 @@ def make_angle_diagnostic_figure(
     x-axis for both panels: `comparison.per_center_delta` (radians), plotted
     in DEGREES for readability -- this is
     `VelocityFrameShellDipoleResult.per_center_axis_angle`, the angle between
-    each center's own flow direction and its observer line of sight (see
-    that field's docstring; it is a pure diagnostic that never fed into
-    either frame's statistic).
+    each center's own flow direction and the OBSERVER frame's axis for that
+    same center, sign(u_alpha) * n_hat_V,alpha (see that field's docstring;
+    it is a pure diagnostic that never fed into either frame's statistic).
+    Both panels run over [0, 90] degrees, not [0, 180]: cos(delta) =
+    |u_alpha| / |v_alpha| is non-negative, so 90 degrees is a hard ceiling,
+    enforced by `velocity_frame_shell_dipole` rather than assumed here.
 
     TOP panel: `comparison.per_center_dipole_difference` (vel minus obs, see
     `normalize_comparison`) binned into `_N_ANGLE_BINS` equal-width bins over
-    [0, pi]; each bin plots the mean difference with an SEM errorbar, over a
+    [0, pi/2]; each bin plots the mean difference with an SEM errorbar, over a
     light, low-alpha scatter of the individual centers so outliers stay
     visible even though the bin mean absorbs them. A bin with zero centers
     is left as NaN and simply produces a gap in the errorbar plot -- never a
@@ -781,16 +796,18 @@ def make_angle_diagnostic_figure(
     `dvcorr.estimators.velocity_frame_dipole`'s module docstring.
 
     BOTTOM panel: a histogram of delta (degrees), with the ISOTROPIC
-    expectation overlaid as a dashed reference curve. For directions
-    distributed isotropically relative to the line of sight, the probability
-    density in the polar angle delta is P(delta) ~ sin(delta) -- the
-    solid-angle Jacobian of d(cos(delta)), pure mathematics kept inline with
-    a comment (CLAUDE.md hard rule 4's exemption for constants that are part
-    of a derivation) rather than promoted to `dvcorr.conventions` -- scaled
-    to match the histogram's total count. An EXCESS of centers at LOW delta
-    relative to that reference means the flow directions are preferentially
-    ALIGNED with the lines of sight, i.e. residual BULK MOTION shared with
-    the observer frame's own axis choice, not a random projection effect.
+    expectation overlaid as a dashed reference curve. For flow directions
+    distributed isotropically relative to the line of sight, cos(delta) =
+    |c| with c uniform on [-1, 1], so the probability density in delta is
+    P(delta) ~ sin(delta) on [0, pi/2] -- the solid-angle Jacobian of
+    d(cos(delta)), folded onto the half-range by the absolute value; pure
+    mathematics kept inline with a comment (CLAUDE.md hard rule 4's exemption
+    for constants that are part of a derivation) rather than promoted to
+    `dvcorr.conventions` -- scaled to match the histogram's total count. An
+    EXCESS of centers at LOW delta relative to that reference means the flow
+    directions are preferentially ALIGNED with the lines of sight, i.e.
+    residual BULK MOTION shared with the observer frame's own axis choice,
+    not a random projection effect.
 
     Builder only: never saves, never calls `plt.show`.
 
@@ -808,7 +825,7 @@ def make_angle_diagnostic_figure(
     fig, (ax_diff, ax_hist) = plt.subplots(2, 1, figsize=_FIGSIZE_ANGLE, sharex=True)
 
     # --- top panel: per-center dipole difference, binned by rotation angle -
-    bin_edges_deg = np.linspace(0.0, 180.0, _N_ANGLE_BINS + 1)  # [0, pi] in degrees
+    bin_edges_deg = np.linspace(0.0, _MAX_ANGLE_DEG, _N_ANGLE_BINS + 1)  # [0, pi/2] in degrees
     bin_centers_deg = 0.5 * (bin_edges_deg[:-1] + bin_edges_deg[1:])
     bin_index = np.clip(np.digitize(delta_deg, bin_edges_deg) - 1, 0, _N_ANGLE_BINS - 1)
 
@@ -843,7 +860,9 @@ def make_angle_diagnostic_figure(
     )
 
     # --- bottom panel: delta histogram vs. the isotropic sin(delta) reference
-    counts, edges_deg = np.histogram(delta_deg, bins=_N_ANGLE_BINS, range=(0.0, 180.0))
+    counts, edges_deg = np.histogram(
+        delta_deg, bins=_N_ANGLE_BINS, range=(0.0, _MAX_ANGLE_DEG)
+    )
     centers_deg = 0.5 * (edges_deg[:-1] + edges_deg[1:])
     ax_hist.bar(
         centers_deg, counts, width=np.diff(edges_deg), color=_COLOR_VEL,

@@ -383,8 +383,14 @@ class NormalizedDipole:
     sem_shuffle : ndarray, shape (B,)
         Standard error of `zeta_hat_shuffle`.
     monopole_norm : ndarray, shape (B,)
-        Normalised ell=0 companion (CLAUDE.md hard rule 6): the residual-bulk
-        / incomplete-shell diagnostic, km/s.
+        Normalised ell=0 companion (CLAUDE.md hard rule 6), km/s. Since the
+        per-center weight is the SPEED |u_alpha|
+        (`dvcorr.conventions.VELOCITY_AXIS_CONVENTION`), this sits near the
+        mean radial speed <|u|>, NOT near zero, and on a clustered field it
+        also inherits the 1 + xi_hh(r) occupancy shape. Read it as "what
+        survives once that occupancy ratio is divided out" -- a residual
+        TREND in r is the finite-distance / incomplete-shell diagnostic, not
+        the absolute level.
     """
 
     zeta_hat: np.ndarray
@@ -533,15 +539,37 @@ def normalize_result(
 ) -> NormalizedDipole:
     """Turn a raw estimator result + n_bar into the plotted, normalized curves.
 
-    Builds the velocity-shuffle null (a seeded permutation of
-    `result.per_center_u`, recombined with `result.per_center_amplitude` --
-    no second estimator pass needed) and delegates the actual normalization
-    arithmetic to `normalize_stacked_dipole`, which is now the single home
-    for it (see that function's docstring for the formula). This function's
-    public signature, return type, and numerical output are UNCHANGED by
-    that refactor -- it is a pure extraction, verified by construction (the
-    arithmetic moved verbatim) and numerically in the task that introduced
-    `normalize_stacked_dipole`.
+    Builds the velocity-shuffle null and delegates the actual normalization
+    arithmetic to `normalize_stacked_dipole`, which is the single home for it
+    (see that function's docstring for the formula).
+
+    The null, and why it undoes the axis flip first
+    ---------------------------------------------------
+    The estimator's axis is z_hat_alpha = sign(u_alpha) * n_hat_V,alpha
+    (`dvcorr.conventions.VELOCITY_AXIS_CONVENTION`), so `per_center_amplitude`
+    already carries that sign and the per-center weight is the positive-
+    definite |u_alpha|. Permuting the weight against the untouched amplitudes
+    would NOT be a null: a permutation of positive numbers leaves the
+    alignment that produced the signal exactly where it was -- the same trap
+    `dvcorr.pipeline.velocity_frame_comparison.run_random_axis_null`
+    documents for the velocity frame, which is self-aligned for the same
+    reason.
+
+    So the flip is undone first, recovering the fixed-axis amplitude
+
+        A_r,alpha,b = sign(u_alpha) * A_alpha,b      (axis pinned to +n_hat_V)
+
+    and the SIGNED u_alpha is permuted against that. Because the axis is
+    derived from the scalar's sign, permuting the signed scalar
+    re-randomizes the axis and the weight TOGETHER, which is exactly what a
+    null for this construction has to do; u_alpha averages to ~0 over an
+    isotropic sample of lines of sight, so the recombined stack collapses.
+    Still no second estimator pass.
+
+    (Numerically this reproduces the pre-signed-axis null exactly --
+    sign(u) * A = A(n_hat_V) -- so the plotted null curve is unchanged. The
+    construction is spelled out because the OBVIOUS one-line version,
+    permuting `per_center_speed`, is now silently wrong.)
 
     Parameters
     ----------
@@ -550,9 +578,7 @@ def normalize_result(
         Global tracer number density over the sub-volume, e.g. from
         `global_number_density`.
     shuffle_seed : int
-        Seed for the velocity-shuffle null: a permutation of
-        `result.per_center_u`, recombined with `result.per_center_amplitude`
-        -- no second estimator pass.
+        Seed for the velocity-shuffle null (see above).
 
     Returns
     -------
@@ -560,9 +586,11 @@ def normalize_result(
     """
     shuffle_rng = np.random.default_rng(shuffle_seed)
     perm = shuffle_rng.permutation(result.per_center_u.size)
-    shuffled_per_center_dipole = (
-        result.per_center_u[perm][:, None] * result.per_center_amplitude
-    )
+
+    # Undo the z_hat = sign(u) n_hat_V flip to recover the fixed-axis
+    # amplitude, then permute the SIGNED u against it -- see the docstring.
+    fixed_axis_amplitude = np.sign(result.per_center_u)[:, None] * result.per_center_amplitude
+    shuffled_per_center_dipole = result.per_center_u[perm][:, None] * fixed_axis_amplitude
     null_dipole = shuffled_per_center_dipole.sum(axis=0)
 
     return normalize_stacked_dipole(
@@ -639,9 +667,11 @@ def make_figure(
         f"r_max={cfg.shells.max_radius:.0f} h$^{{-1}}$Mpc, N_c={result.n_centers})"
     )
 
+    # No zero reference line here: with the |u_alpha| weight the monopole sits
+    # near <|u|>, not near zero (NormalizedDipole.monopole_norm), so a y=0 line
+    # would only compress the axis and imply a reference that no longer applies.
     ax_mono.plot(r, normalized.monopole_norm, "o-", color=_COLOR_MONOPOLE)
-    ax_mono.axhline(0.0, color=_COLOR_ZERO_LINE, lw=_ZERO_LINE_WIDTH)
-    ax_mono.set_ylabel(r"$\hat\zeta_0$  [km/s]", color=_LABEL_COLOR)
+    ax_mono.set_ylabel(r"$\hat\zeta_0 \simeq \langle|u|\rangle$  [km/s]", color=_LABEL_COLOR)
     ax_mono.set_xlabel(r"separation $r$  [$h^{-1}$ Mpc]")
     ax_mono.grid(alpha=_GRID_ALPHA)
     ax_mono.spines["top"].set_visible(False)

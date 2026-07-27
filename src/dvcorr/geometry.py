@@ -145,6 +145,64 @@ def pair_separation(
     return r_vec, r_mag
 
 
+def radial_flow_axis(
+    v: np.ndarray,
+    n_hat_los: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray]:
+    """The velocity-object polar axis z_hat, signed by the direction of motion.
+
+    THE single definition site of z_hat for every velocity-centered
+    construction in this project (conventions.VELOCITY_AXIS_CONVENTION):
+
+        u      = v . n_hat_los                (signed radial peculiar velocity)
+        z_hat  = sign(u) * n_hat_los
+
+    The axis is the direction the object is actually MOVING along its line of
+    sight, not the line of sight itself. An object receding from the observer
+    (u > 0) has z_hat = +n_hat_los; an object approaching it (u < 0) has
+    z_hat = -n_hat_los. The companion scalar weight is the SPEED |u|, never
+    the signed u -- the sign has been moved out of the scalar and into the
+    axis, and applying it twice would cancel the statistic (see
+    `dvcorr.estimators.shell_dipole.velocity_centered_shell_dipole`).
+
+    Parameters
+    ----------
+    v : ndarray, shape (3,) or (N, 3)
+        Peculiar velocities, km/s.
+    n_hat_los : ndarray, shape (3,) or (N, 3)
+        UNIT line-of-sight directions observer -> object, broadcasting
+        against `v`. Not normalized here: an un-normalized input shows up as
+        a wrong u at the point of use rather than being quietly rescaled.
+
+    Returns
+    -------
+    z_hat : ndarray, shape (N, 3)
+        The flow-signed polar axis, unit length wherever u != 0.
+    u : ndarray, shape (N,)
+        The signed radial peculiar velocity v . n_hat_los, km/s. The scalar
+        weight callers apply is `np.abs(u)`; `u` itself is returned signed
+        because its sign is the only record of which way the axis was
+        flipped, which a null test needs in order to undo the flip.
+
+    Notes
+    -----
+    u == 0 (velocity exactly transverse to the line of sight) leaves the
+    axis genuinely UNDEFINED: `np.sign(0.0)` is 0, so z_hat is a zero row.
+    That is deliberate and matches `unit_vector`'s zero-length contract --
+    no invented direction, no NaN. Such an object also carries speed
+    |u| = 0, so it contributes nothing to any dipole either way; it is the
+    same degenerate case (and the same dilution caveat, CLAUDE.md hard rule
+    5) as before the axis was signed, not a new one.
+    """
+    v = np.atleast_2d(np.asarray(v, dtype=float))
+    n_hat_los = np.atleast_2d(np.asarray(n_hat_los, dtype=float))
+
+    u = np.sum(v * n_hat_los, axis=-1)
+    z_hat = np.sign(u)[:, None] * n_hat_los
+
+    return z_hat, u
+
+
 def mu_cosine(r_hat: np.ndarray, n_T_hat: np.ndarray) -> np.ndarray:
     """Group-centered angular cosine mu = n_hat_T . r_hat.
 

@@ -8,59 +8,68 @@ CONTEXT / MOTIVATION
 ---------------------
 The observer-frame estimator (zeta, Nusser 2017 eq. 23-24, implemented in
 `shell_dipole.py`) puts a velocity object alpha at the center of each shell
-and axes it on n_hat_V,alpha = observer -> s_alpha, the line of sight FROM THE
-OBSERVER. That axis choice is forced by what a peculiar-velocity survey
-actually measures: a line-of-sight (radial) speed
-u_alpha = v_alpha . n_hat_V,alpha, never the full 3-vector. The axis and the
-scalar it multiplies are therefore tied to the SAME finite-distance
-direction by construction -- an artifact of having an observer at all, not a
+and axes it on z_hat_obs,alpha = sign(u_alpha) * n_hat_V,alpha -- the
+component of the center's motion that the observer can see, along the line of
+sight n_hat_V,alpha = observer -> s_alpha
+(`dvcorr.conventions.VELOCITY_AXIS_CONVENTION`). That axis choice is forced by
+what a peculiar-velocity survey actually measures: a line-of-sight (radial)
+speed u_alpha = v_alpha . n_hat_V,alpha, never the full 3-vector. The axis is
+therefore the true flow direction PROJECTED onto, and collapsed into, a single
+finite-distance line -- an artifact of having an observer at all, not a
 property of the flow.
 
 This module removes the observer from the statistic entirely. For each center
-alpha it defines the axis as the center's OWN flow direction,
+alpha it defines the axis as the center's OWN, FULL flow direction,
 
     z_hat_alpha = v_alpha / |v_alpha|          (v_hat_alpha)
 
-and uses the FULL speed |v_alpha| as the scalar, in place of the observer-frame
-radial projection u_alpha. Comparing the two frames quantifies exactly what is
-lost by having a finite-distance observer restricted to radial velocities: in
-the ideal spherical-infall, distant-observer limit the two coincide, because a
-purely radial flow has v_hat_alpha -> n_hat_V,alpha and |v_alpha| -> u_alpha
-(see tests/test_velocity_frame_dipole.py's frame-agreement test, item 2, which
-pins this on real numbers). Away from that limit, the divergence between the
-frames measures projection geometry -- the TRANSVERSE component of v_alpha,
-invisible to the observer frame -- plus the center's own bulk motion.
+and uses the FULL speed |v_alpha| as the scalar, in place of the observer
+frame's radial speed |u_alpha|. The two frames are therefore the SAME
+construction -- axis along the motion, weight the speed along that axis --
+differing only in whether the motion is the full 3-vector or its radial
+projection. Comparing them quantifies exactly what is lost by having a
+finite-distance observer restricted to radial velocities: in the ideal
+spherical-infall, distant-observer limit the two coincide, because a purely
+radial flow has v_hat_alpha -> sign(u_alpha) n_hat_V,alpha and |v_alpha| ->
+|u_alpha| (see tests/test_velocity_frame_dipole.py's frame-agreement test,
+item 2, which pins this on real numbers -- INCLUDING for an inbound flow,
+where both axes point back toward the observer together). Away from that
+limit, the divergence between the frames measures projection geometry -- the
+TRANSVERSE component of v_alpha, invisible to the observer frame -- plus the
+center's own bulk motion.
 
 Read the two frames' quantities literally, because it matters for interpreting
 any amplitude difference between them: zeta_velframe correlates the center's
 FULL SPEED with density-along-its-own-flow-direction, while zeta_obsframe
-correlates the center's RADIAL speed with density-along-the-line-of-sight. An
-amplitude difference is therefore partly the |v| vs. v . n_hat_V effect (a
-positive-definite scalar vs. a signed, generally smaller one) and not purely a
-rotation of the axis -- do not attribute the whole gap to axis geometry
-without checking the speed-vs-radial-speed piece first.
+correlates its RADIAL SPEED with density-along-the-radial-part-of-that-flow.
+Both scalars are positive-definite and |u_alpha| <= |v_alpha| always, so an
+amplitude difference is partly that magnitude effect and not purely a rotation
+of the axis -- do not attribute the whole gap to axis geometry without checking
+the speed-vs-radial-speed piece first.
 
 A THIRD contributor, often the largest of the three, and easy to miss because
-neither of the two above names it: this estimator is SELF-ALIGNED. The axis
-z_hat_alpha is built from the SAME velocity vector v_alpha that also supplies
-the scalar |v_alpha|, whereas the observer frame's axis n_hat_V,alpha is fixed
-by each center's POSITION and only coincides with the true flow direction in
-the distant-observer limit. Concretely: stack the amplitude A_alpha,b over
-many centers whose true flow direction is uncorrelated with n_hat_V,alpha, and
-the observer frame's per-center cos_theta values are effectively drawn from a
-distribution with <cos_theta^2> ~= 1/3 (the same shell-averaging dilution
-`geometry.mu_cosine`'s docstring describes for mu), while the velocity frame's
-cos_theta is 1 for EVERY center, by construction -- no averaging, no dilution,
-because the tracer that sits at a given angle relative to z_hat_alpha is being
-measured with the SAME vector that defines z_hat_alpha. On
-tests/test_velocity_frame_dipole.py's sign-gate toy (where this effect is not
-diluted by anything else) this alone is worth a factor of 3 in the raw
-per-center amplitude -- see that test's docstring for the full derivation.
-This is NOT the frame-agreement limit (which concerns whether the two axes
-literally coincide) and NOT the |v| vs. u effect (which concerns the scalar,
-not the amplitude) -- it is a THIRD, independent enhancement of the velocity
-frame's amplitude relative to the observer frame's, present even when the two
-axes are only loosely correlated. `run_random_axis_null`
+neither of the two above names it: this estimator is FULLY SELF-ALIGNED, and
+the observer frame is only PARTIALLY so. Both axes now derive something from
+the center's own velocity -- but the velocity frame takes the whole direction
+from it, while the observer frame takes only a SIGN (sign(u_alpha)) and gets
+the rest, the line n_hat_V,alpha, from the center's POSITION. That remaining
+positional dependence is the dilution: the observer-frame axis coincides with
+the true flow direction only in the distant-observer limit. Concretely: stack
+the amplitude A_alpha,b over many centers whose true flow direction is
+uncorrelated with n_hat_V,alpha, and the observer frame's per-center cos_theta
+values are effectively drawn from a distribution with <cos_theta^2> ~= 1/3
+(the same shell-averaging dilution `geometry.mu_cosine`'s docstring describes
+for mu), while the velocity frame's cos_theta is 1 for EVERY center, by
+construction -- no averaging, no dilution, because the tracer that sits at a
+given angle relative to z_hat_alpha is being measured with the SAME vector
+that defines z_hat_alpha. On tests/test_velocity_frame_dipole.py's sign-gate
+toy (where this effect is not diluted by anything else) this alone is worth a
+factor of 3 in the raw per-center amplitude -- see that test's docstring for
+the full derivation. This is NOT the frame-agreement limit (which concerns
+whether the two axes literally coincide) and NOT the |v| vs. |u| effect (which
+concerns the scalar, not the amplitude) -- it is a THIRD, independent
+enhancement of the velocity frame's amplitude relative to the observer
+frame's, present even when the two axes are only loosely correlated. `run_random_axis_null`
 (`dvcorr.pipeline.velocity_frame_comparison`) measures the NULL floor of this
 statistic (what the amplitude looks like with no axis-density correlation at
 all) but does not, by itself, isolate this enhancement from a genuine
@@ -145,8 +154,8 @@ per-center bookkeeping in exactly two places, both deliberate:
       availability question that has nothing to do with which axis a center
       uses once selected.
   (b) `per_center_axis_angle`, a pure DIAGNOSTIC (see the dataclass docstring
-      below) -- the angle between the center's own flow direction and its
-      line of sight to the observer. It never touches `dipole`, `monopole`,
+      below) -- the angle between this frame's axis and the observer frame's
+      axis for the same center. It never touches `dipole`, `monopole`,
       `per_center_dipole`, or `per_center_amplitude`; it exists so a caller
       can ask "how far did this center's axis rotate away from the
       observer-frame axis" without re-deriving it, but the statistic would be
@@ -194,46 +203,62 @@ mirroring `dvcorr.pipeline.velocity_centered.normalize_stacked_dipole`) it is
 
     ~ <|v|> * (realized occupancy / expected occupancy)
 
-and it sits at the MEAN HALO SPEED (hundreds of km/s), NOT at zero. That
-offset is a real, documented difference from the observer-frame monopole:
-|v| is positive-definite and cannot cancel the way the observer-frame's
-u_alpha does (u_alpha averages to ~0 across centers on an isotropic sample of
-lines of sight, since the sign of the radial projection is as likely to be
-positive as negative). |v| has no such cancellation available to it.
+and it sits at the MEAN HALO SPEED (hundreds of km/s), NOT at zero: |v| is
+positive-definite and has no near/far cancellation available to it. Since the
+signed axis landed (`dvcorr.conventions.VELOCITY_AXIS_CONVENTION`) the SAME
+is true of the observer frame, whose weight is now the radial speed
+|u_alpha| -- its monopole sits near <|u|> rather than near zero. The two
+frames' monopoles are therefore now the same KIND of quantity, differing
+only in |u| vs. |v|, which is what makes them worth reading side by side.
 
-Do NOT expect this monopole to be flat in r on a clustered tracer field. The
-occupancy ratio above IS 1 + xi_hh(r), the tracer autocorrelation, so BOTH
-frames' monopoles inherit its shape; on the first MDPL2 run
-(notebooks/06_velocity_frame_comparison.ipynb) that ratio falls 1.46 -> 1.005
-over r = 7.5 -> 57.5 h^-1 Mpc, dragging the raw velocity-frame monopole from
-799 down to 506 km/s. Flatness is what the UNCLUSTERED (Poisson) case gives,
-not this one.
+Do NOT expect either monopole to be flat in r on a clustered tracer field.
+The occupancy ratio above IS 1 + xi_hh(r), the tracer autocorrelation, so
+BOTH frames' monopoles inherit its shape; on the first MDPL2 run
+(notebooks/06_velocity_frame_comparison.ipynb) that ratio falls steeply over
+r = 7.5 -> 57.5 h^-1 Mpc, dragging the raw monopoles down with it. Flatness
+is what the UNCLUSTERED (Poisson) case gives, not this one.
 
-The diagnostic content of THIS monopole is therefore neither "is it near
-zero" (it will not be) nor "is it flat" (it will not be, on a clustered
-field), but what survives after the occupancy ratio is divided out. There the
-two frames genuinely part company, and this is the finite-distance story:
+The diagnostic content of these monopoles is therefore neither "is it near
+zero" (neither is) nor "is it flat" (neither is, on a clustered field), but
+what survives after the occupancy ratio is divided out. What survives, in
+BOTH frames, is a genuine speed-density correlation (fast halos
+preferentially living in denser environments), plus shell incompleteness --
+the boundary-truncation mechanism `core_center_mask` already guards against.
+On the first MDPL2 run with the signed axis
+(notebooks/06_velocity_frame_comparison.ipynb) the two residuals decline by
+-7.9% and -7.8% over r = 7.5 -> 57.5 h^-1 Mpc: the SAME effect seen twice,
+not a difference between the frames.
 
-  - the observer-frame monopole carries the finite-distance (2r/3R) leakage
-    documented in `geometry.mu_cosine` and `shell_dipole.py`, a trend IN r
-    (it grows with shell radius r at fixed R) that SURVIVES the division --
-    measured -13.6 -> -2.7 km/s over the same shells, decaying toward its
-    <u_alpha> = -2.67 km/s asymptote;
-  - the velocity frame has no R at all -- there is no observer distance
-    anywhere in its construction -- so nothing survives: the same division
-    leaves 546.7 -> 504.0 km/s against <|v_alpha|> = 504.5 km/s, i.e. flat to
-    ~8% with no leakage term to produce a trend.
+WHAT THIS MONOPOLE NO LONGER SHOWS -- read before using it as the
+finite-distance diagnostic
+------------------------------------------------------------------------
+The observer frame's finite-distance (2r/3R) leakage documented in
+`geometry.mu_cosine` and `shell_dipole.py` is a SIGNED effect. It lived in
+Sigma_alpha u_alpha N_alpha,b, a quantity sitting near zero (<u> = -2.67 km/s
+on that run), so an ~11 km/s trend in r stood out plainly against it. The
+flow-signed axis moves that sign into z_hat and leaves |u_alpha| as the
+weight, and |u| discards exactly the sign the leakage lived in -- so the
+speed-weighted observer-frame monopole does NOT isolate it any more, and any
+residual trend is buried under a ~250 km/s offset.
 
-That residual ~8% rise at small r is not leakage either; it is a genuine
-speed-density correlation (fast halos preferentially living in denser
-environments), which -- along with shell incompleteness, the same
-boundary-truncation mechanism `core_center_mask` already guards against -- is
-what a velocity-frame monopole residual can legitimately mean. See
-`dvcorr.pipeline.velocity_frame_comparison.make_comparison_figure`'s monopole
-panel, which plots both frames' monopoles on separate y-axes for exactly this
-reason -- the presence-vs-absence of the r-dependent trend is the comparison's
-core finite-distance diagnostic, and the two curves sit at incomparable
-offsets (near zero vs. near <|v|>) so a shared axis would visually hide it.
+That is a real loss of diagnostic content in the ell=0 companion, not a
+subtlety to gloss over, and it is why
+`dvcorr.estimators.shell_dipole.VelocityCenteredShellDipoleResult
+.per_center_u` is retained SIGNED. The leakage diagnostic is fully
+recoverable from the public fields:
+
+    signed_monopole = (per_center_u[:, None] * per_center_count).sum(axis=0)
+
+normalized exactly as `monopole` is. notebooks/06's summary cell computes and
+prints this alongside the speed-weighted pair, and the trend still survives
+the occupancy division there. If that check becomes a routine pipeline step
+rather than a notebook read-out, promote the line to a library function
+rather than copying it a second time.
+
+See `dvcorr.pipeline.velocity_frame_comparison.make_comparison_figure`'s
+monopole panel, which plots the two frames' monopoles on separate y-axes
+because they sit a projection factor apart (<|u|> vs. <|v|>) and a shared
+axis would compress the smaller one.
 
 Periodic boundary conditions
 ------------------------------
@@ -253,8 +278,16 @@ import numpy as np
 from scipy.spatial import cKDTree
 
 from dvcorr import conventions
-from dvcorr.geometry import mu_cosine, pair_separation, unit_vector
+from dvcorr.geometry import mu_cosine, pair_separation, radial_flow_axis, unit_vector
 from dvcorr.estimators.shell_dipole import core_center_mask, real_y10
+
+#: Ceiling on `per_center_axis_angle`: cos(delta) = |u_alpha| / |v_alpha| is
+#: non-negative by construction, so delta cannot exceed pi/2. Checked, not
+#: assumed -- see `velocity_frame_shell_dipole`.
+_MAX_AXIS_ANGLE = np.pi / 2.0
+#: Float slack on that ceiling: arccos near its endpoint amplifies the ~1e-16
+#: rounding in a unit-vector dot product, so the check is not exact.
+_AXIS_ANGLE_TOL = 1e-9
 
 
 @dataclass(frozen=True)
@@ -264,9 +297,13 @@ class VelocityFrameShellDipoleResult:
     Mirrors `dvcorr.estimators.shell_dipole.VelocityCenteredShellDipoleResult`
     field-for-field where the two frames share a quantity (`shell_edges`,
     `shell_centers`, `pair_count`, `monopole`, `dipole`, the `per_center_*`
-    breakdown, `n_candidates`, `n_centers`), and adds two velocity-frame-only
-    fields (`per_center_speed` in place of `per_center_u`, and the diagnostic
-    `per_center_axis_angle`, which has no observer-frame analogue). Everything
+    breakdown including `per_center_speed`, `n_candidates`, `n_centers`). The
+    frames differ in what `per_center_speed` HOLDS -- the full |v_alpha| here,
+    the radial |u_alpha| there -- and this result carries one extra field with
+    no observer-frame analogue, the diagnostic `per_center_axis_angle`.
+    There is no `per_center_u` here: the observer frame retains the signed
+    u_alpha because its axis sign is derived from it, and this frame has no
+    such sign to record. Everything
     is a RAW sum -- nothing here is normalized; see
     `dvcorr.pipeline.velocity_centered.normalize_stacked_dipole` for the
     downstream normalization, shared with the observer frame.
@@ -289,10 +326,10 @@ class VelocityFrameShellDipoleResult:
         rule 6). See the module docstring's Monopole section: offset to
         ~<|v|> rather than to zero, and NOT flat on a clustered field (it
         inherits the 1 + xi_hh(r) occupancy ratio, as the observer-frame
-        monopole does) -- what distinguishes the frames is that no
-        finite-distance trend survives dividing that ratio out. Both are real
-        differences from the observer-frame monopole, not bugs. Empty shells
-        are 0.0.
+        monopole does). Both properties are now shared with the observer
+        frame, whose weight is likewise a speed; what distinguishes the two
+        is that no finite-distance trend survives dividing the occupancy
+        ratio out here. Empty shells are 0.0.
     dipole : ndarray, shape (B,)
         Sigma_alpha |v_alpha| * A_alpha,b, the raw stacked l=1 numerator.
         Empty shells are 0.0, never NaN.
@@ -316,17 +353,34 @@ class VelocityFrameShellDipoleResult:
         construction (a norm); the zero-speed case is excluded upstream, see
         `velocity_frame_shell_dipole`'s Raises section.
     per_center_axis_angle : ndarray, shape (N_c,)
-        delta_alpha = arccos(clip(z_hat_alpha . n_hat_V,alpha, -1, 1)), the
-        angle in RADIANS, range [0, pi], between the center's own flow
-        direction and its observer-frame line of sight. This is the ONLY
-        place the observer enters the per-center bookkeeping besides the
-        (frame-shared) core cut -- see the module docstring's Observer role
-        section -- and it is a pure DIAGNOSTIC: it never feeds back into
-        `dipole`, `monopole`, `per_center_dipole`, or `per_center_amplitude`.
-        delta_alpha ~ 0 means this center's flow points straight along its
-        line of sight (the frame-agreement limit); delta_alpha ~ pi/2 means
-        the flow is purely transverse, the case the observer frame is blind
-        to entirely.
+        delta_alpha = arccos(clip(z_hat_alpha . z_hat_obs,alpha, -1, 1)), the
+        angle in RADIANS between this frame's axis and the OBSERVER frame's
+        axis for the same center, z_hat_obs,alpha = sign(u_alpha) *
+        n_hat_V,alpha (`dvcorr.conventions.VELOCITY_AXIS_CONVENTION`). This
+        is the ONLY place the observer enters the per-center bookkeeping
+        besides the (frame-shared) core cut -- see the module docstring's
+        Observer role section -- and it is a pure DIAGNOSTIC: it never feeds
+        back into `dipole`, `monopole`, `per_center_dipole`, or
+        `per_center_amplitude`.
+
+        Range is [0, pi/2], NOT [0, pi]: cos(delta_alpha) =
+        v_hat_alpha . sign(u_alpha) n_hat_V,alpha = |u_alpha| / |v_alpha|,
+        which is non-negative by construction. That ceiling is the point of
+        measuring against the signed axis rather than the bare line of
+        sight -- an INBOUND center used to report delta ~ pi (axes
+        "opposite") when in fact the two frames agreed perfectly about which
+        way it was moving; the sign was an artifact of the unsigned
+        reference direction, not a disagreement. delta_alpha ~ 0 now means
+        the two frames' axes coincide (the frame-agreement limit, reached by
+        any purely radial flow in either direction); delta_alpha ~ pi/2 means
+        the flow is almost purely transverse, the case the observer frame is
+        blind to entirely.
+
+        For flow directions distributed isotropically about the line of
+        sight, cos(delta) = |c| with c uniform on [-1, 1], so P(delta) ~
+        sin(delta) on [0, pi/2] -- the reference curve
+        `dvcorr.pipeline.velocity_frame_comparison.make_angle_diagnostic_figure`
+        overlays.
     n_candidates : int
         Number of candidate centers passed in, before the core cut.
     n_centers : int
@@ -467,6 +521,14 @@ def velocity_frame_shell_dipole(
         frozen convention) -- see
         `dvcorr.pipeline.velocity_frame_comparison.select_shared_centers`,
         which applies it before either estimator ever runs.
+    RuntimeError
+        If any `per_center_axis_angle` exceeds pi/2 (beyond float slack).
+        That is an internal invariant, not user input: cos(delta_alpha) =
+        |u_alpha| / |v_alpha| is non-negative by construction, so an angle
+        above the ceiling means the observer-frame axis lost its
+        sign(u_alpha) factor. It is checked because the failure is silent --
+        a delta of ~pi looks like a perfectly plausible "axes point opposite
+        ways" reading of the diagnostic figure.
 
     Notes
     -----
@@ -553,11 +615,30 @@ def velocity_frame_shell_dipole(
         per_center_speed = np.linalg.norm(v_survivors, axis=1)      # (N_c,), |v_alpha|
 
         # Diagnostic only (module docstring, Observer role): the angle
-        # between this center's own flow axis and its observer line of
-        # sight. Never feeds back into the statistic below.
+        # between this center's own flow axis and the OBSERVER FRAME'S axis
+        # for the same center, z_hat_obs = sign(u) n_hat_V
+        # (conventions.VELOCITY_AXIS_CONVENTION) -- not the bare line of
+        # sight, which is only defined up to a sign. Never feeds back into
+        # the statistic below.
         n_hat_V = unit_vector(s_survivors - observer)                # (N_c, 3)
-        axis_dot = np.clip(np.einsum("ij,ij->i", z_hat, n_hat_V), -1.0, 1.0)
-        per_center_axis_angle = np.arccos(axis_dot)                  # (N_c,), radians in [0, pi]
+        z_hat_obs, _ = radial_flow_axis(v_survivors, n_hat_V)        # (N_c, 3)
+        axis_dot = np.clip(np.einsum("ij,ij->i", z_hat, z_hat_obs), -1.0, 1.0)
+        per_center_axis_angle = np.arccos(axis_dot)                  # (N_c,), radians in [0, pi/2]
+
+        # Invariant, checked rather than assumed: cos(delta) = v_hat . sign(u)
+        # n_hat_V = |u| / |v| >= 0, so delta can never exceed pi/2. An angle
+        # above the ceiling means the axis sign was dropped somewhere (the
+        # pre-signed-axis behaviour, which reported delta ~ pi for inbound
+        # centers) -- a silent misreading of the angle diagnostic, not a
+        # crash, so it is caught here at the one place delta is produced.
+        if np.any(per_center_axis_angle > _MAX_AXIS_ANGLE + _AXIS_ANGLE_TOL):
+            raise RuntimeError(
+                "per_center_axis_angle exceeded pi/2 "
+                f"(max {per_center_axis_angle.max():.6f} rad); cos(delta) = "
+                "|u_alpha| / |v_alpha| is non-negative by construction, so "
+                "this means z_hat_obs lost its sign(u_alpha) factor "
+                "(conventions.VELOCITY_AXIS_CONVENTION)."
+            )
 
         tree = cKDTree(s_tracers) if s_tracers.shape[0] > 0 else None
 

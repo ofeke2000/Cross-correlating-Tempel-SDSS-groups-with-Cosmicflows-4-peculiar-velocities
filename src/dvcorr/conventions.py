@@ -37,6 +37,33 @@ Angular cosine.
     a group-centered cosine: mu = +1 puts the neighbor directly behind the
     center as seen by the observer, mu = -1 puts it directly in front.
 
+Velocity-object polar axis (z_hat).
+    For any construction that puts a VELOCITY object at the center of a shell
+    and expands the surrounding density field in multipoles, the polar axis is
+    the direction that object is MOVING, not the direction it lies in:
+
+        u      = v . n_hat_V                  (signed radial peculiar velocity)
+        z_hat  = sign(u) * n_hat_V
+
+    A halo receding from the observer has z_hat = +n_hat_V; a halo APPROACHING
+    the observer has z_hat = -n_hat_V. The line of sight n_hat_V only fixes the
+    axis up to a sign; the peculiar velocity is what picks the sign, and the
+    dipole is a statement about where density sits relative to the FLOW ("the
+    overdensity lies ahead of the motion"), which is meaningless against an
+    unsigned axis.
+
+    The companion scalar weight is therefore the radial SPEED |u|, never the
+    signed u. The sign has been moved out of the scalar and into the axis;
+    applying it in both places multiplies it in twice, and sum |u| * A(z_hat)
+    would then collapse to noise -- the u <-> A sign correlation is exactly
+    what makes the dipole survive the stack. One definition site:
+    `dvcorr.geometry.radial_flow_axis`.
+
+    The observer-free variant (`dvcorr.estimators.velocity_frame_dipole`) is
+    the same statement with the full 3-D velocity in place of its radial
+    projection: z_hat = v / |v|, weight |v|. In the distant-observer limit of a
+    purely radial flow the two coincide, sign included.
+
 Reference frame.
     CMB frame throughout. In the box this means halo velocities are used as
     stored, with no observer-motion subtraction. The Local-Group-frame transform
@@ -153,6 +180,14 @@ PAIR_SEPARATION_CONVENTION: str = "r = s_V - s_T  (density/Tempel object -> velo
 
 #: Documented definition of the angular cosine.
 MU_CONVENTION: str = "mu = n_hat_T . r_hat  (n_hat_T = observer -> central object)"
+
+#: Documented definition of the velocity-object polar axis, and of the scalar
+#: that travels with it. See the prose section above; implemented once, in
+#: `dvcorr.geometry.radial_flow_axis`.
+VELOCITY_AXIS_CONVENTION: str = (
+    "z_hat = sign(u) n_hat_V, weight |u|  (axis along the radial peculiar "
+    "velocity, not along the line of sight)"
+)
 
 #: Expected sign of the measured dipole under coherent infall. The sign gate in
 #: tests/test_geometry.py asserts against this rather than a bare literal.

@@ -108,18 +108,31 @@ statistic zeta directly, alongside xi_Tu above, rather than only describing
 it. A single VELOCITY object alpha sits at the center, carrying its own
 scalar observer-frame radial velocity u_alpha = v_alpha . n_hat_V,alpha
 (n_hat_V,alpha = observer -> alpha), and DENSITY tracers i are counted in
-shells around it. Per shell b, the accumulator is the real l=1, m=0
-spherical harmonic summed over that shell's tracers,
+shells around it. The polar axis of that center's expansion is its
+DIRECTION OF MOTION, not its direction from the observer
+(conventions.VELOCITY_AXIS_CONVENTION):
+
+    z_hat_alpha = sign(u_alpha) * n_hat_V,alpha
+
+so a center approaching the observer is axed on -n_hat_V,alpha. Per shell b,
+the accumulator is the real l=1, m=0 spherical harmonic summed over that
+shell's tracers,
 
     A_alpha,b = sum_{i in b} Y_10(n_hat_i)
-              = sqrt(3/4pi) * sum_{i in b} (n_hat_V,alpha . n_hat_i)
+              = sqrt(3/4pi) * sum_{i in b} (z_hat_alpha . n_hat_i)
 
 with n_hat_i the unit vector FROM the center alpha TO tracer i (center ->
 tracer -- see Orientation below), and the statistic stacked over centers is
-Sigma_alpha u_alpha * A_alpha,b (`velocity_centered_shell_dipole`,
-`real_y10`). CF4 will eventually supply the velocity centers alpha (its
-groups' peculiar velocities); that is why this estimator, not xi_Tu above, is
-the production target -- xi_Tu is the simulation-validation cross-check.
+Sigma_alpha |u_alpha| * A_alpha,b -- the radial SPEED, because the sign has
+been moved into z_hat_alpha and entering it twice would cancel the signal
+(`velocity_centered_shell_dipole`, `real_y10`). Since flipping z_hat flips
+A, |u_alpha| * A(z_hat_alpha) == u_alpha * A(n_hat_V,alpha) identically, so
+the stacked dipole is numerically the same as the unsigned-axis reading; the
+monopole, the per-center amplitudes, and the shuffle null are not (see
+`velocity_centered_shell_dipole`'s "Axis sign" section). CF4 will eventually
+supply the velocity centers alpha (its groups' peculiar velocities); that is
+why this estimator, not xi_Tu above, is the production target -- xi_Tu is the
+simulation-validation cross-check.
 
 Orientation: the REVERSED separation, not the frozen r
 ----------------------------------------------------------
@@ -133,9 +146,9 @@ deliberately different construction:
     density object in the center slot and point r = s_V - s_T outward from
     it; here the VELOCITY object is the center, so the arrow direction flips
     -- it is the exact negative of the frozen r for the same pair;
-  - the reference direction n_hat_V,alpha (the center's own -- i.e. the
-    velocity object's -- line of sight) in place of n_hat_T (the density
-    object's line of sight).
+  - the reference direction z_hat_alpha = sign(u_alpha) * n_hat_V,alpha (the
+    center's own direction of motion along its line of sight) in place of
+    n_hat_T (the density object's line of sight).
 
 Both substitutions are deliberate, and together are what "velocity-centered"
 means. The resulting local cosine is therefore NOT conventions.MU_CONVENTION's
@@ -168,7 +181,7 @@ import numpy as np
 from scipy.spatial import cKDTree
 
 from dvcorr import conventions
-from dvcorr.geometry import mu_cosine, pair_separation, unit_vector
+from dvcorr.geometry import mu_cosine, pair_separation, radial_flow_axis, unit_vector
 
 
 @dataclass(frozen=True)
@@ -578,30 +591,62 @@ class VelocityCenteredShellDipoleResult:
         geometry, the realized (not expected) denominator; contrast
         `expected_shell_occupancy`'s n_bar * V_b. Empty shells are 0.0.
     monopole : ndarray, shape (B,)
-        Sigma_alpha u_alpha * N_alpha,b, the l=0 companion (CLAUDE.md hard
-        rule 6): the occupancy-weighted velocity monopole, the same
-        residual-bulk-motion / incomplete-shell diagnostic as
-        `ShellDipoleResult.monopole`, one level up (per center rather than
-        per neighbor). Empty shells are 0.0.
+        Sigma_alpha |u_alpha| * N_alpha,b, the l=0 companion (CLAUDE.md hard
+        rule 6): the SPEED-weighted occupancy. Because the weight is |u| and
+        not the signed u (conventions.VELOCITY_AXIS_CONVENTION -- the sign
+        lives in z_hat now), this monopole sits at roughly the mean radial
+        SPEED <|u|>, not near zero: a positive-definite weight has no
+        near/far cancellation available to it. It is still the
+        incomplete-shell / occupancy diagnostic -- on a clustered tracer
+        field it inherits the 1 + xi_hh(r) occupancy shape, so read it as
+        "what survives after the occupancy ratio is divided out", exactly as
+        `dvcorr.estimators.velocity_frame_dipole`'s Monopole section
+        describes for the observer-free frame. Empty shells are 0.0.
     dipole : ndarray, shape (B,)
-        Sigma_alpha u_alpha * A_alpha,b, the raw stacked l=1 numerator --
+        Sigma_alpha |u_alpha| * A_alpha,b, the raw stacked l=1 numerator --
         zeta_1's unnormalized numerator. Empty shells are 0.0, never NaN.
+        Numerically UNCHANGED by the signed axis: |u_alpha| * A(z_hat) ==
+        u_alpha * A(n_hat_V), since flipping z_hat flips A. The signed axis
+        is a correction to what the statistic MEANS (and to the monopole and
+        the null), not to this curve.
     per_center_dipole : ndarray, shape (N_c, B)
-        u_alpha * A_alpha,b, retained per surviving center per shell.
+        |u_alpha| * A_alpha,b, retained per surviving center per shell.
         `dipole == per_center_dipole.sum(axis=0)` by construction; kept so
         `center_standard_error` and a shuffle null can be built without
         re-running the estimator.
     per_center_amplitude : ndarray, shape (N_c, B)
         A_alpha,b = Sigma_i Y_10(n_hat_i) per surviving center per shell --
-        the pure-geometry accumulator, before the u_alpha weight is applied.
-        Recombining `per_center_u[:, None] * per_center_amplitude` and
-        summing over centers reproduces `dipole`; permuting `per_center_u`
-        first is the shuffle null.
+        the pure-geometry accumulator, before the |u_alpha| weight is
+        applied. Measured against z_hat_alpha = sign(u_alpha) * n_hat_V,alpha,
+        so its sign is relative to the center's own direction of MOTION.
+        Recombining `per_center_speed[:, None] * per_center_amplitude` and
+        summing over centers reproduces `dipole`.
+
+        A shuffle null must NOT simply permute a scalar against this array:
+        the axis is now derived from the same u_alpha the weight comes from,
+        so permuting |u| alone would leave every A_alpha,b (and therefore the
+        alignment that produced the signal) untouched -- the same trap
+        `dvcorr.pipeline.velocity_frame_comparison.run_random_axis_null`
+        documents for the velocity frame. Undo the flip first,
+        `np.sign(per_center_u)[:, None] * per_center_amplitude`, to recover
+        the fixed-axis amplitude, then permute the SIGNED per_center_u
+        against it -- which re-randomizes the axis and the weight together.
+        See `dvcorr.pipeline.velocity_centered.normalize_result`.
     per_center_count : ndarray, shape (N_c, B)
         N_alpha,b, the realized tracer occupancy per surviving center per
         shell. `pair_count == per_center_count.sum(axis=0)` by construction.
+        Pure geometry: unaffected by the axis sign.
     per_center_u : ndarray, shape (N_c,)
-        u_alpha = v_alpha . n_hat_V,alpha for each surviving center, km/s.
+        SIGNED u_alpha = v_alpha . n_hat_V,alpha for each surviving center,
+        km/s. Retained signed (not as the |u| the estimator weights by)
+        because its sign is the only record of which way z_hat_alpha was
+        flipped, which a null test needs in order to undo the flip.
+    per_center_speed : ndarray, shape (N_c,)
+        |u_alpha|, the radial SPEED actually used as the per-center weight,
+        km/s. Positive-definite. Mirrors
+        `dvcorr.estimators.velocity_frame_dipole.VelocityFrameShellDipoleResult
+        .per_center_speed`, which holds the full |v_alpha| for the
+        observer-free frame.
     n_candidates : int
         Number of candidate centers passed in, before the core cut.
     n_centers : int
@@ -615,7 +660,8 @@ class VelocityCenteredShellDipoleResult:
     Cross-check invariants that hold by construction:
     `dipole == per_center_dipole.sum(axis=0)`,
     `pair_count == per_center_count.sum(axis=0)`,
-    `monopole == (per_center_u[:, None] * per_center_count).sum(axis=0)`.
+    `monopole == (per_center_speed[:, None] * per_center_count).sum(axis=0)`,
+    `per_center_speed == np.abs(per_center_u)`.
     """
 
     shell_edges: np.ndarray
@@ -627,6 +673,7 @@ class VelocityCenteredShellDipoleResult:
     per_center_amplitude: np.ndarray
     per_center_count: np.ndarray
     per_center_u: np.ndarray
+    per_center_speed: np.ndarray
     n_candidates: int
     n_centers: int
 
@@ -644,14 +691,45 @@ def velocity_centered_shell_dipole(
     over many velocity-object centers.
 
     For each surviving center alpha: n_hat_V,alpha = observer -> s_alpha,
-    u_alpha = v_alpha . n_hat_V,alpha. For each shell b, sum the real l=1,
-    m=0 spherical harmonic over the tracers in that shell,
+    u_alpha = v_alpha . n_hat_V,alpha, and the polar axis
+
+        z_hat_alpha = sign(u_alpha) * n_hat_V,alpha
+
+    -- the direction the center is MOVING along its line of sight, not the
+    line of sight itself (conventions.VELOCITY_AXIS_CONVENTION; one
+    definition site, `dvcorr.geometry.radial_flow_axis`). For each shell b,
+    sum the real l=1, m=0 spherical harmonic over the tracers in that shell,
 
         A_alpha,b = sum_{i in b} Y_10(n_hat_i)
-                  = sqrt(3/4pi) * sum_{i in b} (n_hat_V,alpha . n_hat_i)
+                  = sqrt(3/4pi) * sum_{i in b} (z_hat_alpha . n_hat_i)
 
     with n_hat_i the unit vector FROM alpha TO tracer i (see Orientation
-    below), then accumulate u_alpha * A_alpha,b, stacked over centers.
+    below), then accumulate |u_alpha| * A_alpha,b -- the SPEED, since the
+    sign is already carried by z_hat_alpha -- stacked over centers.
+
+    Axis sign -- why the plotted dipole does not move, and what does
+    ------------------------------------------------------------------
+    Flipping z_hat_alpha flips A_alpha,b, and the weight |u_alpha| carries
+    the matching flip, so
+
+        |u_alpha| * A(z_hat_alpha) == u_alpha * A(n_hat_V,alpha)
+
+    identically, center by center. `dipole` (and hence zeta_hat_1) is
+    therefore NUMERICALLY UNCHANGED by the signed axis. That invariance is
+    the point, not a reason to skip the change: it says the two readings
+    agree on the science curve, and it is what makes the sign gate below
+    still valid. What DOES change is everything the axis sign was previously
+    smuggled into:
+
+      - `monopole` becomes Sigma |u_alpha| N_alpha,b, sitting near <|u|>
+        instead of near zero (see the dataclass docstring);
+      - `per_center_amplitude` is now measured against the flow direction,
+        so its sign is physical rather than an artifact of which side of the
+        observer the center happens to sit on;
+      - the shuffle null must permute the SIGNED u_alpha after undoing the
+        flip, since permuting a positive-definite weight against an
+        unchanged amplitude is not a null at all (dataclass docstring;
+        `dvcorr.pipeline.velocity_centered.normalize_result`).
 
     Orientation -- READ THIS BEFORE CHANGING ANYTHING HERE
     ----------------------------------------------------------
@@ -670,12 +748,12 @@ def velocity_centered_shell_dipole(
 
         cos_theta = mu_cosine(unit_vector(r_vec), n_hat_V_alpha)
 
-    `mu_cosine` is a plain row-wise dot product; passing n_hat_V (this
-    center's OWN line of sight) instead of n_hat_T (the frozen convention's
-    density-object line of sight) is the second deliberate substitution. The
-    resulting cos_theta is therefore NOT conventions.MU_CONVENTION's frozen mu --
-    same primitives, different orientation and different reference
-    direction, by design.
+    `mu_cosine` is a plain row-wise dot product; passing z_hat_alpha (this
+    center's own flow-signed axis, `radial_flow_axis`) instead of n_hat_T
+    (the frozen convention's density-object line of sight) is the second
+    deliberate substitution. The resulting cos_theta is therefore NOT
+    conventions.MU_CONVENTION's frozen mu -- same primitives, different
+    orientation and different reference direction, by design.
 
     Multipole relation: zeta_ell = (-1)**ell * xi_Tu,ell
     (conventions.nusser_multipole_sign). Monopoles agree; dipoles are opposite in
@@ -686,8 +764,8 @@ def velocity_centered_shell_dipole(
 
     Rotated per-center frame
     -----------------------------
-    Each center's frame has z_hat = n_hat_V,alpha; only the l=1, m=0 term is
-    computed, and it depends on z_hat alone -- the transverse (x_hat, y_hat)
+    Each center's frame has z_hat = sign(u_alpha) * n_hat_V,alpha; only the
+    l=1, m=0 term is computed, and it depends on z_hat alone -- the transverse (x_hat, y_hat)
     axes are unconstrained and never needed, so no rotation matrix is ever
     formed (see `real_y10`'s docstring on why m=+-1 is out of scope).
 
@@ -753,6 +831,15 @@ def velocity_centered_shell_dipole(
     `shell_dipole`'s coincident-neighbor case. It is only reached when
     shell_edges[0] == 0; otherwise r_mag = 0 falls below the innermost edge
     and is excluded.
+
+    A center whose velocity is exactly TRANSVERSE (u_alpha == 0) has an
+    undefined flow axis: `radial_flow_axis` returns a zero row, so every
+    cos_theta is 0 and A_alpha,b = 0. Its weight |u_alpha| is 0 as well, so
+    it contributes nothing to `dipole` or `monopole` -- exactly as it did
+    before the axis was signed (its signed weight was 0 then too). Not a new
+    degenerate case, and not an error here; it still occupies a row in the
+    `per_center_*` arrays and so dilutes `center_standard_error`, the same
+    caveat as any zero-weight center.
 
     One `scipy.spatial.cKDTree` is built on `s_tracers` and reused across all
     surviving centers; the per-center loop is over CENTRES (each needs its
@@ -821,7 +908,12 @@ def velocity_centered_shell_dipole(
 
     if n_centers > 0:
         n_hat_V = unit_vector(s_survivors - observer)                # (N_c, 3)
-        per_center_u = np.einsum("ij,ij->i", v_survivors, n_hat_V)   # (N_c,)
+        # z_hat = sign(u) * n_hat_V: the axis points along the center's own
+        # RADIAL MOTION, not along its line of sight
+        # (conventions.VELOCITY_AXIS_CONVENTION, one definition site in
+        # geometry.radial_flow_axis). per_center_u stays SIGNED; the weight
+        # applied below is its absolute value.
+        z_hat, per_center_u = radial_flow_axis(v_survivors, n_hat_V)
 
         tree = cKDTree(s_tracers) if s_tracers.shape[0] > 0 else None
 
@@ -838,7 +930,7 @@ def velocity_centered_shell_dipole(
             # of pair_separation gives r_vec = s_tracer - s_alpha, center ->
             # tracer -- see the Orientation section of this docstring.
             r_vec, r_mag = pair_separation(s_alpha, s_near)
-            cos_theta = mu_cosine(unit_vector(r_vec), n_hat_V[a])
+            cos_theta = mu_cosine(unit_vector(r_vec), z_hat[a])
 
             in_range = (r_mag >= edges[0]) & (r_mag <= edges[-1])
             bin_index = np.digitize(r_mag, edges) - 1
@@ -850,10 +942,14 @@ def velocity_centered_shell_dipole(
             per_center_count[a] = np.bincount(b, minlength=n_bins)[:n_bins].astype(float)
             per_center_amplitude[a] = np.bincount(b, weights=y10_in, minlength=n_bins)[:n_bins]
 
-    per_center_dipole = per_center_u[:, None] * per_center_amplitude
+    # The SPEED |u_alpha| is the weight; the sign already lives in z_hat, and
+    # entering it twice would cancel the statistic.
+    per_center_speed = np.abs(per_center_u)
+
+    per_center_dipole = per_center_speed[:, None] * per_center_amplitude
 
     pair_count = per_center_count.sum(axis=0)
-    monopole = (per_center_u[:, None] * per_center_count).sum(axis=0)
+    monopole = (per_center_speed[:, None] * per_center_count).sum(axis=0)
     dipole = per_center_dipole.sum(axis=0)
 
     return VelocityCenteredShellDipoleResult(
@@ -866,6 +962,7 @@ def velocity_centered_shell_dipole(
         per_center_amplitude=per_center_amplitude,
         per_center_count=per_center_count,
         per_center_u=per_center_u,
+        per_center_speed=per_center_speed,
         n_candidates=n_candidates,
         n_centers=n_centers,
     )

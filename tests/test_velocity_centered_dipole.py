@@ -205,6 +205,20 @@ def test_amplitude_matches_independent_geometry_and_pins_the_reversal():
     observer = np.asarray(conventions.OBSERVER_POSITION, dtype=float)
     n_hat_V = unit_vector(vc_centers - observer)  # (N_SHELL, 3)
 
+    # The reference direction is the FLOW-SIGNED axis, z_hat = sign(u) n_hat_V
+    # (conventions.VELOCITY_AXIS_CONVENTION), assembled here from the raw dot
+    # product rather than by calling geometry.radial_flow_axis, so this stays
+    # an INDEPENDENT path rather than a re-run of the estimator's own helper.
+    u_manual = np.einsum("ij,ij->i", vc_velocities, n_hat_V)  # (N_SHELL,)
+    z_hat = np.sign(u_manual)[:, None] * n_hat_V              # (N_SHELL, 3)
+
+    # The toy must actually exercise the flip, or this test would pass just as
+    # well against the old unsigned axis: an infall shell has members falling
+    # toward the observer AND away from it.
+    assert np.any(u_manual > 0.0) and np.any(u_manual < 0.0)
+    np.testing.assert_allclose(result.per_center_u, u_manual, atol=1e-10)
+    np.testing.assert_allclose(result.per_center_speed, np.abs(u_manual), atol=1e-10)
+
     # (1) Independent hand-assembled path, through the SAME primitives the
     # estimator uses internally. pair_separation(s_center, vc_centers) with
     # the shared tracer in the "center" slot returns vc_centers - s_center,
@@ -212,19 +226,154 @@ def test_amplitude_matches_independent_geometry_and_pins_the_reversal():
     # pair); its negation is the REVERSED center -> tracer direction the
     # estimator actually uses.
     r_frozen_vec, _ = pair_separation(s_center, vc_centers)  # tracer -> center, (N_SHELL, 3)
-    cos_theta = mu_cosine(unit_vector(-r_frozen_vec), n_hat_V)
+    cos_theta = mu_cosine(unit_vector(-r_frozen_vec), z_hat)
     y10_norm = np.sqrt(3.0 / (4.0 * np.pi))
     a_manual = y10_norm * cos_theta
 
     np.testing.assert_allclose(result.per_center_amplitude[:, 0], a_manual, atol=1e-10)
 
     # (2) The frozen orientation itself (r = s_V - s_T, tracer -> center),
-    # same reference direction n_hat_V, must be the exact negative.
-    mu_frozen = mu_cosine(unit_vector(r_frozen_vec), n_hat_V)
+    # same reference direction z_hat, must be the exact negative.
+    mu_frozen = mu_cosine(unit_vector(r_frozen_vec), z_hat)
 
     np.testing.assert_allclose(cos_theta, -mu_frozen, atol=1e-12)
     a_from_frozen = -y10_norm * mu_frozen
     np.testing.assert_allclose(result.per_center_amplitude[:, 0], a_from_frozen, atol=1e-10)
+
+    # (3) The axis sign is what separates this from the unsigned-axis reading:
+    # against the bare n_hat_V the amplitude differs by exactly sign(u), and
+    # the per-center DIPOLE is invariant under that flip because the weight
+    # |u| flips with it (velocity_centered_shell_dipole's "Axis sign" section).
+    a_unsigned = y10_norm * mu_cosine(unit_vector(-r_frozen_vec), n_hat_V)
+    np.testing.assert_allclose(
+        result.per_center_amplitude[:, 0], np.sign(u_manual) * a_unsigned, atol=1e-10
+    )
+    np.testing.assert_allclose(
+        result.per_center_dipole[:, 0], u_manual * a_unsigned, atol=1e-10
+    )
+
+
+# ---------------------------------------------------------------------------
+# Flow-signed axis: z_hat = sign(u) n_hat_V, weight |u|
+# ---------------------------------------------------------------------------
+
+
+class TestFlowSignedAxis:
+    """`conventions.VELOCITY_AXIS_CONVENTION`, pinned on real numbers.
+
+    The axis is the direction the center is MOVING along its line of sight,
+    not the line of sight itself, and the companion weight is the radial
+    SPEED |u|. These pin the three consequences that are not visible in the
+    dipole curve (which is invariant under the flip -- see
+    `test_dipole_is_invariant_under_the_axis_flip`).
+    """
+
+    def test_inbound_center_is_axed_back_toward_the_observer(self):
+        """A center approaching the observer must get z_hat = -n_hat_V.
+
+        One center on the +x line of sight with a velocity pointing back at
+        the observer. A tracer placed BETWEEN the observer and the center --
+        i.e. ahead of the flow -- must give a POSITIVE amplitude, because it
+        lies along +z_hat. Under the old unsigned axis the same tracer sat at
+        cos_theta = -1 and gave a negative amplitude.
+        """
+        observer = np.asarray(conventions.OBSERVER_POSITION, dtype=float)
+        s_center = (observer + np.array([200.0, 0.0, 0.0]))[None, :]
+        v_center = np.array([[-300.0, 0.0, 0.0]])  # inbound: u < 0
+
+        tracer_ahead = s_center[0] - np.array([15.0, 0.0, 0.0])  # toward the observer
+        result = velocity_centered_shell_dipole(
+            s_centers=s_center,
+            v_centers=v_center,
+            s_tracers=tracer_ahead[None, :],
+            shell_edges=np.array([10.0, 20.0]),
+            sub_volume_radius=conventions.MAX_ANALYSIS_RADIUS,
+        )
+
+        assert result.per_center_u[0] == pytest.approx(-300.0)
+        assert result.per_center_speed[0] == pytest.approx(300.0)
+        # cos_theta = +1: the tracer is directly ahead of the motion.
+        assert result.per_center_amplitude[0, 0] == pytest.approx(np.sqrt(3.0 / (4.0 * np.pi)))
+        assert result.dipole[0] > 0.0
+
+    def test_monopole_is_the_speed_weighted_occupancy(self):
+        """monopole == Sigma |u| N, hence non-negative -- not Sigma u N."""
+        vc_centers, vc_velocities, vc_tracers = _joint_gate_toy()
+        result = velocity_centered_shell_dipole(
+            s_centers=vc_centers,
+            v_centers=vc_velocities,
+            s_tracers=vc_tracers,
+            shell_edges=np.array([0.5 * R_SHELL, 1.5 * R_SHELL]),
+            sub_volume_radius=_VC_SUB_VOLUME_RADIUS,
+        )
+
+        np.testing.assert_allclose(
+            result.monopole,
+            (result.per_center_speed[:, None] * result.per_center_count).sum(axis=0),
+        )
+        np.testing.assert_allclose(result.per_center_speed, np.abs(result.per_center_u))
+        assert np.all(result.monopole >= 0.0)
+        # The signed sum it replaces is a genuinely different number here:
+        # the toy's u values straddle zero, so it very nearly cancels.
+        signed_monopole = (result.per_center_u[:, None] * result.per_center_count).sum(axis=0)
+        assert abs(signed_monopole[0]) < result.monopole[0]
+
+    def test_dipole_is_invariant_under_the_axis_flip(self):
+        """|u| * A(z_hat) == u * A(n_hat_V), center by center.
+
+        The identity behind `velocity_centered_shell_dipole`'s "Axis sign"
+        section: the science curve does not move, which is what keeps the
+        joint sign gate valid across the change. Checked against a hand-built
+        unsigned-axis amplitude rather than asserted in prose.
+        """
+        vc_centers, vc_velocities, vc_tracers = _joint_gate_toy()
+        result = velocity_centered_shell_dipole(
+            s_centers=vc_centers,
+            v_centers=vc_velocities,
+            s_tracers=vc_tracers,
+            shell_edges=np.array([0.5 * R_SHELL, 1.5 * R_SHELL]),
+            sub_volume_radius=_VC_SUB_VOLUME_RADIUS,
+        )
+
+        observer = np.asarray(conventions.OBSERVER_POSITION, dtype=float)
+        n_hat_V = unit_vector(vc_centers - observer)
+        r_vec, _ = pair_separation(vc_tracers[0], vc_centers)  # tracer -> center
+        y10_norm = np.sqrt(3.0 / (4.0 * np.pi))
+        a_unsigned = y10_norm * mu_cosine(unit_vector(-r_vec), n_hat_V)
+        u_signed = np.einsum("ij,ij->i", vc_velocities, n_hat_V)
+
+        np.testing.assert_allclose(
+            result.per_center_dipole[:, 0], u_signed * a_unsigned, atol=1e-10
+        )
+
+    def test_transverse_velocity_leaves_the_axis_undefined_and_contributes_nothing(self):
+        """u == 0 gives a zero axis and a zero weight -- no NaN, no crash.
+
+        Documented degenerate case (`velocity_centered_shell_dipole`'s
+        Notes): a center moving exactly across the line of sight has no
+        radial motion to define an axis with, and no radial speed to weight
+        by, so it contributes nothing rather than injecting a NaN.
+        """
+        observer = np.asarray(conventions.OBSERVER_POSITION, dtype=float)
+        s_center = (observer + np.array([200.0, 0.0, 0.0]))[None, :]
+        v_center = np.array([[0.0, 400.0, 0.0]])  # exactly transverse: u == 0
+
+        tracer = s_center[0] + np.array([0.0, 0.0, 15.0])
+        result = velocity_centered_shell_dipole(
+            s_centers=s_center,
+            v_centers=v_center,
+            s_tracers=tracer[None, :],
+            shell_edges=np.array([10.0, 20.0]),
+            sub_volume_radius=conventions.MAX_ANALYSIS_RADIUS,
+        )
+
+        assert result.per_center_u[0] == pytest.approx(0.0)
+        assert result.per_center_speed[0] == pytest.approx(0.0)
+        assert result.pair_count[0] == 1.0          # occupancy is pure geometry
+        assert result.per_center_amplitude[0, 0] == 0.0
+        assert result.dipole[0] == 0.0
+        assert result.monopole[0] == 0.0
+        assert np.all(np.isfinite(result.dipole))
 
 
 # ---------------------------------------------------------------------------
@@ -556,9 +705,14 @@ def test_core_margin_reduces_outer_shell_truncation_bias():
 
 
 def test_shuffle_null_collapses_the_stacked_dipole():
-    """Permuting u among centers and recombining with the SAME amplitudes
-    kills the stacked dipole -- no second estimator pass needed, mirroring
-    the production script's shuffle null.
+    """Undoing the axis flip and permuting the SIGNED u kills the stacked
+    dipole -- no second estimator pass needed, mirroring exactly what
+    `dvcorr.pipeline.velocity_centered.normalize_result` builds.
+
+    The undo step is load-bearing, not bookkeeping: the axis is
+    z_hat = sign(u) n_hat_V, so `per_center_amplitude` already carries that
+    sign. `test_permuting_the_speed_alone_is_not_a_null` below is the
+    companion that shows what happens without it.
     """
     vc_centers, vc_velocities, vc_tracers = _joint_gate_toy()
     shell_edges = np.array([0.5 * R_SHELL, 1.5 * R_SHELL])
@@ -573,12 +727,45 @@ def test_shuffle_null_collapses_the_stacked_dipole():
 
     rng = np.random.default_rng(20260723)
     perm = rng.permutation(result.per_center_u.size)
-    shuffled_dipole = (
-        result.per_center_u[perm][:, None] * result.per_center_amplitude
-    ).sum(axis=0)
+    fixed_axis_amplitude = np.sign(result.per_center_u)[:, None] * result.per_center_amplitude
+    shuffled_dipole = (result.per_center_u[perm][:, None] * fixed_axis_amplitude).sum(axis=0)
 
     shuffle_null_fraction = 0.2  # shuffled dipole must collapse below this fraction
     assert abs(shuffled_dipole[0]) < shuffle_null_fraction * abs(result.dipole[0])
+
+
+def test_permuting_the_speed_alone_is_not_a_null():
+    """The obvious one-line "null" -- permute the positive weight against the
+    untouched amplitudes -- must NOT collapse, and this pins that.
+
+    With the flow-signed axis the weight is |u_alpha| >= 0, so permuting it
+    among centers leaves every A_alpha,b (and hence the alignment that
+    produced the signal) exactly where it was; the recombined stack retains
+    ~<|u|> * Sigma A, essentially the signal. This is the same trap
+    `dvcorr.pipeline.velocity_frame_comparison.run_random_axis_null`
+    documents for the velocity frame, and the reason `normalize_result`
+    undoes the axis flip first. If this test ever starts collapsing, the
+    axis sign has been dropped from `per_center_amplitude`.
+    """
+    vc_centers, vc_velocities, vc_tracers = _joint_gate_toy()
+    shell_edges = np.array([0.5 * R_SHELL, 1.5 * R_SHELL])
+
+    result = velocity_centered_shell_dipole(
+        s_centers=vc_centers,
+        v_centers=vc_velocities,
+        s_tracers=vc_tracers,
+        shell_edges=shell_edges,
+        sub_volume_radius=_VC_SUB_VOLUME_RADIUS,
+    )
+
+    rng = np.random.default_rng(20260723)
+    perm = rng.permutation(result.per_center_speed.size)
+    fake_null = (result.per_center_speed[perm][:, None] * result.per_center_amplitude).sum(axis=0)
+
+    # Not a null at all: it keeps most of the signal rather than collapsing.
+    retained_fraction = 0.5
+    assert abs(fake_null[0]) > retained_fraction * abs(result.dipole[0])
+    assert np.sign(fake_null[0]) == np.sign(result.dipole[0])
 
 
 # ---------------------------------------------------------------------------

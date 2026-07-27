@@ -60,6 +60,14 @@ contracts: `(3,)` one vector, `(N, 3)` many, `(N,)` scalars-per-object; a functi
   frozen `r = s_V − s_T`. Plain Euclidean; **no minimum-image** (see PBC note below).
 - `mu_cosine(r_hat, n_T_hat)` — `µ = n̂_T · r̂`, row-wise dot, clipped to `[-1, 1]`. Does
   not normalize its inputs.
+- `radial_flow_axis(v, n_hat_los) -> (z_hat, u)` — **the one definition site of `ẑ`** for
+  every velocity-centered construction (`dvcorr.conventions.VELOCITY_AXIS_CONVENTION`):
+  `u = v · n̂_los` (signed), `ẑ = sign(u) · n̂_los`. The axis follows the object's **motion**
+  along the line of sight, not the line of sight itself — a halo approaching the observer has
+  `ẑ = −r̂`. The companion weight is the **speed** `|u|`, never the signed `u`: the sign lives
+  in the axis now, and entering it twice cancels the statistic. `u == 0` (purely transverse
+  motion) returns a zero axis row — undefined, not invented; that object also carries weight
+  `|u| = 0` and so contributes nothing.
 
 **PBC contract (important):** these primitives do *not* apply the minimum-image convention.
 Periodicity is discharged upstream by carving a sub-volume around each center and unwrapping
@@ -163,10 +171,20 @@ the same file (the module docstring is extended additively; `shell_dipole` /
 `ShellDipoleResult` are untouched — frozen as the simulation-validation cross-check). A
 velocity object α is the center; density tracers are counted in shells around it. Uses the
 REVERSED separation (center → tracer, the negative of the frozen `r = s_V − s_T`) and the
-reference direction `n̂_V` (not the frozen `n̂_T`) — same primitives (`pair_separation`,
-`unit_vector`, `mu_cosine`), different orientation, by design. Related to `xi_Tu` by
+**flow-signed axis** `ẑ_α = sign(u_α)·n̂_V,α` from `geometry.radial_flow_axis` (not the frozen
+`n̂_T`, and not the bare `n̂_V`) — same primitives (`pair_separation`, `unit_vector`,
+`mu_cosine`), different orientation, by design. Related to `xi_Tu` by
 `ζ_ℓ = (−1)^ℓ ξ_Tu,ℓ` (`dvcorr.conventions.nusser_multipole_sign`): monopoles agree, dipoles
 flip — coherent infall gives `ξ_Tu,1 < 0` and therefore `ζ_1 > 0`.
+
+**Axis sign — what it moves and what it does not.** The per-center weight is the radial
+**speed** `|u_α|`, since the sign now rides on `ẑ_α`. Flipping `ẑ` flips `A_α,b`, and the
+weight flips with it, so `|u_α|·A(ẑ_α) ≡ u_α·A(n̂_V,α)`: **`dipole` and the plotted `ζ̂₁` are
+numerically unchanged** by the signed axis, which is what keeps the joint sign gate valid
+across the change. What *does* change: `monopole` becomes `Σ|u_α|N_α,b` and so sits near
+`⟨|u|⟩` rather than near zero; `per_center_amplitude` is measured against the flow direction,
+so its sign is physical rather than an artifact of which side of the observer the center sits
+on; and the shuffle null must undo the flip before permuting (see `normalize_result` below).
 
 - `real_y10(direction_cosine) -> (N,)` — real ℓ=1, m=0 spherical harmonic,
   `√(3/4π)·cosθ`; pure numpy, pinned against `scipy.special.sph_harm_y`. m=±1 out of scope
@@ -183,9 +201,14 @@ flip — coherent infall gives `ξ_Tu,1 < 0` and therefore `ζ_1 > 0`.
   the true uncertainty; mock covariance is the eventual replacement).
 - `VelocityCenteredShellDipoleResult` (frozen dataclass): `shell_edges (B+1,)`,
   `shell_centers (B,)`, `pair_count (B,)`, `monopole (B,)`, `dipole (B,)` — all raw sums,
-  stacked over centers — plus `per_center_dipole/amplitude/count (N_c, B)` and
-  `per_center_u (N_c,)` for a downstream error band / shuffle null without a second pass,
-  and `n_candidates`, `n_centers` (int) so the core cut's volume loss is visible.
+  stacked over centers — plus `per_center_dipole/amplitude/count (N_c, B)`,
+  `per_center_u (N_c,)` (the **signed** `u_α`, retained because its sign is the only record
+  of which way `ẑ_α` was flipped, which the null needs to undo it) and
+  `per_center_speed (N_c,)` (`|u_α|`, the weight actually applied) for a downstream error
+  band / shuffle null without a second pass, and `n_candidates`, `n_centers` (int) so the
+  core cut's volume loss is visible. Invariants by construction:
+  `monopole == (per_center_speed[:, None] * per_center_count).sum(axis=0)` and
+  `per_center_speed == np.abs(per_center_u)`.
 - `velocity_centered_shell_dipole(s_centers, v_centers, s_tracers, shell_edges, sub_volume_radius, core_margin=None, observer=None)`:
   applies `core_center_mask`; builds one `cKDTree` on `s_tracers`, loops over surviving
   centers (`query_ball_point`), vectorized inner work per center
@@ -210,23 +233,29 @@ unit_vector`, and reuses `core_center_mask` / `real_y10` from `shell_dipole.py` 
 and the same `real_y10`/binning machinery as the observer frame; the ONLY differences are the
 axis and the scalar:
 
-- axis: `z_hat_alpha = unit_vector(v_alpha)` (the center's OWN flow direction) instead of
-  `n_hat_V,alpha = unit_vector(s_alpha − observer)`.
-- scalar: `speed_alpha = |v_alpha|` (positive-definite) instead of the observer-frame radial
-  projection `u_alpha = v_alpha · n̂_V,alpha`.
+- axis: `z_hat_alpha = unit_vector(v_alpha)` (the center's **full** flow direction) instead of
+  the observer frame's radial projection of it, `ẑ_obs,α = sign(u_α)·n̂_V,α`.
+- scalar: `speed_alpha = |v_alpha|` instead of the observer frame's radial speed `|u_alpha|`.
+
+Both frames are therefore the same construction — axis along the motion, weight the speed
+along that axis — differing only in full 3-vector vs. radial projection.
 
 **Observer role:** the observer enters this estimator in exactly two places, both
 deliberate — (a) `core_center_mask`, reused identically to the observer frame so both frames
 see the identical candidate set before either estimator runs, and (b) the diagnostic
-`per_center_axis_angle = arccos(clip(z_hat_alpha · n̂_V,alpha, −1, 1))`, which never feeds
+`per_center_axis_angle = arccos(clip(z_hat_alpha · ẑ_obs,α, −1, 1))` — measured against the
+observer frame's **signed** axis, so `cos δ = |u_α|/|v_α| ≥ 0` and `δ ∈ [0, π/2]`, a ceiling
+the function **checks** (`RuntimeError` past float slack) rather than assumes. It never feeds
 back into `dipole`/`monopole`/`per_center_dipole`/`per_center_amplitude`. Outside those two
 places there is no observer in the module at all — that is the entire point of the variant.
 
 - `VelocityFrameShellDipoleResult` (frozen dataclass): mirrors
   `VelocityCenteredShellDipoleResult` field-for-field (`shell_edges`, `shell_centers`,
-  `pair_count`, `monopole`, `dipole`, the `per_center_*` breakdown, `n_candidates`,
-  `n_centers`), with `per_center_speed (N_c,)` in place of `per_center_u`, plus
-  `per_center_axis_angle (N_c,)` (radians, `[0, π]`) — the pure diagnostic above. Invariants
+  `pair_count`, `monopole`, `dipole`, the `per_center_*` breakdown including
+  `per_center_speed (N_c,)`, `n_candidates`, `n_centers`) — the frames differ in what
+  `per_center_speed` HOLDS (`|v_α|` here, `|u_α|` there), and there is no `per_center_u` here
+  (no axis sign to record). Adds `per_center_axis_angle (N_c,)` (radians, `[0, π/2]`) — the
+  pure diagnostic above, with no observer-frame analogue. Invariants
   by construction: `dipole == per_center_dipole.sum(axis=0)`,
   `pair_count == per_center_count.sum(axis=0)`,
   `monopole == (per_center_speed[:, None] * per_center_count).sum(axis=0)`.
@@ -244,14 +273,23 @@ places there is no observer in the module at all — that is the entire point of
   two frames coincide exactly in the pure-radial-flow limit (see
   `tests/test_velocity_frame_dipole.py`'s frame-agreement test). A negative dipole from an
   infall mock is an orientation bug, not a result.
-- **Monopole:** `Σ_alpha |v_alpha| · N_alpha,b` is FLAT in `r` for a complete shell but offset
-  to roughly the mean halo speed `⟨|v|⟩` (hundreds of km/s), not to zero, because `|v|` is
-  positive-definite and cannot cancel across centers the way the observer frame's signed
-  `u_alpha` does. The diagnostic content is the ABSENCE of the observer frame's r-dependent
-  `2r/3R` finite-distance leakage trend, not proximity to zero — see the module docstring's
-  Monopole section for the full argument, consumed by
-  `dvcorr.pipeline.velocity_frame_comparison.make_comparison_figure`'s twin-axis monopole
-  panel.
+- **Monopole:** `Σ_alpha |v_alpha| · N_alpha,b` is offset to roughly the mean halo speed
+  `⟨|v|⟩` (hundreds of km/s), not to zero, because `|v|` is positive-definite and has no
+  near/far cancellation available to it. Since the axis was signed, the observer frame's
+  monopole shares that property (its weight is likewise a speed, `|u_α|`, so it sits near
+  `⟨|u|⟩`) — the two are now the same *kind* of quantity, a projection factor apart. Neither
+  is flat on a clustered field: both inherit the `1+ξ_hh(r)` occupancy ratio, and dividing it
+  out leaves the **same** speed–density correlation in both (−7.9% / −7.8% on the first MDPL2
+  run with the signed axis).
+- ⚠️ **The `2r/3R` finite-distance leakage is no longer visible in either monopole.** It is a
+  *signed* effect that lived in `Σu_α N_α,b` — a quantity near zero, so an ~11 km/s trend
+  stood out against it — and `|u|` discards exactly that sign. This is a real loss of ℓ=0
+  diagnostic content, and it is why `per_center_u` is retained **signed**: the leakage
+  diagnostic is recoverable as `(per_center_u[:, None] * per_center_count).sum(axis=0)`,
+  normalized like `monopole`. Notebook 06's summary cell prints it alongside the
+  speed-weighted pair, and the trend still survives the occupancy division there. Promote that
+  line to a library function if it becomes a routine pipeline step rather than a notebook
+  read-out. See the module docstring's Monopole section for the full argument.
 
 ---
 
@@ -319,13 +357,20 @@ backend (e.g. an inline one) it already has.
   already-built by the caller, rather than constructed inside this function.
   `zeta_hat_shuffle`/`sem_shuffle` on the returned `NormalizedDipole` name "whatever null the
   caller built", not specifically a scalar permutation.
-- `normalize_result(result, n_bar, shuffle_seed) -> NormalizedDipole` — UNCHANGED public
-  signature, return type, and numerical output. Now builds the velocity-shuffle null (a
-  seeded permutation of `per_center_u` recombined with `per_center_amplitude`, no second
-  estimator pass) and delegates the arithmetic to `normalize_stacked_dipole`.
+- `normalize_result(result, n_bar, shuffle_seed) -> NormalizedDipole` — builds the
+  velocity-shuffle null and delegates the arithmetic to `normalize_stacked_dipole`. The null
+  **undoes the axis flip first** — `np.sign(per_center_u) * per_center_amplitude` recovers the
+  amplitude against the fixed `+n̂_V,α` — and then permutes the **signed** `per_center_u`
+  against that; still no second estimator pass. The undo is load-bearing, not bookkeeping:
+  permuting the positive-definite `per_center_speed` against untouched amplitudes is **not a
+  null at all** (it retains the signal — the same trap `run_random_axis_null` documents for
+  the velocity frame, pinned by `test_permuting_the_speed_alone_is_not_a_null`). Numerically
+  the null curve is unchanged from the pre-signed-axis version, since `sign(u)·A = A(n̂_V)`.
 - `make_figure(cfg, result, normalized) -> Figure` — the two-panel figure (ζ̂₁ with SEM +
   shuffle null; the normalized monopole companion below, hard rule 6); builds and returns
-  only, never saves or calls `plt.show`.
+  only, never saves or calls `plt.show`. The monopole panel carries **no zero reference
+  line**: with the `|u_α|` weight the curve sits near `⟨|u|⟩`, and a `y=0` line would only
+  compress the axis and imply a reference that no longer applies.
 
 `src/dvcorr/pipeline/__init__.py` is a one-line docstring; no public re-exports needed — there
 are now two pipeline modules (`velocity_centered.py` and `velocity_frame_comparison.py`, the
@@ -367,12 +412,14 @@ Same matplotlib-backend discipline as `velocity_centered.py` (never calls `matpl
   — replaces each center's velocity DIRECTION with an isotropic random unit vector
   (`np.random.default_rng(cfg.axis_null_seed)`) while keeping its speed and position, then
   reruns `velocity_frame_shell_dipole`. Why this null and not a scalar shuffle: the
-  velocity-frame statistic is SELF-ALIGNED (the axis is built from the same vector that
-  supplies the scalar), so permuting `|v_alpha|` among centers leaves every center's
-  axis-density alignment intact and retains essentially the signal itself (`|v|` is
-  positive-definite, unlike the observer frame's `u_alpha` which averages to ~0). Randomizing
-  the AXIS is the actual guard against align-then-measure bias; it costs one extra estimator
-  pass, deliberately.
+  velocity-frame statistic is FULLY SELF-ALIGNED (the axis is built entirely from the same
+  vector that supplies the scalar), so permuting `|v_alpha|` among centers leaves every
+  center's axis-density alignment intact and retains essentially the signal itself. The
+  observer frame is only PARTIALLY self-aligned — it takes a *sign* from `u_α` and its *line*
+  from the center's position — so once that sign is divided back out, a signed-scalar
+  permutation still works there (`normalize_result`); here there is no position-derived
+  remainder to hold fixed. Randomizing the AXIS is the actual guard against
+  align-then-measure bias; it costs one extra estimator pass, deliberately.
 - `FrameRunResults` (frozen dataclass): `obs_result`, `vel_result`, `vel_null_result`,
   `centers`.
 - `normalize_velocity_frame_result(result, null_result, n_bar) -> NormalizedDipole` — thin
@@ -388,13 +435,17 @@ Same matplotlib-backend discipline as `velocity_centered.py` (never calls `matpl
 - `make_comparison_figure(cfg, results, comparison) -> Figure` — the main deliverable: top
   panel overlays both frames' ζ̂₁ with SEM bands and their own (differently-constructed) nulls;
   bottom panel plots both frames' monopoles on a TWIN y-axis (obs left, vel right, each
-  y-label colored to match), because the two monopoles sit at incomparable offsets (near zero
-  vs. near `⟨|v|⟩`) by construction — a shared axis would hide the presence/absence of the
-  r-dependent leakage trend that is the comparison's core finite-distance diagnostic.
+  y-label colored to match). Neither curve sits at zero any more — both frames weight by a
+  speed (`⟨|u|⟩` and `⟨|v|⟩` respectively) — but they remain a projection factor apart, so a
+  shared axis would compress the smaller one and hide the presence/absence of the r-dependent
+  leakage trend that is the comparison's core finite-distance diagnostic. Neither panel
+  carries a zero reference line.
 - `make_angle_diagnostic_figure(cfg, comparison) -> Figure` — top panel bins
-  `per_center_dipole_difference` by `per_center_delta` (`_N_ANGLE_BINS` bins over `[0, π]`,
-  degrees on the axis) with an SEM errorbar over a scatter of individual centers; bottom panel
-  histograms `delta` against the isotropic `P(delta) ∝ sin(delta)` reference. A few high-delta
+  `per_center_dipole_difference` by `per_center_delta` (`_N_ANGLE_BINS` bins over `[0, π/2]`,
+  degrees on the axis, `_MAX_ANGLE_DEG = 90`) with an SEM errorbar over a scatter of individual
+  centers; bottom panel histograms `delta` against the isotropic reference, which for the
+  signed axis is `P(delta) ∝ sin(delta)` on `[0, π/2]` (`cos δ = |c|`, `c` uniform on
+  `[-1, 1]`). A few high-delta
   outliers driving the top-panel gap ⇒ bulk-flow contamination; a smooth spread ⇒ genuine
   projection geometry; an excess at low delta relative to the isotropic reference ⇒ flow
   directions aligned with the lines of sight (residual bulk motion).
@@ -459,6 +510,9 @@ Usage: `.venv/bin/python -m scripts.plot_velocity_frame_comparison`.
   - `test_reversing_the_pair_vector_flips_the_dipole`, `test_mu_is_a_cosine_and_spans_the_shell`.
   - `TestUnitVector`, `TestPairSeparation`, `TestMuCosine`, `TestPrimitivesCompose` — shapes,
     norms, orientation, clipping, zero handling.
+  - `TestRadialFlowAxis` — the axis convention at its definition site: outbound gives
+    `ẑ = +n̂_los`, inbound gives `ẑ = −n̂_los`, `v · ẑ = |u| ≥ 0` over a random batch, and
+    `u == 0` returns a zero axis row rather than an invented direction.
   - Shared toy helpers `_sphere_directions`, `_infall_shell` (reused by the estimator tests).
 - `tests/test_shell_dipole.py` **[done]** — estimator-level sign gate (reuses `_infall_shell`
   via `from tests.test_geometry import …`), isotropic/velocity-shuffle nulls, binning
@@ -475,6 +529,14 @@ Usage: `.venv/bin/python -m scripts.plot_velocity_frame_comparison`.
   / zero-tracer / zero-surviving-center edge cases; a boundary test showing the default core
   cut reduces the outer-shell truncation-bias residual versus `core_margin=0`; a shuffle
   null; input validation; `center_standard_error` and `core_center_mask` unit checks.
+  `TestFlowSignedAxis` covers the estimator-level consequences of the signed axis: an inbound
+  center is axed back toward the observer (a tracer ahead of the flow gives a POSITIVE
+  amplitude); `monopole == Σ|u|N ≥ 0`, distinct from the signed sum it replaces; the dipole is
+  invariant under the flip (`|u|·A(ẑ) ≡ u·A(n̂_V)`, checked against a hand-built unsigned
+  amplitude); and a purely transverse center (`u == 0`) contributes nothing without a NaN.
+  `test_permuting_the_speed_alone_is_not_a_null` is the companion to the shuffle-null test:
+  it asserts the naive positive-weight permutation does NOT collapse, which is *why*
+  `normalize_result` undoes the axis flip first.
 - `tests/test_velocity_frame_dipole.py` **[done]** — tests for the observer-free
   velocity-frame dipole (`dvcorr.estimators.velocity_frame_dipole`) and its pipeline
   (`dvcorr.pipeline.velocity_frame_comparison`). Imports the shared toys from
@@ -488,8 +550,9 @@ Usage: `.venv/bin/python -m scripts.plot_velocity_frame_comparison`.
   the flow axis, `cos_theta ≡ 1` for every center by construction with no `⟨mu²⟩ = 1/3`
   shell-averaging to undo, so the `3×` used by the observer-frame recovery formula would be a
   spurious factor here, not a correction). Frame-agreement limit: purely radial flow makes the
-  two frames agree exactly for both outbound and inbound velocities (the two sign flips in the
-  inbound case cancel). Pipeline-level degenerate-center handling
+  two frames agree exactly for both outbound and inbound velocities — and with the signed
+  axis their axes now *coincide* in both cases (`delta ≈ 0` for inbound too, where the
+  unsigned reading reported `≈ π`). Pipeline-level degenerate-center handling
   (`select_shared_centers`'s speed floor, reported via `n_dropped_slow`; the estimator's own
   zero-speed `ValueError`). `run_both_frames` row-alignment: identical `n_centers`,
   independently-recomputed per-center scalars, and identical `per_center_count` between
@@ -497,8 +560,10 @@ Usage: `.venv/bin/python -m scripts.plot_velocity_frame_comparison`.
   null-consistent dipole; `run_random_axis_null` collapses the velocity-frame dipole on a
   clustered configuration with a genuine nonzero signal (documenting why a scalar permutation
   is not a valid null for this self-aligned statistic). Binning/empty-input/input-validation
-  mechanics mirroring `test_velocity_centered_dipole.py`. `per_center_axis_angle` shape/range
-  contract plus a hand-checked perpendicular case (`delta == pi/2`).
+  mechanics mirroring `test_velocity_centered_dipole.py`. `per_center_axis_angle` shape and
+  `[0, π/2]` range contract — reconstructed independently as `arccos(|u|/|v|)`, and shown to
+  be a real discriminator (the same random batch exceeds `π/2` against the *unsigned* line of
+  sight) — plus a hand-checked perpendicular case (`delta == pi/2`, delta's ceiling).
 - `tests/test_settings.py` **[done]** — `dvcorr.config` dataclass tests (filename predates
   the `settings.py` → `dvcorr/config/*.py` split; left as-is, not renamed in this pass):
   `PathsConfig` derived paths and `ensure_output_dir` (via `tmp_path`, never the real
@@ -549,11 +614,11 @@ Nothing load-bearing; diagnostics that import the real modules, never reimplemen
   `v·n̂_V`, then axis rotation proper — not attributable to rotation alone); why the velocity
   frame needs a **random-axis** null rather than a scalar shuffle; the twin-axis monopole
   panel (both monopoles inherit the `1+ξ_hh(r)` occupancy ratio and so both decline — the
-  frames separate only after dividing it out, leaving the observer-frame `2r/3R` trend
-  against a velocity-frame residual flat at ⟨|v|⟩); and the
-  δ_α diagnostic's reading (few high-δ outliers ⇒ bulk-flow contamination, smooth spread ⇒
-  projection geometry; low-δ excess over the isotropic `sin δ` reference ⇒ residual bulk
-  motion). Saves both PNGs via the same `paths.output_dir` / `cfg` logic as the script's
+  frames separate only after dividing it out, leaving the observer-frame `2r/3R` trend on top
+  of its ⟨|u|⟩ offset against a velocity-frame residual flat at ⟨|v|⟩); and the
+  δ_α diagnostic's reading (δ now spans `[0, π/2]`, since both frames' axes follow the
+  motion — few high-δ outliers ⇒ bulk-flow contamination, smooth spread ⇒ projection
+  geometry; low-δ excess over the isotropic `sin δ` reference ⇒ residual bulk motion). Saves both PNGs via the same `paths.output_dir` / `cfg` logic as the script's
   `main()` and displays each returned `Figure` inline (never `plt.show`). Unlike 04/05 this
   one **is** executed and its outputs are kept — it is the record of the comparison run.
 
