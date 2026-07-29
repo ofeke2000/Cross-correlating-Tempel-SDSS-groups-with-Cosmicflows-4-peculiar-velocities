@@ -15,12 +15,21 @@ This is the single source of truth consumed by
 `scripts/plot_velocity_frame_comparison.py` (CLAUDE.md's "one library, two
 thin consumers" model). This module deliberately does NOT reimplement
 `dvcorr.pipeline.velocity_centered`'s earlier pipeline stages -- `RunConfig`
-(subclassed below, not copied), `NormalizedDipole`, `normalize_result`, and
-`normalize_stacked_dipole` are all IMPORTED from there. `load_and_carve`,
-`draw_candidates`, and `global_number_density` are likewise that module's,
-consumed directly by the SCRIPT (this module's stage functions start one
-step later, from already-loaded candidate arrays, since carving and
-subsampling do not differ between the two frames).
+(subclassed below, not copied), `NormalizedDipole`, `normalize_result`,
+`normalize_stacked_dipole`, `SharedCenterSet`, and `select_shared_centers`
+are all IMPORTED from there. `load_and_carve`, `draw_candidates`, and
+`global_number_density` are likewise that module's, consumed directly by the
+SCRIPT (this module's stage functions start one step later, from
+already-loaded candidate arrays, since carving and subsampling do not differ
+between the two frames).
+
+`SharedCenterSet` / `select_shared_centers` used to be DEFINED in this
+module; they moved to `velocity_centered.py` (still the single source of
+truth, just relocated) once `dvcorr.pipeline.redshift_space_comparison`
+needed them too -- leaving them here would have made that pipeline depend on
+this one, when both are equally built on top of `velocity_centered.py`. Both
+names are re-exported by this import, so existing code importing them FROM
+`velocity_frame_comparison` is unaffected.
 
 Matplotlib backend discipline
 ------------------------------
@@ -37,9 +46,9 @@ from dataclasses import dataclass
 import matplotlib.pyplot as plt
 import numpy as np
 
+from dvcorr.config import volume_weighted_shell_radii
 from dvcorr.estimators.shell_dipole import (
     VelocityCenteredShellDipoleResult,
-    core_center_mask,
     velocity_centered_shell_dipole,
 )
 from dvcorr.estimators.velocity_frame_dipole import (
@@ -66,8 +75,13 @@ from dvcorr.pipeline.velocity_centered import (
     _ZERO_LINE_WIDTH,
     NormalizedDipole,
     RunConfig,
+    SharedCenterSet,
+    _binning_description,
+    apply_dipole_axis_scale,
+    apply_radial_axis_scale,
     normalize_result,
     normalize_stacked_dipole,
+    select_shared_centers,
     shell_dipole_norm_scale,
 )
 from dvcorr.pipeline.velocity_centered import _COLOR_SIGNAL as _COLOR_OBS
@@ -116,139 +130,14 @@ class ComparisonRunConfig(RunConfig):
     axis_null_seed: int = 44
 
 
-@dataclass(frozen=True)
-class SharedCenterSet:
-    """The single center set both frames are run on.
-
-    Built by `select_shared_centers` in two cuts, funnel-style:
-    `n_candidates` (input) -> core cut (`core_center_mask`) -> `n_core` ->
-    speed floor (`cfg.min_center_speed`) -> `n_centers` (final). Selecting
-    ONCE here and handing the identical `s_centers` / `v_centers` arrays to
-    both `velocity_centered_shell_dipole` and `velocity_frame_shell_dipole`
-    (see `run_both_frames`) is what guarantees the only difference between
-    the two frames' results is the axis and the scalar -- not a difference
-    in which centers were measured.
-
-    Attributes
-    ----------
-    s_centers : ndarray, shape (N_c, 3)
-        Surviving center positions, comoving h^-1 Mpc.
-    v_centers : ndarray, shape (N_c, 3)
-        Surviving center velocities, km/s, same row order as `s_centers`.
-    n_candidates : int
-        Number of candidates handed in, before either cut.
-    n_core : int
-        Number surviving `core_center_mask` alone (before the speed floor).
-    n_dropped_slow : int
-        `n_core - n_centers`: the number of otherwise-valid centers dropped
-        by the speed floor alone. RETURNED as a field, not merely printed,
-        so a caller (or a test) can assert on it directly.
-    n_centers : int
-        Final surviving count, `s_centers.shape[0]`.
-    """
-
-    s_centers: np.ndarray
-    v_centers: np.ndarray
-    n_candidates: int
-    n_core: int
-    n_dropped_slow: int
-    n_centers: int
-
-
-def select_shared_centers(
-    cfg: ComparisonRunConfig,
-    s_candidates: np.ndarray,
-    v_candidates: np.ndarray,
-    observer: np.ndarray,
-) -> SharedCenterSet:
-    """Apply the core cut, then the speed floor, ONCE, for both frames to share.
-
-    Two sequential cuts:
-
-    1. `core_center_mask(s_candidates, cfg.sub_volume_radius,
-       cfg.shells.max_radius, observer=observer)` -- the IDENTICAL function
-       both `velocity_centered_shell_dipole` and `velocity_frame_shell_dipole`
-       apply internally (see `run_both_frames`'s docstring on why re-applying
-       it there is idempotent). `core_margin = cfg.shells.max_radius` matches
-       `velocity_centered_shell_dipole`'s own default (`core_margin=None` ->
-       `shell_edges[-1]` = r_max), so a surviving center's full shell fits
-       inside the carved sub-volume.
-    2. `speeds = |v_core|; keep = (speeds > 0.0) & (speeds >= cfg.min_center_speed)`
-       -- the floor that gives every surviving center a well-defined flow
-       direction (see
-       `dvcorr.estimators.velocity_frame_dipole.velocity_frame_shell_dipole`'s
-       zero-speed `ValueError`, which this floor exists to prevent a caller
-       from ever triggering). The explicit `speeds > 0.0` conjunct matters
-       specifically for `cfg.min_center_speed == 0.0`: `speeds >=
-       cfg.min_center_speed` is trivially true for every speed (a norm can
-       never be negative), so without it the documented "0.0 means drop only
-       exactly-zero-speed centers" contract (`RunConfig.min_center_speed`'s
-       docstring) would be false -- a floor of 0.0 would drop nothing at
-       all, including the exact-zero centers the floor exists to guard
-       against. For any `min_center_speed > 0.0` the extra conjunct is a
-       no-op (a positive floor already implies `speeds > 0.0`).
-
-    Parameters
-    ----------
-    cfg : ComparisonRunConfig
-    s_candidates, v_candidates : ndarray, shape (N_cand, 3)
-        Candidate positions/velocities, e.g. from
-        `dvcorr.pipeline.velocity_centered.draw_candidates`.
-    observer : ndarray, shape (3,)
-
-    Returns
-    -------
-    SharedCenterSet
-
-    Raises
-    ------
-    RuntimeError
-        If `s_candidates` is empty, or if zero centers survive both cuts.
-        The empty-input case is checked BEFORE the core-cut survival
-        percentage is printed, so a zero-candidate call raises this
-        `RuntimeError` rather than a bare `n / 0` `ZeroDivisionError` with a
-        misleading traceback (the same hazard `load_and_carve`'s docstring
-        calls out and guards against).
-    """
-    n_candidates = s_candidates.shape[0]
-    if n_candidates == 0:
-        raise RuntimeError("select_shared_centers: s_candidates is empty.")
-
-    core_mask = core_center_mask(
-        s_candidates, cfg.sub_volume_radius, cfg.shells.max_radius, observer=observer
-    )
-    s_core = s_candidates[core_mask]
-    v_core = v_candidates[core_mask]
-    n_core = s_core.shape[0]
-
-    speeds = np.linalg.norm(v_core, axis=1)
-    keep = (speeds > 0.0) & (speeds >= cfg.min_center_speed)
-    s_centers = s_core[keep]
-    v_centers = v_core[keep]
-    n_centers = s_centers.shape[0]
-    n_dropped_slow = n_core - n_centers
-
-    print(
-        f"n_candidates = {n_candidates} -> core cut -> n_core = {n_core} "
-        f"({100.0 * n_core / n_candidates:.1f}% survive) -> speed floor "
-        f"(min_center_speed = {cfg.min_center_speed} km/s) -> n_centers = "
-        f"{n_centers} ({n_dropped_slow} dropped as too slow)"
-    )
-    if n_centers == 0:
-        raise RuntimeError(
-            "select_shared_centers: zero centers survived the core cut and "
-            "speed floor combined; widen sub_volume_radius, shrink the "
-            "shell range, or lower min_center_speed."
-        )
-
-    return SharedCenterSet(
-        s_centers=s_centers,
-        v_centers=v_centers,
-        n_candidates=n_candidates,
-        n_core=n_core,
-        n_dropped_slow=n_dropped_slow,
-        n_centers=n_centers,
-    )
+# `SharedCenterSet` and `select_shared_centers` used to be defined here; they
+# now live in `dvcorr.pipeline.velocity_centered` (imported above) -- see the
+# module docstring's note on why they moved. `select_shared_centers` is
+# called below (`run_both_frames`'s caller,
+# `scripts/plot_velocity_frame_comparison.py`, and
+# `notebooks/06_velocity_frame_comparison.ipynb`) with its `core_margin`
+# argument left at its default (`None` -> `cfg.shells.max_radius`), reproducing
+# this pipeline's original behavior exactly.
 
 
 def run_both_frames(
@@ -561,6 +450,27 @@ def normalize_comparison(
     the stack disagrees between frames, not an artifact of how the summary
     was built.
 
+    This identity is pure index exchange (`.mean(axis=1)` over shells versus
+    `.mean(axis=0)` over centers commute on the same 2-D array) and holds for
+    ANY `shell_edges` binning -- it does NOT break when the shells switch from
+    linear to log spacing. What DOES change is the INTERPRETATION: an
+    unweighted mean over the shell INDEX b is a mean "uniform in r" under the
+    old linear spacing, and becomes a mean "uniform in log r" once
+    `cfg.shells.spacing == dvcorr.config.SPACING_LOG` -- five of twelve bins
+    then sit below 5.66 h^-1 Mpc, so this per-center frame-gap summary becomes
+    noticeably more sensitive to the one-halo/exclusion regime than it was
+    under the old linear default.
+
+    A `n_bar*V_b`-weighted mean (rather than the current unweighted
+    `.mean(axis=1)`) would be the natural fix if that sensitivity becomes a
+    problem in practice -- but it is deliberately NOT done here, because it
+    would BREAK the very identity this docstring promises: the plotted
+    `mean_b(zeta_hat_b)` on the comparison figure is itself an UNWEIGHTED mean
+    over shells, so only an unweighted `summary_alpha` can sum back to it. A
+    `summary_radial_window` knob (restricting the mean to a chosen r-range,
+    rather than reweighting it) is the right follow-up if the diagnostic
+    degrades under log spacing in practice.
+
     Parameters
     ----------
     cfg : ComparisonRunConfig
@@ -694,7 +604,9 @@ def make_comparison_figure(
         2, 1, figsize=_FIGSIZE, sharex=True, gridspec_kw={"height_ratios": _HEIGHT_RATIOS}
     )
 
-    r = comparison.shell_centers
+    # comparison.shell_centers (the plain midpoint) is deliberately left
+    # alone -- r_eff, the volume-weighted radius, is the plotting abscissa.
+    r = volume_weighted_shell_radii(results.obs_result.shell_edges)
 
     # --- top panel: the two dipoles, each with its SEM band and its own null
     ax_dipole.fill_between(
@@ -732,7 +644,7 @@ def make_comparison_figure(
     ax_dipole.set_title(
         "observer frame vs. velocity frame  "
         f"(R_sub={cfg.sub_volume_radius:.0f} h$^{{-1}}$Mpc, "
-        f"r_max={cfg.shells.max_radius:.0f} h$^{{-1}}$Mpc, "
+        f"{_binning_description(cfg.shells)}, "
         f"N$_c$={results.centers.n_centers})\n"
         "SEM bands treat centers as independent and UNDERSTATE the true "
         "uncertainty (center_standard_error)",
@@ -755,6 +667,11 @@ def make_comparison_figure(
     ax_mono_vel.set_ylabel(r"$\hat\zeta_0^{vel}$  [km/s]", color=_COLOR_VEL)
     ax_mono_vel.tick_params(axis="y", labelcolor=_COLOR_VEL)
     ax_mono_vel.spines["top"].set_visible(False)
+
+    apply_radial_axis_scale(ax_mono_obs, cfg.shells)
+    apply_dipole_axis_scale(ax_dipole, cfg.shells)
+    apply_dipole_axis_scale(ax_mono_obs, cfg.shells)
+    apply_dipole_axis_scale(ax_mono_vel, cfg.shells)
 
     fig.tight_layout()
     return fig
@@ -808,6 +725,30 @@ def make_angle_diagnostic_figure(
     directions are preferentially ALIGNED with the lines of sight, i.e.
     residual BULK MOTION shared with the observer frame's own axis choice,
     not a random projection effect.
+
+    Sensitivity to log-spaced shells -- read before trusting this figure under
+    the current default binning
+    ----------------------------------------------------------------------------
+    Both panels' y-quantity is `comparison.per_center_dipole_difference`,
+    `normalize_comparison`'s per-center summary, an UNWEIGHTED mean over the
+    shell INDEX b (`per_center_curve.mean(axis=1)`, not an occupancy-weighted
+    one -- see that function's docstring for why the weighting cannot change
+    without breaking the `mean_alpha(summary_alpha) == mean_b(zeta_hat_b)`
+    identity this figure's top panel implicitly relies on). Under the log
+    default, five of twelve shells sit below 5.66 h^-1 Mpc, where a center's
+    expected occupancy is tiny (~0.02 pairs per center in the innermost
+    bins), so the unweighted mean is now dominated by shot noise from those
+    few bins rather than by the bulk of each center's shell range. Measured
+    on an unclustered synthetic: std(summary_alpha) across centers goes
+    14.9 -> 234.3 switching from linear to log spacing, and the three
+    innermost log bins alone supply 75% of that variance (bin 0 alone 33%).
+    Consequence: this figure's stated purpose is "do a few high-delta
+    centers drive the frame gap", but under log spacing it is at risk of
+    instead becoming a plot of which centers happened to catch a tracer
+    inside ~2 h^-1 Mpc -- a one-halo/exclusion-regime artifact, not evidence
+    of bulk-flow contamination or projection geometry. Read a scattered,
+    high-|difference| outlier here with that caveat in mind, especially if
+    it also has a small `per_center_count` in the innermost shells.
 
     Builder only: never saves, never calls `plt.show`.
 

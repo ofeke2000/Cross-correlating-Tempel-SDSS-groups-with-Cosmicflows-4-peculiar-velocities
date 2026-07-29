@@ -77,6 +77,58 @@ already-unwrapped separations. (This refines CLAUDE.md hard rule 3: PBC is honou
 carving step, not in the primitives. The carving step lives in `pipeline/velocity_centered.py`
 for the velocity-centered path — see below.)
 
+### `src/dvcorr/redshift_space.py` — the redshift-space coordinate transform **[done]**
+The redshift-space run's ONLY new geometry: displace a halo along its own observer line of
+sight by its own radial peculiar velocity, `sᵢ = observer + (|rᵢ − observer| + v_r,ᵢ/100)·n̂ᵢ`
+with `n̂ᵢ = unit_vector(rᵢ − observer)` and `v_r,ᵢ = vᵢ · n̂ᵢ`. A coordinate transform only —
+no estimator, no pipeline knowledge (centers/tracers/shells/n̄ all live one level up, in
+`dvcorr.pipeline.redshift_space_comparison`) — and NOT wired into
+`velocity_centered_shell_dipole`, which is unchanged and stays agnostic to which positions it
+receives; that agnosticism is a design property this module is built to preserve. Imports
+`from dvcorr import conventions`, `from dvcorr.geometry import radial_flow_axis, unit_vector`.
+
+- The `/100` is the SAME definitional literal as `dvcorr.config.cosmology
+  .CosmologyConfig.h` (H0 = 100 h km/s/Mpc, so km/s → h⁻¹ Mpc regardless of h's numeric
+  value) — kept inline with a comment, not promoted to `conventions`.
+- **Exactness, not approximation:** MDPL2 snapshot 125 is z ≈ 0, so this displacement is
+  EXACT in comoving box coordinates — there is no redshift-to-distance conversion (no
+  cz/H0, no ∫dz/E(z)) anywhere in this transform for it to be a shortcut for; that question
+  belongs to the future real-data (CF4/Tempel) pipeline. No sub-percent accuracy figure is
+  claimed anywhere in this module.
+- **n̂ is invariant.** The displacement is purely radial, so it cannot rotate the line of
+  sight (except via the sign flip the flip guard below catches); consequently
+  `u_α = v_α · n̂_V,α` is IDENTICAL whether `n̂_V,α` is computed from a center's real or
+  redshift-space position — no carry-over parameter, no new argument anywhere downstream.
+  Verified numerically on the project's shared infall toy: n̂ agrees to 3.3e-16, u_α to
+  8.5e-14 (floating-point round-off).
+- `FLIP_GUARD_FLOOR` (module constant, 1.0 h⁻¹ Mpc) — a **strictly positive** floor on
+  `s_mag = |r − observer| + v_r/100`, not `s_mag < 0`: at `s_mag ≈ 0`, `geometry.unit_vector`
+  returns a zero row silently (no NaN), so a naive `< 0` guard would let a near-zero,
+  effectively-undefined direction through. `s_mag` is an OBSERVER-CENTERED RADIAL DISTANCE, not
+  a pair separation, so it has no relationship to the shell binning — re-justified against the
+  quantity it actually bounds: a negligible volume fraction of the carved sub-volume
+  (`R_sub = 300 h⁻¹Mpc`, of which a 1 h⁻¹Mpc ball is `(1/300)³ ≈ 4e-8`, expected occupancy
+  `n̄·(4π/3)·1³ ≈ 0.017` halos — dropping essentially nothing that is not a genuine
+  through-observer flip, independently of whatever radial shell binning is in use) and well
+  above floating-point round-off on `BOX_SIZE ~ 1e3` coordinates. No cross-reference to any
+  `dvcorr.pipeline.velocity_centered` shell-binning constant — that cross-module coupling was
+  removed; the floor stands on its own justification.
+- `radial_velocity(positions, velocities, observer=None) -> (N,)` — thin wrapper over
+  `geometry.radial_flow_axis`, keeping only its `u` return value (the flow-signed axis this
+  module never needs). Used to derive `v_margin` BEFORE the flip guard applies.
+- `RedshiftSpaceTransform` (frozen dataclass): `s_redshift (N_kept, 3)`,
+  `kept_mask (N,) bool` (aligned with the ORIGINAL input, so `positions[kept_mask]` is the
+  real-space counterpart of `s_redshift` row for row), `n_input`, `n_dropped`,
+  `flip_guard_floor`.
+- `to_redshift_space(positions, velocities, observer=None, flip_guard_floor=FLIP_GUARD_FLOOR)
+  -> RedshiftSpaceTransform` — the transform. `velocities` must be finite everywhere (hard
+  rule 5); `flip_guard_floor` must be `> 0`.
+- `v_margin_from_statistic(v_r, statistic, percentile) -> float` — `"max"` (a TRUE bound,
+  `max(|v_r|)`) or `"percentile"` (cheaper, not a true bound — the caller must additionally
+  enforce it as a global cut, see `redshift_space_comparison.py` below). Defined on `|v_r|`,
+  never the 3-D speed `|v|` (a percentile of `|v|` would under-cover the actual radial
+  displacement, since `|v| ≥ |v_r|` always).
+
 ---
 
 ## `src/dvcorr/config/` — tunable settings
@@ -110,11 +162,42 @@ distance-ladder `H0_CF4` is deliberately out of scope until the CF4 data arm sta
 
 ### `src/dvcorr/config/shells.py` — `ShellConfig` **[done]**
 Radial shell binning for `dvcorr.estimators.shell_dipole.shell_dipole`: `min_radius`,
-`max_radius`, `radii_step`, `sigma_star` (small-scale velocity noise, km/s). `__post_init__`
-validates ordering and that `max_radius <= dvcorr.conventions.MAX_ANALYSIS_RADIUS`.
-Properties `shell_edges (B+1,)` and `shell_centers (B,)`; edges are built min→max in steps
-of `radii_step` with `max_radius` appended exactly (avoiding `np.arange` overshoot) and
-clipped to `dvcorr.conventions.MAX_ANALYSIS_RADIUS`.
+`max_radius`, `radii_step`, `sigma_star` (small-scale velocity noise, km/s), plus `spacing`
+and `n_bins` (below). `__post_init__` validates ordering, `radii_step > 0`,
+`max_radius <= dvcorr.conventions.MAX_ANALYSIS_RADIUS`, `n_bins` a positive integer,
+`spacing` one of `_VALID_SPACINGS`, and — the log-mode guard — `min_radius > 0` whenever
+`spacing == SPACING_LOG` (`np.geomspace` is undefined at zero; enforced here, not inside
+`log_shell_edges` itself).
+
+- `SPACING_LINEAR = "linear"`, `SPACING_LOG = "log"` — named constants, not bare strings, so
+  a typo'd spacing raises in `__post_init__` instead of silently falling through (hard rules 4
+  and 9).
+- `linear_shell_edges(min_radius, max_radius, radii_step) -> (B+1,)` — `min_radius` to
+  `max_radius` in steps of `radii_step`; `max_radius` appended exactly (any interior edge
+  `>= max_radius` from `np.arange`'s float-accumulation overshoot is dropped first, so the
+  append cannot duplicate the outer edge), clipped to `MAX_ANALYSIS_RADIUS`.
+- `log_shell_edges(min_radius, max_radius, n_bins) -> (B+1,)` — `n_bins` shells geometrically
+  spaced via `np.geomspace`, which pins both endpoints exactly (no drop-then-append dance
+  needed, unlike the linear builder), clipped to `MAX_ANALYSIS_RADIUS` belt-and-braces. Caller
+  obligation (`min_radius > 0`) enforced at `ShellConfig.__post_init__`, not here.
+- `volume_weighted_shell_radii(shell_edges) -> (B,)` — `r_eff = (3/4)*(r2**4-r1**4)/(r2**3-r1**3)`,
+  the plotting abscissa: the first moment of the same `r**2 dr` weight
+  `dvcorr.estimators.shell_dipole.expected_shell_occupancy`'s `n_bar*V_b` denominator already
+  divides by (see that entry below for the cross-reference), so ordinate and abscissa agree.
+  NOT the geometric mean (that is only correct for a weight uniform in log r, which this is
+  not) and NOT a pair-count-weighted mean (would pick up the realization-dependent clustering
+  factor `1+xi(r)` the denominator doesn't carry, and give two curves on a comparison figure
+  different x-coordinates). `edges[0] == 0` is fine, giving the closed form `0.75*r2`.
+- `ShellConfig.shell_edges (B+1,)` — dispatches to `log_shell_edges` or `linear_shell_edges` on
+  `spacing`.
+- `ShellConfig.shell_centers (B,)` — the plain midpoint `0.5*(edge_low+edge_high)`, deliberately
+  NOT volume-weighted, and deliberately left alone everywhere except the four plot sites listed
+  under `pipeline/velocity_centered.py` below (three existing tests pin `shell_centers ==
+  [5, 15, 25]` and must keep passing untouched). `shell_effective_radii` (below) is the
+  volume-weighted quantity actually used for plotting; `r_eff` names that quantity throughout
+  the pipeline modules.
+- `ShellConfig.shell_effective_radii (B,)` — thin property wrapper over
+  `volume_weighted_shell_radii(self.shell_edges)`.
 
 ### `src/dvcorr/config/selection.py` — `SelectionConfig` **[done]**
 Lean placeholder knobs for the not-yet-built `mocks/`/`selection/` arms: `mass_min` (default
@@ -129,7 +212,10 @@ returns a fresh instance rather than a shared module-level singleton.
 
 ### `src/dvcorr/config/__init__.py` — re-export surface **[done]**
 `from dvcorr.config import Settings, default_settings, PathsConfig, CosmologyConfig,
-ShellConfig, SelectionConfig` — a clean import surface over the five files above.
+ShellConfig, SelectionConfig, SPACING_LINEAR, SPACING_LOG, linear_shell_edges,
+log_shell_edges, volume_weighted_shell_radii` — a clean import surface over the five
+dataclass files above, plus the spacing constants and free functions `shells.py` also
+carries (see that entry above).
 
 ---
 
@@ -195,7 +281,9 @@ on; and the shuffle null must undo the flip before permuting (see `normalize_res
   the boundary-truncation bias suspected behind the first MDPL2 run's ~+13 km/s null offset.
 - `expected_shell_occupancy(number_density, shell_edges) -> (B,)` — `n̄·V_b`, the Nusser
   eq. 24 normalization denominator (expected, not realized, occupancy); `n̄` supplied by the
-  caller.
+  caller. Matching first moment of the same `r²dr` weight:
+  `dvcorr.config.shells.volume_weighted_shell_radii` is `∫r·r²dr / ∫r²dr` over the same shell,
+  the abscissa for whatever this function normalizes as an ordinate.
 - `center_standard_error(per_center_values) -> (B,)` — `std(axis=0, ddof=1)/√N_c` across
   centers; NaN for `N_c < 2`. Treats centers as independent (documented understatement of
   the true uncertainty; mock covariance is the eventual replacement).
@@ -302,7 +390,18 @@ both the script and `notebooks/05_velocity_centered_dipole.ipynb` consume the sa
 instead of one reimplementing the other's logic (the "one library, two thin consumers" model
 — see "Working model" below). Imports `from dvcorr import conventions`,
 `from dvcorr.config import PathsConfig, ShellConfig`, and
-`from dvcorr.estimators.shell_dipole import …`.
+`from dvcorr.estimators.shell_dipole import …` (now including `core_center_mask`, needed by
+`select_shared_centers` below).
+
+Also the shared base BOTH comparison pipelines (`velocity_frame_comparison.py`,
+`redshift_space_comparison.py`) import from: `SharedCenterSet` and `select_shared_centers`
+moved here FROM `velocity_frame_comparison.py` in the redshift-space task (they were
+originally written there, for the observer/velocity-frame comparison only) once the
+redshift-space comparison needed them too — leaving them in `velocity_frame_comparison.py`
+would have made the redshift-space pipeline depend on it, when both are equally built on top
+of this module. `velocity_frame_comparison.py` now imports both names from here and
+re-exports them, so existing code importing them FROM `velocity_frame_comparison` is
+unaffected.
 
 **Matplotlib backend discipline:** this module imports `matplotlib.pyplot` at module level
 (for `make_figure`) but **never calls `matplotlib.use(...)`**. Only
@@ -312,26 +411,74 @@ backend (e.g. an inline one) it already has.
 
 - `RunConfig` (dataclass, hard rule 4): `sub_volume_radius`; `shells` — a COMPOSED
   `dvcorr.config.ShellConfig` (`field(default_factory=_default_shells)`), reusing its
-  validation (ordering, `radii_step > 0`, `max_radius <= dvcorr.conventions.MAX_ANALYSIS_RADIUS`)
-  and its `shell_edges` property rather than mirroring those fields and their checks a second
-  time; `_default_shells()`'s `min_radius` defaults to `radii_step`, not 0 — candidates are
-  subsampled from the tracer array, so every candidate is its own tracer at r = 0, and
-  excluding that self-pair keeps it out of the monopole diagnostic panel; also
-  `n_candidate_centers`, `seed`/`shuffle_seed`, output filename, `dpi`, and
-  `min_center_speed` (default `1.0` km/s, `__post_init__`-validated `>= 0`) — the minimum
-  `|v_alpha|` for a center to have a well-defined flow direction, consumed by
-  `dvcorr.pipeline.velocity_frame_comparison.select_shared_centers` to drop centers from
-  BOTH frames' shared center set at the orchestration level (never inside an estimator). It
-  lives here rather than on `ComparisonRunConfig` because it filters the center set both
-  frames consume, not a comparison-only knob.
-- `load_and_carve(cfg, paths) -> (pos, vel)` — loads only
-  `dvcorr.conventions.POSITION_COLUMNS + dvcorr.conventions.VELOCITY_COLUMNS`, carves a
-  sphere of `sub_volume_radius` around `dvcorr.conventions.OBSERVER_POSITION` (plain
-  Euclidean, no wrapping needed). Raises `RuntimeError` for a zero-row catalog or a
-  zero-halo carve, hoisted before any percentage is printed from either count (no bare
-  `ZeroDivisionError`).
+  validation (ordering, `radii_step > 0`, `max_radius <= dvcorr.conventions.MAX_ANALYSIS_RADIUS`,
+  the log-mode `min_radius > 0` guard) and its `shell_edges` property rather than mirroring
+  those fields and their checks a second time; also `n_candidate_centers`, `seed`/
+  `shuffle_seed`, output filename, `dpi`, and `min_center_speed` (default `1.0` km/s,
+  `__post_init__`-validated `>= 0`) — the minimum `|v_alpha|` for a center to have a
+  well-defined flow direction, consumed by `select_shared_centers` (below) to drop centers
+  from a shared center set at the orchestration level (never inside an estimator). It lives
+  here rather than on a comparison-only subclass because it filters the center set every
+  comparison pipeline consumes, not a comparison-only knob.
+- `_default_shells()`'s default binning is now LOG spacing: `_DEFAULT_SPACING = SPACING_LOG`,
+  `_DEFAULT_MIN_RADIUS = 1.0`, `_DEFAULT_MAX_RADIUS = 64.0`, `_DEFAULT_N_BINS = 12` (module
+  constants, replacing the old `_DEFAULT_RADII_STEP = 5.0` / `_DEFAULT_MAX_RADIUS = 60.0`
+  linear pair — `_DEFAULT_RADII_STEP` no longer exists anywhere in the codebase).
+  `radii_step` is left at `ShellConfig`'s own class default (inert under `SPACING_LOG`).
+  Resulting edges: `1, 1.41, 2, 2.83, 4, 5.66, 8, 11.31, 16, 22.63, 32, 45.25, 64` — a ratio of
+  exactly √2 between consecutive edges (exact powers of two and their halves), FIVE of the
+  twelve bins below 5.66 h⁻¹Mpc.
+  - The r = 0 self-pair — candidates are subsampled from the tracer array, so every candidate
+    is its own tracer at r = 0, and an unguarded `min_radius = 0` bin would collect that pure
+    self-correlation into `pair_count[0]`/`monopole[0]`, polluting exactly the hard-rule-6
+    monopole diagnostic panel — is excluded STRUCTURALLY now, not by convention:
+    `ShellConfig.__post_init__` hard-raises on `min_radius <= 0` under `SPACING_LOG`.
+  - `min_radius = 1.0`: a statistical floor (≥ 50 expected uniform-field pairs across the stack,
+    `n_bar·V_b·N_c` with n̄ ≈ 4e-3 (h⁻¹Mpc)⁻³ and N_c = 1933, measured on the real run, gives
+    r₁ ≥ 0.94) is not the binding one — the catalog is `pid = -1` (distinct halos only), so
+    every center carries a hard exclusion hole of `R_vir(host)` (0.20 h⁻¹Mpc at 1e12 M☉/h,
+    0.94 at 1e14, 2.0 at 1e15), and the massive centers that dominate the `|u|`-weighted stack
+    have the LARGEST holes. MDPL2's force softening (5 h⁻¹kpc) sits ~100× below this and is NOT
+    the limit. The innermost one or two bins are the exclusion / one-halo regime, deliberately
+    SHOWN (alongside the monopole companion, hard rule 6) rather than hidden behind one wide bin.
+  - `max_radius = 64.0` (not 60): every `query_ball_point(s_alpha, edges[-1])` ball grows by
+    `(64/60)³ ≈ 1.21`, and `core_margin` (`select_shared_centers`'s default, below) tightens
+    from 240 to 236 h⁻¹Mpc, so surviving centers go from ~2048 to ~1933 of 4000 candidates
+    (−5.6%), measured on the real run (48.3% of 4000 candidates survive; the carve itself keeps
+    464764 of 4093751 halos within R_sub = 300) — worth stating since it moves the `N_c` printed
+    in every figure title. Runtime is independent of bin COUNT (`np.bincount` is O(pairs)), so
+    12 log bins cost the same as the old 11 linear ones; the cost above is entirely from
+    `r_max`, not `n_bins`.
+- `_load_all_halos(paths) -> (pos_all, vel_all)` — reads
+  `dvcorr.conventions.POSITION_COLUMNS + dvcorr.conventions.VELOCITY_COLUMNS` for every halo
+  in the catalog, uncarved. Factored out of `load_and_carve` (which calls this, then carves)
+  so `dvcorr.pipeline.redshift_space_comparison.load_and_carve_buffered` can build its OWN
+  two-pass carve (plain `sub_volume_radius`, then buffered) from a SINGLE CSV read rather than
+  re-reading the ~4M-row catalog once per carve. `RuntimeError` on a zero-row catalog.
+- `load_and_carve(cfg, paths) -> (pos, vel)` — calls `_load_all_halos`, then keeps halos
+  within `sub_volume_radius` of `dvcorr.conventions.OBSERVER_POSITION` (plain Euclidean, no
+  wrapping needed). Raises `RuntimeError` for a zero-row catalog or a zero-halo carve, hoisted
+  before any percentage is printed from either count (no bare `ZeroDivisionError`).
 - `draw_candidates(cfg, pos, vel) -> (s_candidates, v_candidates)` — seeded subsample of the
   carved halos; `RuntimeError` if that would be zero candidates.
+- `SharedCenterSet` (frozen dataclass) / `select_shared_centers(cfg, s_candidates,
+  v_candidates, observer, core_margin=None) -> SharedCenterSet` — MOVED here from
+  `velocity_frame_comparison.py` (see above); the only substantive change from the move is
+  that `core_margin` is now an EXPLICIT argument (previously hardcoded to
+  `cfg.shells.max_radius` inside the function body) defaulting to `None` ->
+  `cfg.shells.max_radius`, and `cfg`'s type hint loosened from `ComparisonRunConfig` to base
+  `RunConfig` (the function only ever touched `cfg.sub_volume_radius` and
+  `cfg.min_center_speed`, both base fields). Applies `core_center_mask` (the IDENTICAL
+  function every estimator applies internally) THEN the speed floor
+  `keep = (speeds > 0.0) & (speeds >= cfg.min_center_speed)` (the explicit `speeds > 0.0`
+  conjunct matters specifically for `min_center_speed == 0.0`, otherwise trivially true and
+  silently keeping exact-zero-speed centers despite the documented "0.0 means drop only
+  exactly-zero" contract). Reports the funnel (`n_candidates` → `n_core` → `n_centers`,
+  `n_dropped_slow = n_core - n_centers` a returned field). `RuntimeError` if `s_candidates` is
+  empty (checked before the survival percentage is printed) or if zero centers survive both
+  cuts. Selecting once and handing the identical arrays to every estimator run on the result
+  is what guarantees the only difference between runs built on the same `SharedCenterSet` is
+  whatever each run deliberately varies.
 - `run_estimator(cfg, s_candidates, v_candidates, s_tracers, observer) ->
   VelocityCenteredShellDipoleResult` — calls `velocity_centered_shell_dipole`, prints
   `n_candidates` vs `n_centers` (the core cut's visible loss), `RuntimeError` if zero
@@ -366,43 +513,88 @@ backend (e.g. an inline one) it already has.
   null at all** (it retains the signal — the same trap `run_random_axis_null` documents for
   the velocity frame, pinned by `test_permuting_the_speed_alone_is_not_a_null`). Numerically
   the null curve is unchanged from the pre-signed-axis version, since `sign(u)·A = A(n̂_V)`.
+- `apply_radial_axis_scale(ax, shells) -> None` — put a radial x-axis in log or linear scale to
+  match `shells.spacing`, taking a `ShellConfig` (not a `RunConfig`) so it works unchanged for
+  all three config types (`RunConfig`, `ComparisonRunConfig`, `RedshiftSpaceRunConfig`).
+  `SPACING_LINEAR` returns immediately — existing linear figures are unchanged, the stated
+  backward-compatibility guarantee. `SPACING_LOG`: `ax.set_xscale("log")`;
+  `matplotlib.ticker.LogLocator(base=_LOG_TICK_BASE, subs=_LOG_TICK_SUBS)` (module constants
+  `_LOG_TICK_BASE = 10.0`, `_LOG_TICK_SUBS = (1.0, 2.0, 5.0)`) with a `ScalarFormatter` on the major axis (labels read
+  "1, 2, 5, 10, 20, 50" rather than bare powers of ten — matplotlib's default `LogLocator`
+  would label only `10^0`/`10^1` over a sub-decade range like `[1, 64]`) and `NullLocator()` on
+  the minor axis; `ax.set_xlim(edges[0], edges[-1])` from `shells.shell_edges` — necessary,
+  not cosmetic, since log autoscale pads MULTIPLICATIVELY and would otherwise push the left
+  edge toward ~0.1. Called on the BOTTOM axis of each shared-x figure (the one carrying
+  `set_xlabel`); `sharex=True` propagates to the panel(s) above. Defined here, the shared base
+  both comparison pipelines import from; `velocity_frame_comparison.py` and
+  `redshift_space_comparison.py` (below) import and call it, not redefine it.
+- `apply_dipole_axis_scale(ax, shells) -> None` — companion to `apply_radial_axis_scale`, but
+  for a dipole/monopole y-axis instead of the radial x-axis; same backward-compatibility
+  guarantee (`SPACING_LINEAR` returns immediately, doing nothing). Under `SPACING_LOG`:
+  `ax.set_yscale("symlog", linthresh=_SYMLOG_LINTHRESH)` with module constant
+  `_SYMLOG_LINTHRESH = 10.0` km/s. SYMLOG, not plain log, because the shuffle null (and the
+  frame/axis-rotation differences the comparison figures plot) crosses zero and goes negative
+  — a plain log y-axis would silently drop those points. `linthresh = 10.0` km/s: below it the
+  curves sit at or below their own SEM, so a linear region there loses no visible structure;
+  above it the real run's ~2 decades of dynamic range (670 km/s at r ≈ 1.2 down to 20 km/s at
+  r ≈ 56) get real vertical space instead of being compressed into a sliver at the top of a
+  linear axis — before this, the per-shell normalization scale spanned a factor of 92,700
+  across the 12 log bins (57 under the old linear default), squashing everything beyond
+  r ≈ 8 h⁻¹Mpc, where the ~13 km/s signal this project measures actually lives, into ~7% of
+  panel height. `axhline(0.0)` renders correctly under symlog (defined at zero, unlike plain
+  log). Called on every dipole/monopole axis under log spacing — both panels of `make_figure`
+  (below); `make_comparison_figure`'s dipole panel and BOTH sides of its twin-axis monopole
+  panel (`velocity_frame_comparison.py`); both panels of `make_redshift_comparison_figure` and
+  `make_single_center_figure` (`redshift_space_comparison.py`) — **not**
+  `make_angle_diagnostic_figure`, whose axes are angular (degrees), not radial-dipole y-axes.
+  Same shared-base pattern as `apply_radial_axis_scale`: defined once here, imported by the
+  other two pipeline modules, not redefined.
+- `_binning_description(shells) -> str` — one-line binning summary for a figure title (e.g.
+  `"r in [1, 64] h⁻¹Mpc, 12 log bins"` or `"r in [20, 150] h⁻¹Mpc, step=10 h⁻¹Mpc"`), so a saved
+  PNG states its own binning instead of only `r_max`. Formats both endpoints with `:.4g`, not
+  `:.2g` — `:.2g` rendered 150.0 as `"1.5e+02"` (scientific notation), a mismatch with this very
+  worked example that a review caught; `:.4g` stays in plain decimal form across the range this
+  project can reach (1 to `conventions.MAX_ANALYSIS_RADIUS` = 500 h⁻¹Mpc) while still trimming
+  trailing zeros. Same shared-base pattern as `apply_radial_axis_scale`: defined once here,
+  imported by the other three figure builders.
 - `make_figure(cfg, result, normalized) -> Figure` — the two-panel figure (ζ̂₁ with SEM +
   shuffle null; the normalized monopole companion below, hard rule 6); builds and returns
   only, never saves or calls `plt.show`. The monopole panel carries **no zero reference
   line**: with the `|u_α|` weight the curve sits near `⟨|u|⟩`, and a `y=0` line would only
-  compress the axis and imply a reference that no longer applies.
+  compress the axis and imply a reference that no longer applies. Plotting abscissa is
+  `dvcorr.config.volume_weighted_shell_radii(result.shell_edges)` (`r_eff`), NOT
+  `result.shell_centers` (the plain midpoint, left alone — see the `ShellConfig` entry above);
+  `apply_radial_axis_scale(ax_mono, cfg.shells)` and `apply_dipole_axis_scale(ax, cfg.shells)`
+  (both panels) are called on the respective axes, and the title now includes
+  `_binning_description(cfg.shells)` in place of the old bare `r_max=…`.
 
 `src/dvcorr/pipeline/__init__.py` is a one-line docstring; no public re-exports needed — there
-are now two pipeline modules (`velocity_centered.py` and `velocity_frame_comparison.py`, the
-latter additive on top of the former, not a fork of it), each imported directly by name.
+are now three pipeline modules (`velocity_centered.py`, `velocity_frame_comparison.py`, and
+`redshift_space_comparison.py`, the latter two additive on top of the first, not forks of
+it), each imported directly by name.
 
 ### `src/dvcorr/pipeline/velocity_frame_comparison.py` **[done]**
 The single source of truth for the two-frame comparison (observer-frame ζ₁ vs. the
 observer-free velocity-frame dipole), consumed by
 `scripts/plot_velocity_frame_comparison.py`. Deliberately does NOT reimplement
 `velocity_centered.py`'s earlier stages: `RunConfig` (subclassed), `NormalizedDipole`,
-`normalize_result`, and `normalize_stacked_dipole` are imported from there; `load_and_carve`,
-`draw_candidates`, and `global_number_density` are consumed directly by the script instead
-(this module's own stage functions start one step later, from already-loaded candidates).
-Same matplotlib-backend discipline as `velocity_centered.py` (never calls `matplotlib.use`).
+`normalize_result`, `normalize_stacked_dipole`, `SharedCenterSet`, and `select_shared_centers`
+are all imported from there; `load_and_carve`, `draw_candidates`, and `global_number_density`
+are consumed directly by the script instead (this module's own stage functions start one step
+later, from already-loaded candidates). Same matplotlib-backend discipline as
+`velocity_centered.py` (never calls `matplotlib.use`).
+
+`SharedCenterSet` / `select_shared_centers` USED TO be defined in this module; they moved to
+`velocity_centered.py` in the redshift-space task once `redshift_space_comparison.py` needed
+them too (see that module's entry above) — this module now imports both names and re-exports
+them unchanged, so `from dvcorr.pipeline.velocity_frame_comparison import select_shared_centers`
+(as `tests/test_velocity_frame_dipole.py` and `notebooks/06_velocity_frame_comparison.ipynb`
+already do) still resolves.
 
 - `ComparisonRunConfig(RunConfig)` — adds `comparison_output_name`,
   `angle_diagnostic_output_name`, and `axis_null_seed` (distinct from `seed`/`shuffle_seed` so
   the random-axis null never reuses another stream); `min_center_speed` stays on the parent
   `RunConfig` since it filters the shared center set, not a comparison-only knob.
-- `SharedCenterSet` (frozen dataclass) / `select_shared_centers(cfg, s_candidates,
-  v_candidates, observer) -> SharedCenterSet` — applies `core_center_mask` (identical function
-  and `core_margin = cfg.shells.max_radius`, matching each estimator's own default), THEN the
-  speed floor `keep = (speeds > 0.0) & (speeds >= cfg.min_center_speed)` (the explicit
-  `speeds > 0.0` conjunct is a post-review fix: `speeds >= cfg.min_center_speed` alone is
-  trivially true when `min_center_speed == 0.0`, since a norm can never be negative, which
-  would silently keep exact-zero-speed centers despite that field's documented "0.0 means
-  drop only exactly-zero-speed centers" contract); reports the funnel (`n_candidates` →
-  `n_core` → `n_centers`, with `n_dropped_slow = n_core - n_centers` a returned field, not
-  merely printed); `RuntimeError` if `s_candidates` is empty (checked BEFORE the survival
-  percentage is printed, to avoid a bare `ZeroDivisionError`) or if zero centers survive both
-  cuts. Selecting once here and handing the identical arrays to both estimators is what
-  guarantees the only difference between the two frames is the axis and the scalar.
 - `run_both_frames(cfg, centers, s_tracers, observer) -> FrameRunResults` — runs
   `velocity_centered_shell_dipole` and `velocity_frame_shell_dipole` on the IDENTICAL
   `centers.s_centers`/`v_centers`; asserts both estimators' `n_centers == centers.n_centers`
@@ -431,7 +623,16 @@ Same matplotlib-backend discipline as `velocity_centered.py` (never calls `matpl
   builds the per-center frame-gap breakdown: each center's own normalized curve
   (`per_center_dipole * norm_scale_b`, no `/n_centers`) averaged over shells, differenced
   vel − obs, so the per-center decomposition sums back to the plotted stack
-  (`mean_alpha(summary_alpha) == mean_b(zeta_hat_b)`).
+  (`mean_alpha(summary_alpha) == mean_b(zeta_hat_b)`). This identity is pure index exchange and
+  holds for ANY `shell_edges` binning — it does not break under log spacing. What changes is
+  interpretation: the shell average (`.mean(axis=1)`) is a mean over the shell INDEX b, UNWEIGHTED
+  — "uniform in r" under the old linear default, "uniform in log r" once
+  `cfg.shells.spacing == SPACING_LOG`, where five of twelve bins sit below 5.66 h⁻¹Mpc, making
+  this per-center summary noticeably more sensitive to the one-halo/exclusion regime. An
+  `n_bar·V_b`-weighted mean is deliberately NOT used instead — it would break the very identity
+  this function's docstring promises, since the plotted `mean_b(zeta_hat_b)` is itself
+  unweighted; a `summary_radial_window` knob is the right follow-up if this degrades in
+  practice.
 - `make_comparison_figure(cfg, results, comparison) -> Figure` — the main deliverable: top
   panel overlays both frames' ζ̂₁ with SEM bands and their own (differently-constructed) nulls;
   bottom panel plots both frames' monopoles on a TWIN y-axis (obs left, vel right, each
@@ -439,7 +640,15 @@ Same matplotlib-backend discipline as `velocity_centered.py` (never calls `matpl
   speed (`⟨|u|⟩` and `⟨|v|⟩` respectively) — but they remain a projection factor apart, so a
   shared axis would compress the smaller one and hide the presence/absence of the r-dependent
   leakage trend that is the comparison's core finite-distance diagnostic. Neither panel
-  carries a zero reference line.
+  carries a zero reference line. Plotting abscissa is
+  `dvcorr.config.volume_weighted_shell_radii(results.obs_result.shell_edges)` (`r_eff`), not
+  `comparison.shell_centers` (left alone); `apply_radial_axis_scale(ax_mono_obs, cfg.shells)`
+  (imported from `velocity_centered.py`, not redefined) is called on the bottom axis — the
+  `twinx()` velocity-frame monopole axis shares it automatically — and the title includes
+  `_binning_description(cfg.shells)` (also imported) in place of the old bare `r_max=…`.
+  `apply_dipole_axis_scale` (also imported, symlog y under `SPACING_LOG`) is called on THREE
+  axes, not one: `ax_dipole`, `ax_mono_obs`, AND `ax_mono_vel` — `twinx()` only shares the
+  X-axis, so the velocity-frame monopole's own y-scale needs its own call.
 - `make_angle_diagnostic_figure(cfg, comparison) -> Figure` — top panel bins
   `per_center_dipole_difference` by `per_center_delta` (`_N_ANGLE_BINS` bins over `[0, π/2]`,
   degrees on the axis, `_MAX_ANGLE_DEG = 90`) with an SEM errorbar over a scatter of individual
@@ -448,7 +657,138 @@ Same matplotlib-backend discipline as `velocity_centered.py` (never calls `matpl
   `[-1, 1]`). A few high-delta
   outliers driving the top-panel gap ⇒ bulk-flow contamination; a smooth spread ⇒ genuine
   projection geometry; an excess at low delta relative to the isotropic reference ⇒ flow
-  directions aligned with the lines of sight (residual bulk motion).
+  directions aligned with the lines of sight (residual bulk motion). Its axes are angular
+  (degrees), not radial-dipole y-axes, so neither `apply_radial_axis_scale` nor
+  `apply_dipole_axis_scale` is ever called here. Its docstring now also carries the log-spacing
+  sensitivity note `normalize_comparison` already had: on an unclustered synthetic,
+  `std(summary_alpha)` across centers goes 14.9 → 234.3 switching linear → log spacing, with
+  the three innermost log bins alone supplying 75% of that variance (bin 0 alone 33%) — this
+  figure's per-center y-quantity is that same unweighted `summary_alpha`, so under log spacing
+  it risks becoming a plot of which centers happened to catch a tracer inside ~2 h⁻¹Mpc rather
+  than the bulk-flow-vs-projection-geometry diagnostic it is meant to be.
+
+### `src/dvcorr/pipeline/redshift_space_comparison.py` **[done]**
+The single source of truth for the real-space vs. redshift-space comparison: the SAME
+`velocity_centered_shell_dipole` (UNCHANGED — no new argument, no carry-over parameter) run
+twice on a shared center set, once on real positions and once on redshift-space positions
+(`dvcorr.redshift_space.to_redshift_space`). Consumed by
+`scripts/plot_redshift_space_comparison.py` and
+`notebooks/07_redshift_space_comparison.ipynb`. Reuses `RunConfig`, `draw_candidates`,
+`global_number_density`, `NormalizedDipole`, `normalize_result`, `shell_dipole_norm_scale`,
+`SharedCenterSet`, `select_shared_centers`, and `_load_all_halos` from `velocity_centered.py`
+— does NOT reuse `load_and_carve` (needs a different, two-pass carve; see
+`load_and_carve_buffered` below) but DOES reuse the CSV-reading helper it is built on, so the
+two-pass carve costs one catalog read, not two. Same matplotlib-backend discipline as the
+other two pipeline modules.
+
+**Volume construction — two separate problems, two different fixes** (see the module
+docstring for the full argument):
+
+- **Tracers** leak across the `R_sub` boundary in BOTH directions once displaced. Fix: carve
+  the tracer buffer at `R_sub + v_margin` (`load_and_carve_buffered`, ~32% more rows at
+  `v_margin`'s "max" default — negligible), displace the FULL buffer, THEN restrict to
+  `R_sub` (`build_tracer_spaces`). Restricting first would discard exactly the tracers the
+  buffer exists to keep.
+- **Centers** use a uniform core margin `r_max + v_margin`, applied to REAL positions —
+  **never** to a center's displaced position (that would be velocity-conditioned selection:
+  near the far boundary it drops outward-movers and keeps inward-movers, skewing ⟨u⟩ with
+  position). `v_margin` is a configurable statistic on `|v_r|` (`"max"`, the true bound, or
+  `"percentile"`, cheaper but requiring an additional GLOBAL `|v_r|` cut on centers when
+  selected — legitimate because it is sign-symmetric and position-independent, unlike the
+  displaced-position cut). A **triangle-inequality argument**
+  (`select_redshift_shared_centers`'s docstring) shows the widened real-position margin
+  ALREADY GUARANTEES every surviving center's displaced position clears the plain `r_max`
+  margin `velocity_centered_shell_dipole` re-applies internally — so no displaced-position
+  check is ever needed, and the through-observer flip guard applied on top is a safety net,
+  not the mechanism keeping the two runs' center sets aligned.
+- **Cost:** the single-frame run's own core margin is `r_max = 64`, giving a core radius of
+  236 h⁻¹Mpc (candidate volume fraction ≈ 49%, measured 48.3%: n_candidates = 4000,
+  n_centers = 1933). With `v_margin` at its "max" default, the core radius shrinks further to
+  ~206 h⁻¹Mpc (candidate volume fraction ≈ 49% → ≈ 32%, roughly a third fewer centers than the
+  currently published single-frame run) — the documented, deliberate price of a like-for-like
+  comparison.
+
+**n̄ normalization — both runs share the REAL-space n̄** (decision documented in the module
+docstring): computed from `TracerSpaces.n_real_inside` (the POST-restriction count), never
+the buffered count (that substitution silently inflates n̄ by ~32% and suppresses ζ̂₁ by the
+same amount in BOTH runs, with no shape change to reveal it — the exact bug
+`scripts/plot_velocity_centered_dipole.py:64`'s `n_bar` call site would hit if handed a
+buffered carve). Both realized counts (`n_real_inside_r_sub`, `n_redshift_inside_r_sub`) are
+logged and returned, expected to agree to well under a percent.
+
+- `RedshiftSpaceRunConfig(RunConfig)` — adds `v_margin_statistic` (`"max"`/`"percentile"`),
+  `v_margin_percentile` (default 99.9), `flip_guard_floor` (default
+  `dvcorr.redshift_space.FLIP_GUARD_FLOOR`), `redshift_shuffle_seed` (distinct from
+  `shuffle_seed`), `comparison_output_name`, `single_center_output_name`, and
+  `example_center_index` (which shared center the single-center figure plots).
+- `BufferedCarve` (frozen dataclass) / `load_and_carve_buffered(cfg, paths) -> BufferedCarve`
+  — one `_load_all_halos` read, two in-memory carves: a plain `sub_volume_radius` pass (its
+  population's `|v_r|` sets `v_margin`, via `dvcorr.redshift_space.radial_velocity` +
+  `v_margin_from_statistic`), then the buffered `sub_volume_radius + v_margin` pass. Exposes
+  `pos_core`/`vel_core` (the plain-radius population — the correct source for candidate
+  centers) alongside `pos_buffer`/`vel_buffer`, so no script/notebook cell needs to
+  re-derive that subset by re-filtering the buffer.
+- `TracerSpaces` (frozen dataclass) / `build_tracer_spaces(cfg, buffer, observer) ->
+  TracerSpaces` — displaces the FULL buffer
+  (`dvcorr.redshift_space.to_redshift_space`), then restricts both the real and displaced
+  arrays to `R_sub`. Carries STABLE buffer-row ids (`real_ids`/`redshift_ids`) alongside each
+  restricted array — required because the two are different positional subsets of the same
+  buffer, so a raw positional-index comparison between them would be nonsense (see
+  `membership_diagnostics` below). Logs the real/redshift flux-check counts and the
+  through-observer-guard drop count.
+- `RedshiftCenterSet` (frozen dataclass) / `select_redshift_shared_centers(cfg, s_candidates,
+  v_candidates, observer, v_margin_kms, v_margin_mpc) -> RedshiftCenterSet` — three cuts:
+  `select_shared_centers` with `core_margin = r_max + v_margin` (on real positions) → the
+  optional global `|v_r|` cut (percentile statistic only) → the through-observer flip guard
+  on the survivors' own displacement, applied so BOTH runs see the identical survivor set.
+  Returns row-aligned `s_centers_real`/`s_centers_redshift` plus a SINGLE shared `v_centers`
+  (the concrete statement of n̂ invariance: `velocity_centered_shell_dipole` recomputes
+  `n_hat_V,alpha` from whichever `s_centers` it gets, and that recomputation is provably
+  identical in either space).
+- `RedshiftSpaceFrameResults` (frozen dataclass): `real_result`, `redshift_result` (both
+  `VelocityCenteredShellDipoleResult`), `centers`, `tracers`.
+- `run_both_spaces(cfg, centers, tracers, observer) -> RedshiftSpaceFrameResults` — calls
+  `velocity_centered_shell_dipole` twice, unchanged, differing ONLY in which position arrays
+  are passed; asserts both calls' `n_centers == centers.n_centers` (`RuntimeError` if not —
+  mirrors `run_both_frames`'s row-alignment check, guaranteed to hold here by
+  `select_redshift_shared_centers`'s triangle-inequality argument).
+- `RedshiftSpaceComparison` (frozen dataclass): `real`, `redshift` (both `NormalizedDipole`),
+  `shell_centers`, `n_bar`, `n_real_inside_r_sub`, `n_redshift_inside_r_sub`.
+- `normalize_redshift_comparison(cfg, results) -> RedshiftSpaceComparison` — `normalize_result`
+  on each raw result, both with the SAME real-space `n_bar`
+  (`global_number_density(results.tracers.n_real_inside, cfg.sub_volume_radius)`), distinct
+  shuffle seeds (`cfg.shuffle_seed`, `cfg.redshift_shuffle_seed`).
+- `MembershipDiagnostics` (frozen dataclass) / `membership_diagnostics(s_centers,
+  s_tracers_real, real_ids, s_tracers_redshift, redshift_ids, shell_edges) ->
+  MembershipDiagnostics` — STANDALONE, deliberately NOT part of the estimator (runs its own
+  `cKDTree` query against each tracer array, so the estimator never needs an
+  N_c × N_members index set). Per shell: `net_change` (Σ_α (N_redshift,α,b − N_real,α,b),
+  aggregated and per-center) and churn (`churn_only_real`/`churn_only_redshift`/
+  `churn_intersection`, aggregated and per-center) — a shell with unchanged count but fully
+  swapped membership shows up in churn, not in net change. All set algebra is on the STABLE
+  buffer-row ids, never on `query_ball_point`'s positional output (which is positional in
+  whichever array was queried, and the two tracer arrays are different subsets).
+- `make_redshift_comparison_figure(cfg, results, comparison) -> Figure` — center-averaged,
+  (3, 1) two-panel layout (hard rule 6): top panel overlays both spaces' ζ̂₁ with SEM bands
+  and their own (`u`-shuffle) nulls; bottom panel plots both monopoles on a SINGLE shared
+  y-axis (unlike the observer/velocity-frame comparison's twin axis — both curves here are
+  the same kind of quantity on the same `u_α` values, differing only through shell occupancy,
+  so there is no projection-factor scale gap to hide behind separate axes). Plotting abscissa
+  is `dvcorr.config.volume_weighted_shell_radii(results.real_result.shell_edges)` (`r_eff`),
+  not `comparison.shell_centers` (left alone); `apply_radial_axis_scale(ax_mono, cfg.shells)`
+  and `_binning_description(cfg.shells)` in the title, both imported from `velocity_centered.py`.
+  `apply_dipole_axis_scale(ax, cfg.shells)` (also imported) is called on BOTH `ax_dipole` and
+  `ax_mono` — a single shared y-axis here (unlike the twin-axis comparison figure), so one call
+  per panel suffices.
+- `make_single_center_figure(cfg, results, n_bar) -> Figure` — the same (3, 1) layout for ONE
+  center (`cfg.example_center_index`), real and redshift overlaid, NO error band. Dipole:
+  `per_center_dipole[a] * shell_dipole_norm_scale(...)` (no `/n_centers`, only one center);
+  monopole: the RAW `per_center_speed[a] * per_center_count[a]`, deliberately un-normalized
+  (a single-center shape read-out, not a comparison to the ensemble expectation). Same abscissa
+  and axis-scale/title wiring as `make_redshift_comparison_figure` above: `r_eff` from
+  `results.real_result.shell_edges` (already read there for `norm_scale`, `shell_centers` left
+  alone), `apply_radial_axis_scale(ax_mono, cfg.shells)`, `apply_dipole_axis_scale` on both
+  `ax_dipole` and `ax_mono`, `_binning_description(cfg.shells)`.
 
 ---
 
@@ -497,6 +837,20 @@ it is fast and safe, used as a smoke test.
 
 Usage: `.venv/bin/python -m scripts.plot_velocity_frame_comparison`.
 
+### `scripts/plot_redshift_space_comparison.py` — thin driver **[done]**
+Mirrors the other two scripts' structure exactly. All algorithmic content lives in
+`dvcorr.pipeline.redshift_space_comparison` (plus `draw_candidates` reused from
+`dvcorr.pipeline.velocity_centered`); this script only wires it together. Module body:
+`import matplotlib; matplotlib.use("Agg")` before importing the pipeline module, then a
+single `main()` that chains `load_and_carve_buffered` → `build_tracer_spaces` →
+`draw_candidates` (on `buffer.pos_core`/`vel_core`) → `select_redshift_shared_centers` →
+`run_both_spaces` → `normalize_redshift_comparison` → `make_redshift_comparison_figure` and
+`make_single_center_figure`, saving BOTH PNGs (`cfg.comparison_output_name`,
+`cfg.single_center_output_name`) under `PathsConfig().output_dir`. Never runs at import time
+(`if __name__ == "__main__"`); importing it is fast and safe, used as a smoke test.
+
+Usage: `.venv/bin/python -m scripts.plot_redshift_space_comparison`.
+
 ---
 
 ## `tests/`
@@ -536,7 +890,62 @@ Usage: `.venv/bin/python -m scripts.plot_velocity_frame_comparison`.
   amplitude); and a purely transverse center (`u == 0`) contributes nothing without a NaN.
   `test_permuting_the_speed_alone_is_not_a_null` is the companion to the shuffle-null test:
   it asserts the naive positive-weight permutation does NOT collapse, which is *why*
-  `normalize_result` undoes the axis flip first.
+  `normalize_result` undoes the axis flip first. Extended in the redshift-space task,
+  immediately after the joint gate, with the REDSHIFT-SPACE sign gate and an
+  epsilon-continuity check on the identical toy (`dvcorr.redshift_space.to_redshift_space`):
+  the redshift-space run is positive (does not contradict hard rule 2 — that rule is for the
+  group-centered ξ_Tu,1, this is ζ₁) with pair counts identical between spaces (2048 both) and
+  a measured ratio of 0.957× — asserted as a SIGN + measured-ratio pin, with an explicit
+  comment that this is a suppression, not an enhancement, and no directional amplitude claim
+  is made. The continuity check asserts the RELATIVE deviation `|1 - D_redshift/D_real| <=
+  0.06 * eps` (measured slope ≈ 0.040, asserted with headroom) across `eps` from `1` to
+  `1e-3` — the absolute-agreement version would be trivially true, since both dipoles vanish
+  together as `eps -> 0`.
+  Geometric-edge (non-uniform bin width) tests: `test_geometric_edges_bin_tracers_correctly`
+  (hand-placed tracers land in the correct bins of `log_shell_edges`-built edges);
+  `test_expected_shell_occupancy_matches_analytic_volume_for_geometric_edges`;
+  `test_empty_shell_under_geometric_edges_normalizes_to_zero_not_nan` (a genuinely empty
+  geometric bin normalizes to `0.0`, not `NaN`). The binning-invariance gate —
+  `normalize_stacked_dipole`'s volume-weighted-tiling identity, `zeta_hat_linear == Sum_k
+  zeta_hat_geom_k * (V_geom_k / V_linear)` for any tiling of the same [10, 30] interval — is
+  split into TWO tests sharing one body (`_assert_binning_invariance`):
+  `test_binning_invariance_on_a_coherent_infall_field`, the STRENGTHENED version
+  (`_multi_radius_gate_toy`, centers on 5 concentric shells at r = 11/14/18/25/29 h⁻¹Mpc around
+  a single tracer, occupying all four of `_GATE_GEOM_EDGES`'s sub-bins with different dipole
+  contributions), and `test_binning_invariance_delta_function_toy`, the original single-radius
+  version (`_joint_gate_toy`, one occupied sub-bin) kept as a separate, simpler check. The
+  strengthening matters: with only one sub-bin occupied, corrupting any of the three EMPTY
+  sub-bins' volumes by even 10⁶× left the identity unaffected (relerr ~1e-16) — a real
+  per-bin-volume bug in an empty bin would have passed silently. Self-checked by temporarily
+  corrupting one non-innermost OCCUPIED bin's volume by 5% in `expected_shell_occupancy` and
+  confirming `test_binning_invariance_on_a_coherent_infall_field` fails (it does) while
+  `test_binning_invariance_delta_function_toy` still passes (that bin is empty in its toy) —
+  then reverting.
+- `tests/test_redshift_space.py` **[done]** — transform-level tests for
+  `dvcorr.redshift_space`: the zero-velocity limit (`to_redshift_space` is the identity when
+  every velocity is zero); displacement direction (outward/inward velocity moves the halo
+  further from / closer to the observer); n̂ (and hence `u`) invariance under the transform,
+  pinned on the shared infall toy with an explicit `atol` reproducing the measured 3.3e-16 /
+  8.5e-14 precision; the through-observer flip guard (a constructed near-observer,
+  fast-inward halo is dropped and counted, and the guard's floor is a strict `>`, not `>=`);
+  `radial_velocity` against a hand-computed projection; `v_margin_from_statistic`'s two
+  statistics and its `ValueError` on an unknown one; input validation (mismatched shapes,
+  non-finite velocity, non-positive `flip_guard_floor`); `RedshiftSpaceTransform`'s
+  frozen-dataclass contract.
+- `tests/test_redshift_space_comparison.py` **[done]** — pipeline-level tests for
+  `dvcorr.pipeline.redshift_space_comparison`, built on small synthetic populations
+  (`_synthetic_buffer`, a hand-built stand-in for `load_and_carve_buffered`'s output — never
+  the real MDPL2 catalog). Shared center set: `s_centers_real`/`s_centers_redshift` are
+  ROW-ALIGNED (an independent re-run of `to_redshift_space` on `s_centers_real`/`v_centers`
+  reproduces `s_centers_redshift` exactly, which can only hold if the two arrays describe the
+  same centers in the same order); `run_both_spaces` preserves `n_centers` and does not raise
+  on an ordinary synthetic population; the percentile `v_margin_statistic` drops centers with
+  `|v_r|` above it globally. Membership diagnostics: an all-zero-velocity population gives
+  zero net change AND zero churn in every shell (paired with, not a replacement for,
+  `test_redshift_space.py`'s position-level zero-velocity check — this one additionally
+  guards against a broken pipeline silently reusing the same tracer array for both spaces);
+  a deliberately adversarial case with mismatched array lengths/order but overlapping stable
+  ids shows churn is computed on those ids, not on `query_ball_point`'s positional output.
 - `tests/test_velocity_frame_dipole.py` **[done]** — tests for the observer-free
   velocity-frame dipole (`dvcorr.estimators.velocity_frame_dipole`) and its pipeline
   (`dvcorr.pipeline.velocity_frame_comparison`). Imports the shared toys from
@@ -575,6 +984,18 @@ Usage: `.venv/bin/python -m scripts.plot_velocity_frame_comparison`.
   `from dvcorr import conventions`, `from dvcorr.estimators.shell_dipole import shell_dipole`,
   `from dvcorr.config import (CosmologyConfig, PathsConfig, SelectionConfig, Settings,
   ShellConfig, default_settings)`.
+- `tests/test_plot_wiring.py` **[done]** — pins the log/linear radial x-axis wiring
+  `apply_radial_axis_scale` adds to `dvcorr.pipeline.velocity_centered.make_figure`: a log
+  `ShellConfig` gives `ax.get_xscale() == "log"` with `ax.get_xlim()` pinned to the outer shell
+  edges; a linear one gives `"linear"`, unchanged. Also pins the companion y-axis wiring,
+  `apply_dipole_axis_scale`: a log `ShellConfig` gives BOTH `make_figure` panels
+  (`ax_dipole`, `ax_mono`) `get_yscale() == "symlog"`; a linear one gives `"linear"` on both,
+  unchanged — same backward-compatibility guarantee as the x-axis case. Builds a tiny
+  one-center/zero-tracer synthetic result (shape-correct, values irrelevant) rather than
+  running the real pipeline; calls `matplotlib.use("Agg")` itself at module top, before
+  importing `dvcorr.pipeline.velocity_centered` — the consumer selects the backend, the library
+  never
+  does (that module's own backend-discipline note).
 - `tests/__init__.py` — present so `from tests.test_geometry import …` resolves when pytest
   is run from the repo root (`testpaths = ["tests"]` in `pyproject.toml`).
 
@@ -621,6 +1042,23 @@ Nothing load-bearing; diagnostics that import the real modules, never reimplemen
   geometry; low-δ excess over the isotropic `sin δ` reference ⇒ residual bulk motion). Saves both PNGs via the same `paths.output_dir` / `cfg` logic as the script's
   `main()` and displays each returned `Figure` inline (never `plt.show`). Unlike 04/05 this
   one **is** executed and its outputs are kept — it is the record of the comparison run.
+- `07_redshift_space_comparison.ipynb` **[done]** — exploratory twin of
+  `scripts/plot_redshift_space_comparison.py`. Every code cell calls one stage of
+  `dvcorr.pipeline.redshift_space_comparison` (`load_and_carve_buffered`,
+  `build_tracer_spaces`, `select_redshift_shared_centers`, `run_both_spaces`,
+  `normalize_redshift_comparison`, `membership_diagnostics`, `make_redshift_comparison_figure`,
+  `make_single_center_figure`) plus `draw_candidates` reused unchanged from
+  `dvcorr.pipeline.velocity_centered` — nothing is reimplemented. One stage per cell, markdown
+  between them covering: why tracers need a buffered carve while centers need a WIDENED
+  real-position margin instead (two different fixes for two different boundary problems); why
+  selecting centers on their displaced position would be a real bias, not just inelegant, and
+  why the widened margin makes that check unnecessary by construction (the
+  triangle-inequality argument); the shared, real-space n̄ decision and the ~32%-error trap it
+  avoids; the center-averaged comparison figure's single (not twin) monopole y-axis, and why
+  that is legitimate here specifically; the single-center example figure; and the membership
+  diagnostics' net-change-vs-churn distinction. **Not executed as part of authoring** —
+  outputs are cleared, mirroring notebook 05's own convention (the MDPL2 catalog load is long
+  and this task explicitly does not require running it).
 
 ## `Imports from old repo/` — reference dump (read only)
 The bulk-flow project's working code, not a package and not importable. Copy and adapt

@@ -13,6 +13,16 @@ asserted in a docstring. If this fails while the group-centered gate
 (tests/test_shell_dipole.py) still passes, the bug is in the new estimator's
 orientation bookkeeping, not in the shared convention.
 
+Immediately after the joint gate: the REDSHIFT-SPACE extension of the same
+toy (`dvcorr.redshift_space.to_redshift_space`) -- the sign gate carried
+through a redshift-space run of the identical estimator, and an
+epsilon-continuity check that the redshift-space and real-space dipoles
+converge as the imposed velocity shrinks to zero. See
+`tests/test_redshift_space.py` for the transform-level tests (zero-velocity
+limit, displacement direction, n_hat invariance, the through-observer flip
+guard) and `tests/test_redshift_space_comparison.py` for the pipeline-level
+ones (the shared center set, membership diagnostics).
+
 The rest pin the mechanical contracts the joint gate silently relies on:
 `real_y10` against scipy's own normalized spherical harmonic, the reversed
 construction against an independent hand-assembled path, isotropy killing
@@ -28,7 +38,10 @@ import pytest
 from scipy.special import sph_harm_y
 
 from dvcorr import conventions
+from dvcorr.config import log_shell_edges
 from dvcorr.geometry import mu_cosine, pair_separation, unit_vector
+from dvcorr.pipeline.velocity_centered import normalize_stacked_dipole
+from dvcorr.redshift_space import to_redshift_space
 from dvcorr.estimators.shell_dipole import (
     center_standard_error,
     core_center_mask,
@@ -130,6 +143,131 @@ def test_joint_sign_gate_group_and_velocity_centered_are_opposite():
     # Opposite signs -- zeta_ell = (-1)**ell * xi_Tu,ell made concrete.
     assert np.sign(vc_result.dipole[0]) == -np.sign(gc_result.dipole[0])
     assert abs(recovered_vc) == pytest.approx(abs(recovered_gc), rel=0.1)
+
+
+# ---------------------------------------------------------------------------
+# Redshift-space sign gate (dvcorr.redshift_space)
+# ---------------------------------------------------------------------------
+#
+# Extends the SAME toy infall configuration used above: the velocity-object
+# centers (`vc_centers`) and the single density tracer (`vc_tracers`) are run
+# through `dvcorr.redshift_space.to_redshift_space` -- centers displaced by
+# their own imposed infall velocity, the tracer left at rest (v = 0, so it is
+# its own fixed point under the transform -- see
+# `tests/test_redshift_space.py::test_zero_velocity_gives_identical_positions`;
+# this toy never assigned the density tracer a velocity in the first place,
+# so "at rest" is not a simplification of the toy, it is the toy) --
+# then `velocity_centered_shell_dipole` (UNCHANGED) is run a second time on
+# the displaced positions, with the SAME `v_centers`.
+#
+# Sign: this does NOT contradict hard rule 2 ("infall gives a negative
+# dipole"). That rule is stated for the GROUP-CENTERED xi_Tu,1; this toy's
+# velocity-centered zeta_1 is already POSITIVE for infall by construction
+# (the joint sign gate above, and shell_dipole.py:166-173's "positive zeta_1
+# is correct, negative is the bug"). Displacing into redshift space changes
+# WHICH tracers fall in which shell (here, trivially, it changes which
+# CENTERS' shells the one static tracer falls into), not the sign
+# convention -- so the redshift-space run must ALSO be positive, and a
+# negative sign here would be the same orientation bug the joint gate
+# guards against, not a new redshift-space-specific one.
+
+
+def test_redshift_space_infall_dipole_is_positive_and_suppressed_not_enhanced():
+    """Redshift-space zeta_1 on the infall toy: sign preserved, amplitude SUPPRESSED.
+
+    Measured on this exact toy (R_CENTER=200, R_SHELL=20, V_INFALL=-200,
+    shell_edges=[10, 30]): pair counts are identical between the two runs
+    (2048 both -- the single tracer is within range of every center in both
+    spaces), and the redshift-space dipole is 0.957x the real-space one.
+    This is a SUPPRESSION, not an enhancement: on a thin single shell of
+    pure radial infall, redshift-space displacement squashes the shell
+    members toward the (fixed) tracer along each center's own line of sight,
+    reducing the realized Sigma Y_10 (the `2r/3R`-type geometric dilution
+    that also drives the group-centered monopole leakage
+    -- `dvcorr.geometry.mu_cosine`'s docstring). The Kaiser-boost intuition
+    (RSD enhances clustering along the line of sight in the linear,
+    broad-field regime) does not apply to this geometry, and this test
+    makes no such claim -- it pins the SIGN and records the measured ratio,
+    nothing about direction of amplitude change in general.
+    """
+    s_center, s_neighbors, u, v_vec = _infall_shell_with_velocities()
+    shell_edges = np.array([0.5 * R_SHELL, 1.5 * R_SHELL])
+    vc_centers, vc_velocities, vc_tracers = _joint_gate_toy()
+
+    real_result = velocity_centered_shell_dipole(
+        s_centers=vc_centers, v_centers=vc_velocities, s_tracers=vc_tracers,
+        shell_edges=shell_edges, sub_volume_radius=_VC_SUB_VOLUME_RADIUS,
+    )
+
+    center_transform = to_redshift_space(vc_centers, vc_velocities)
+    tracer_transform = to_redshift_space(vc_tracers, np.zeros_like(vc_tracers))
+    assert center_transform.n_dropped == 0
+    assert tracer_transform.n_dropped == 0
+
+    redshift_result = velocity_centered_shell_dipole(
+        s_centers=center_transform.s_redshift, v_centers=vc_velocities,
+        s_tracers=tracer_transform.s_redshift,
+        shell_edges=shell_edges, sub_volume_radius=_VC_SUB_VOLUME_RADIUS,
+    )
+
+    assert redshift_result.dipole[0] > 0.0   # sign gate: must FAIL LOUDLY if it flips
+    assert redshift_result.pair_count.sum() == real_result.pair_count.sum() == N_SHELL
+
+    ratio = redshift_result.dipole[0] / real_result.dipole[0]
+    assert ratio == pytest.approx(0.957, abs=0.01)   # measured suppression, NOT an enhancement claim
+
+
+def test_redshift_space_epsilon_continuity():
+    """As the imposed velocity -> 0, the redshift-space run converges to the real-space one.
+
+    Both dipoles are themselves O(eps) and vanish together as the velocity
+    is scaled toward zero, so "the two runs agree to O(eps)" in an ABSOLUTE
+    sense is trivially true and not the interesting claim. The real content
+    is the RELATIVE deviation |1 - D_redshift/D_real|, which this project's
+    author measured to be clean-linear on this exact toy:
+
+        eps      ratio      (1-ratio)/eps
+          1     0.957371     0.04263
+        0.5     0.979389     0.04122
+        0.1     0.995984     0.04016
+       0.01     0.999601     0.03992
+       1e-3     0.999960     0.03990
+
+    i.e. C ~= 0.040 in |1 - ratio| <= C * eps; asserted below with headroom
+    (0.06) rather than pinned to the measured constant.
+
+    Why "no displacement but a non-trivial signal" cannot be constructed as
+    a sharper null: displacement (`to_redshift_space`'s s_mag = r_mag +
+    v_r/100) and the estimator's per-center weight (|u_alpha| = |v_r|,
+    conventions.VELOCITY_AXIS_CONVENTION) are BOTH driven by the same v_r --
+    there is no way to scale the imposed velocity toward zero (killing the
+    displacement) while holding the dipole's own weight, and hence its
+    signal, fixed.
+    """
+    s_center, s_neighbors, u, v_vec = _infall_shell_with_velocities()
+    shell_edges = np.array([0.5 * R_SHELL, 1.5 * R_SHELL])
+    vc_centers, _, vc_tracers = _joint_gate_toy()
+
+    _EPSILON_SLOPE_HEADROOM = 0.06   # measured slope ~= 0.040; asserted with margin
+
+    for eps in (1.0, 0.5, 0.1, 0.01, 1e-3):
+        v_eps = eps * v_vec
+
+        real_result = velocity_centered_shell_dipole(
+            s_centers=vc_centers, v_centers=v_eps, s_tracers=vc_tracers,
+            shell_edges=shell_edges, sub_volume_radius=_VC_SUB_VOLUME_RADIUS,
+        )
+        center_transform = to_redshift_space(vc_centers, v_eps)
+        tracer_transform = to_redshift_space(vc_tracers, np.zeros_like(vc_tracers))
+        redshift_result = velocity_centered_shell_dipole(
+            s_centers=center_transform.s_redshift, v_centers=v_eps,
+            s_tracers=tracer_transform.s_redshift,
+            shell_edges=shell_edges, sub_volume_radius=_VC_SUB_VOLUME_RADIUS,
+        )
+
+        ratio = redshift_result.dipole[0] / real_result.dipole[0]
+        relative_deviation = abs(1.0 - ratio)
+        assert relative_deviation <= _EPSILON_SLOPE_HEADROOM * eps
 
 
 # ---------------------------------------------------------------------------
@@ -545,6 +683,329 @@ def test_outermost_edge_is_included_in_the_last_shell():
 
 
 # ---------------------------------------------------------------------------
+# Non-uniform (geometric) shell_edges, end-to-end
+# ---------------------------------------------------------------------------
+#
+# Nothing above exercises a non-uniform `shell_edges` through the estimator
+# AND the normalization chain (dvcorr.pipeline.velocity_centered
+# .normalize_stacked_dipole) together -- every test above uses either a
+# single wide bin or evenly-spaced linear edges. Commit 2 flips the
+# production default to spacing="log", min_radius=1.0, max_radius=64.0,
+# n_bins=12 (edges 1, sqrt2, 2, 2 sqrt2, 4, ... 64), so these tests gate
+# that change.
+
+_GEOM_R_MIN = 1.0
+_GEOM_R_MAX = 64.0
+_GEOM_N_BINS = 12
+_GEOM_SHELL_EDGES = log_shell_edges(_GEOM_R_MIN, _GEOM_R_MAX, _GEOM_N_BINS)
+_GEOM_N_BAR = 3.7e-3  # arbitrary positive tracer number density, tracers per (h^-1 Mpc)^3
+
+
+def test_geometric_edges_bin_tracers_correctly():
+    """Hand-placed tracers at known radii fall into the correct, non-uniformly
+    -spaced shells of `_GEOM_SHELL_EDGES`, and `result.shell_edges` round-trips
+    the exact array passed in.
+    """
+    s_center, v_center = _single_vc_center()
+    radii = np.array([1.2, 3.0, 50.0])  # in bins 0 ([1, sqrt2)), 3 ([2sqrt2, 4)), 11 ([32sqrt2, 64])
+    tracers = s_center[0] + np.column_stack(
+        (np.zeros_like(radii), radii, np.zeros_like(radii))
+    )
+
+    result = velocity_centered_shell_dipole(
+        s_centers=s_center,
+        v_centers=v_center,
+        s_tracers=tracers,
+        shell_edges=_GEOM_SHELL_EDGES,
+        sub_volume_radius=conventions.MAX_ANALYSIS_RADIUS,
+    )
+
+    expected_pair_count = np.zeros(_GEOM_N_BINS)
+    expected_pair_count[[0, 3, 11]] = 1.0
+    np.testing.assert_array_equal(result.pair_count, expected_pair_count)
+    np.testing.assert_array_equal(result.shell_edges, _GEOM_SHELL_EDGES)
+
+
+def test_expected_shell_occupancy_matches_analytic_volume_for_geometric_edges():
+    """expected_shell_occupancy(n_bar, geom_edges) == n_bar * (4pi/3) * (r2**3 - r1**3)
+    bin by bin -- pins that the denominator carries no hidden uniform-dr
+    assumption that a non-uniform edge array would silently violate.
+    """
+    occupancy = expected_shell_occupancy(_GEOM_N_BAR, _GEOM_SHELL_EDGES)
+
+    r1 = _GEOM_SHELL_EDGES[:-1]
+    r2 = _GEOM_SHELL_EDGES[1:]
+    expected = _GEOM_N_BAR * (4.0 / 3.0) * np.pi * (r2**3 - r1**3)
+
+    np.testing.assert_allclose(occupancy, expected)
+
+
+def test_empty_shell_under_geometric_edges_normalizes_to_zero_not_nan():
+    """An inner geometric bin with zero tracers must come through
+    `normalize_stacked_dipole` as `zeta_hat == 0.0` EXACTLY, with finite
+    (non-NaN) SEM and finite `monopole_norm`.
+
+    This is the specific failure mode log binning makes likely: the
+    innermost bins are genuinely near-empty in a real MDPL2 run, and a 0/0
+    against the (non-uniform) volume denominator would surface as a NaN
+    silently propagating into the plotted curve, not a crash.
+    """
+    observer = np.asarray(conventions.OBSERVER_POSITION, dtype=float)
+    s_centers = observer + np.array([[200.0, 0.0, 0.0], [0.0, 200.0, 0.0]])
+    v_centers = np.array([[100.0, 0.0, 0.0], [0.0, 100.0, 0.0]])
+
+    # Tracers only at radius 10 (bin 6: [8, 8*sqrt2)) around each center --
+    # nothing lands in bin 0 ([1, sqrt2)) for either center.
+    tracers = np.vstack(
+        [
+            s_centers[0] + np.array([0.0, 10.0, 0.0]),
+            s_centers[1] + np.array([10.0, 0.0, 0.0]),
+        ]
+    )
+
+    result = velocity_centered_shell_dipole(
+        s_centers=s_centers,
+        v_centers=v_centers,
+        s_tracers=tracers,
+        shell_edges=_GEOM_SHELL_EDGES,
+        sub_volume_radius=conventions.MAX_ANALYSIS_RADIUS,
+    )
+    assert result.n_centers == 2
+    assert result.pair_count[0] == 0.0  # bin 0 genuinely empty
+
+    normalized = normalize_stacked_dipole(
+        shell_edges=result.shell_edges,
+        dipole=result.dipole,
+        monopole=result.monopole,
+        per_center_dipole=result.per_center_dipole,
+        null_dipole=result.dipole,               # any finite null suffices here
+        null_per_center_dipole=result.per_center_dipole,
+        n_centers=result.n_centers,
+        n_bar=_GEOM_N_BAR,
+    )
+
+    assert normalized.zeta_hat[0] == 0.0
+    assert np.isfinite(normalized.sem[0])
+    assert np.isfinite(normalized.monopole_norm[0])
+
+
+# Edge sets for the binning-invariance gate below: _GATE_GEOM_EDGES tiles the
+# EXACT SAME [10, 30] interval as the joint sign gate's own single wide bin
+# (_GATE_LINEAR_EDGES == [0.5*R_SHELL, 1.5*R_SHELL]) into 4 geometric
+# sub-shells, sharing both boundaries with it.
+_GATE_LINEAR_EDGES = np.array([0.5 * R_SHELL, 1.5 * R_SHELL])
+_GATE_GEOM_N_BINS = 4
+_GATE_GEOM_EDGES = log_shell_edges(
+    _GATE_LINEAR_EDGES[0], _GATE_LINEAR_EDGES[-1], _GATE_GEOM_N_BINS
+)
+_GATE_N_BAR = 1.0e-4  # arbitrary; cancels out of the volume-weighted-average identity below
+
+# Radii for the STRENGTHENED binning-invariance gate below: chosen to land
+# one in each of _GATE_GEOM_EDGES's four sub-bins
+# ([10, 13.16), [13.16, 17.32), [17.32, 22.79), [22.79, 30]), with 25 and 29
+# deliberately sharing the outermost one -- occupying every sub-bin with a
+# DIFFERENT dipole contribution is the whole point (see
+# test_binning_invariance_on_a_coherent_infall_field's docstring for why the
+# single-radius delta-function toy this generalizes was too weak a gate).
+_GATE_MULTI_RADII = (11.0, 14.0, 18.0, 25.0, 29.0)
+_GATE_N_PER_RADIUS = 512  # centers per radius shell -- enough for near-isotropy, small enough to stay fast
+_GATE_N_TOTAL = len(_GATE_MULTI_RADII) * _GATE_N_PER_RADIUS
+
+
+def _multi_radius_gate_toy() -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Generalizes `_joint_gate_toy` to several radii, so several
+    `_GATE_GEOM_EDGES` sub-bins are occupied, not just one.
+
+    `_joint_gate_toy` places every "center" on a SINGLE shell at r =
+    R_SHELL -- a delta function in radius, so exactly one of
+    `_GATE_GEOM_EDGES`'s four sub-bins is ever occupied and the
+    volume-weighted-tiling identity below collapses to a single term. Here,
+    one Fibonacci-sphere shell of centers
+    (`tests.test_geometry._sphere_directions`, `_GATE_N_PER_RADIUS` centers
+    per shell) is built around the SAME `s_center` for EACH radius in
+    `_GATE_MULTI_RADII`, using the identical recipe
+    `tests.test_geometry._infall_shell_with_velocities` uses for its one
+    shell -- same imposed infall speed `V_INFALL`, same direction
+    convention -- just repeated once per radius.
+
+    Every center, at every radius, sees the SAME single tracer, `s_center`
+    itself, at EXACTLY its own shell's radius (the vector from a shell-k
+    member at `s_center + radius_k * r_hat` back to `s_center` has magnitude
+    `radius_k` by construction): there is exactly one (center, tracer) pair
+    per center and no cross-shell contamination is possible, so this is a
+    genuine multi-radius generalization of the delta-function toy's
+    cross-contamination-free construction, not a departure from it.
+
+    Returns
+    -------
+    vc_centers : ndarray, shape (_GATE_N_TOTAL, 3)
+    vc_velocities : ndarray, shape (_GATE_N_TOTAL, 3)
+    vc_tracers : ndarray, shape (1, 3)
+        A single tracer, `s_center`.
+    """
+    observer = np.asarray(conventions.OBSERVER_POSITION, dtype=float)
+    s_center = observer + np.array([R_CENTER, 0.0, 0.0])
+
+    centers, velocities = [], []
+    for radius in _GATE_MULTI_RADII:
+        r_hat = _sphere_directions(_GATE_N_PER_RADIUS)
+        centers.append(s_center + radius * r_hat)
+        velocities.append(V_INFALL * r_hat)
+
+    vc_centers = np.vstack(centers)
+    vc_velocities = np.vstack(velocities)
+    vc_tracers = s_center[None, :]
+    return vc_centers, vc_velocities, vc_tracers
+
+
+def _assert_binning_invariance(
+    vc_centers: np.ndarray,
+    vc_velocities: np.ndarray,
+    vc_tracers: np.ndarray,
+    expected_n_total: int,
+    expected_n_occupied_geom_bins: int,
+) -> None:
+    """Shared body of the binning-invariance gate.
+
+    Parametrized by the toy handed in and how many of `_GATE_GEOM_EDGES`'s
+    four sub-bins it occupies -- the only two things
+    `test_binning_invariance_on_a_coherent_infall_field` (multi-radius) and
+    `test_binning_invariance_delta_function_toy` (single-radius) differ on.
+
+    Runs `velocity_centered_shell_dipole` under both `_GATE_LINEAR_EDGES`
+    (one wide bin) and `_GATE_GEOM_EDGES` (the same [10, 30] interval tiled
+    into 4 geometric sub-bins), then checks that `normalize_stacked_dipole`
+    divides the raw stacked dipole by `n_bar * V_b` (a shell VOLUME)
+    consistently: the raw dipole is additive across any tiling of bins (same
+    set of pairs, differently partitioned), so algebraically
+
+        zeta_hat_linear == Sum_k zeta_hat_geom_k * (V_geom_k / V_linear)
+
+    i.e. the normalized dipole in the wide linear bin must equal the
+    VOLUME-WEIGHTED AVERAGE of the normalized dipole across the geometric
+    sub-bins that tile it. This holds regardless of the underlying tracer
+    field -- it only requires `expected_shell_occupancy`'s volume to scale
+    correctly with non-uniform bin width, which is exactly what commit 2's
+    log-spacing default depends on. Verified numerically to agree with the
+    estimator's actual output to ~1e-13 relative before the `rel=1e-9`
+    tolerance below was chosen. If this fails, DO NOT loosen the tolerance
+    -- it is a real finding about the normalization arithmetic under
+    non-uniform edges, not test noise.
+
+    Sign: read `dvcorr.estimators.shell_dipole`'s module docstring before
+    asserting -- CLAUDE.md hard rule 2 ("infall gives a negative dipole") is
+    stated for the GROUP-centered xi_Tu,1. This is the VELOCITY-centered
+    zeta_1, related by zeta_ell = (-1)**ell * xi_Tu,ell
+    (conventions.nusser_multipole_sign), so it is POSITIVE for infall; do
+    not "fix" it if it comes out positive.
+    """
+    result_linear = velocity_centered_shell_dipole(
+        s_centers=vc_centers,
+        v_centers=vc_velocities,
+        s_tracers=vc_tracers,
+        shell_edges=_GATE_LINEAR_EDGES,
+        sub_volume_radius=_VC_SUB_VOLUME_RADIUS,
+    )
+    result_geom = velocity_centered_shell_dipole(
+        s_centers=vc_centers,
+        v_centers=vc_velocities,
+        s_tracers=vc_tracers,
+        shell_edges=_GATE_GEOM_EDGES,
+        sub_volume_radius=_VC_SUB_VOLUME_RADIUS,
+    )
+    assert result_linear.n_centers == result_geom.n_centers == expected_n_total
+
+    normalized_linear = normalize_stacked_dipole(
+        shell_edges=result_linear.shell_edges,
+        dipole=result_linear.dipole,
+        monopole=result_linear.monopole,
+        per_center_dipole=result_linear.per_center_dipole,
+        null_dipole=result_linear.dipole,
+        null_per_center_dipole=result_linear.per_center_dipole,
+        n_centers=result_linear.n_centers,
+        n_bar=_GATE_N_BAR,
+    )
+    normalized_geom = normalize_stacked_dipole(
+        shell_edges=result_geom.shell_edges,
+        dipole=result_geom.dipole,
+        monopole=result_geom.monopole,
+        per_center_dipole=result_geom.per_center_dipole,
+        null_dipole=result_geom.dipole,
+        null_per_center_dipole=result_geom.per_center_dipole,
+        n_centers=result_geom.n_centers,
+        n_bar=_GATE_N_BAR,
+    )
+
+    assert np.sum(result_geom.pair_count > 0.0) == expected_n_occupied_geom_bins
+    assert result_geom.pair_count.sum() == result_linear.pair_count.sum() == expected_n_total
+
+    r1 = _GATE_GEOM_EDGES[:-1]
+    r2 = _GATE_GEOM_EDGES[1:]
+    v_geom = (4.0 / 3.0) * np.pi * (r2**3 - r1**3)  # 4pi/3: sphere volume, pure math
+    v_linear = (
+        (4.0 / 3.0) * np.pi * (_GATE_LINEAR_EDGES[-1] ** 3 - _GATE_LINEAR_EDGES[0] ** 3)
+    )
+    np.testing.assert_allclose(v_geom.sum(), v_linear)  # the two edge sets truly tile
+
+    volume_weighted_average = np.sum(normalized_geom.zeta_hat * v_geom) / v_linear
+    assert normalized_linear.zeta_hat[0] == pytest.approx(volume_weighted_average, rel=1e-9)
+
+    # Sign gate: velocity-centered zeta_1 is POSITIVE for infall.
+    assert normalized_linear.zeta_hat[0] > 0.0
+    assert np.sign(normalized_linear.zeta_hat[0]) == -conventions.INFALL_DIPOLE_SIGN
+
+
+def test_binning_invariance_on_a_coherent_infall_field():
+    """The gate: non-uniform (geometric) shell_edges must preserve the whole
+    normalization chain, not just the raw estimator.
+
+    Uses `_multi_radius_gate_toy`: `_GATE_MULTI_RADII` = (11, 14, 18, 25, 29)
+    h^-1 Mpc, chosen to land in ALL FOUR of `_GATE_GEOM_EDGES`'s sub-bins
+    (25 and 29 share the outermost one). This is a STRENGTHENED version of
+    an earlier form of this test that placed every center on a single shell
+    at r = R_SHELL = 20 -- a delta function in radius occupying only ONE of
+    the four sub-bins, which left the volume-weighted-tiling identity
+    resting on a single term: corrupting the volume of any of the three
+    EMPTY sub-bins by even a factor of a million left the identity
+    unaffected (relerr ~1e-16), so a per-bin volume bug in an empty bin
+    would have passed silently -- only corrupting the one occupied bin
+    failed. With every sub-bin genuinely occupied and contributing a
+    DIFFERENT dipole amount, a volume error in ANY sub-bin now breaks the
+    identity (self-checked by temporarily corrupting one non-innermost
+    occupied bin's volume by 5% and confirming this test fails, then
+    reverting). See `test_binning_invariance_delta_function_toy` for the
+    single-bin composition case this generalizes, kept as a separate,
+    simpler check, and `_assert_binning_invariance`'s docstring for the
+    volume-weighted-average identity both tests share.
+    """
+    vc_centers, vc_velocities, vc_tracers = _multi_radius_gate_toy()
+    _assert_binning_invariance(
+        vc_centers, vc_velocities, vc_tracers,
+        expected_n_total=_GATE_N_TOTAL,
+        expected_n_occupied_geom_bins=_GATE_GEOM_N_BINS,
+    )
+
+
+def test_binning_invariance_delta_function_toy():
+    """The single-occupied-bin case `test_binning_invariance_on_a_coherent_infall_field`
+    generalizes: every center sees the SAME single tracer at EXACTLY
+    r = R_SHELL = 20 (`_joint_gate_toy`, a delta function in radius), so
+    only one of `_GATE_GEOM_EDGES`'s four sub-bins is ever occupied and the
+    other three tile empty volume. Kept as a separate, simpler check that
+    the estimator -> `normalize_stacked_dipole` chain composes correctly
+    even in this degenerate case; deliberately NOT the only version of this
+    gate any more (see the other test's docstring for why an
+    all-empty-but-one gate under-tests the volume arithmetic).
+    """
+    vc_centers, vc_velocities, vc_tracers = _joint_gate_toy()
+    _assert_binning_invariance(
+        vc_centers, vc_velocities, vc_tracers,
+        expected_n_total=N_SHELL,
+        expected_n_occupied_geom_bins=1,
+    )
+
+
+# ---------------------------------------------------------------------------
 # Empty shells / degenerate inputs
 # ---------------------------------------------------------------------------
 
@@ -627,8 +1088,15 @@ _BOUNDARY_R_SUB = 300.0        # h^-1 Mpc, mirrors notebook 04's R_SUB
 _BOUNDARY_N_TRACERS = 60000    # generous sample: a stable outer-shell residual
 _BOUNDARY_N_CANDIDATES = 4000  # candidate centers, subsampled from the tracers
 _BOUNDARY_CONST_SPEED = 300.0  # coherent radial speed imposed at every center, km/s
-_BOUNDARY_SHELL_STEP = 5.0     # h^-1 Mpc, mirrors the production script
-_BOUNDARY_R_MAX = 60.0         # h^-1 Mpc, mirrors the production script
+_BOUNDARY_SHELL_STEP = 5.0     # h^-1 Mpc, deliberately NOT the production default (see below)
+_BOUNDARY_R_MAX = 60.0         # h^-1 Mpc, deliberately NOT the production default (see below)
+# Built by hand via np.arange, not RunConfig/ShellConfig -- so this test is
+# unaffected by commit 2's production default flipping to spacing="log", and
+# is deliberately kept LINEAR here rather than switched to match it. `n_outer
+# = n_bins // 2` below only means "outer half of the shells IN RADIUS" for a
+# LINEAR binning; under log edges the same slice would instead mean "outer
+# sqrt(r_max/r_min) factor", quietly changing what this test measures without
+# any assertion or edge-count changing to reveal it.
 _BOUNDARY_SHELL_EDGES = np.arange(0.0, _BOUNDARY_R_MAX + _BOUNDARY_SHELL_STEP, _BOUNDARY_SHELL_STEP)
 _BOUNDARY_SEED = 20260723
 
@@ -692,7 +1160,12 @@ def test_core_margin_reduces_outer_shell_truncation_bias():
     default_margin_stack = normalized_stack(None)  # core_margin -> r_max
     zero_margin_stack = normalized_stack(0.0)
 
-    n_outer = n_bins // 2  # outer half of the shells, where the truncation bias lives
+    # outer half of the shells, where the truncation bias lives -- meaningful
+    # as "outer half IN RADIUS" only because _BOUNDARY_SHELL_EDGES above is
+    # deliberately LINEAR; under log edges this slice would instead mean
+    # "outer sqrt(r_max/r_min) factor", silently changing what this test
+    # measures (see the comment on _BOUNDARY_SHELL_EDGES).
+    n_outer = n_bins // 2
     residual_default = np.sum(np.abs(default_margin_stack[-n_outer:]))
     residual_zero = np.sum(np.abs(zero_margin_stack[-n_outer:]))
 

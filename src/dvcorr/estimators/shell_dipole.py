@@ -457,10 +457,12 @@ def core_center_mask(
     many boundary centers -- it is the suspected mechanism behind the
     ~+13 km/s null offset seen in the exploratory first MDPL2 run
     (notebooks/04_first_mdpl2_run.ipynb). With R_sub = 300 and
-    core_margin = r_max = 60, the surviving core ball has radius 240 -- a
-    (240/300)**3 ~= 49% volume cut, deliberately visible via
+    core_margin = r_max = 64 (dvcorr.pipeline.velocity_centered's default log
+    binning), the surviving core ball has radius 236 -- a (236/300)**3 ~=
+    49% volume cut, deliberately visible via
     `VelocityCenteredShellDipoleResult.n_candidates` /
-    `.n_centers` rather than hidden inside the estimator.
+    `.n_centers` rather than hidden inside the estimator. Measured on the
+    real MDPL2 run: n_candidates = 4000, n_centers = 1933 (48.3% survive).
     """
     observer = (
         conventions.OBSERVER_POSITION if observer is None
@@ -500,6 +502,11 @@ def expected_shell_occupancy(
         n_bar * V_b per shell, with V_b = (4*pi/3) * (r_out**3 - r_in**3) the
         volume of a spherical shell -- pure mathematics, kept inline with a
         comment (CLAUDE.md hard rule 4's exemption).
+
+    Notes
+    -----
+    The matching plotting abscissa -- the first moment of this same
+    `r**2 dr` weight -- is `dvcorr.config.shells.volume_weighted_shell_radii`.
     """
     edges = np.asarray(shell_edges, dtype=float)
     shell_volume = (4.0 / 3.0) * np.pi * (edges[1:] ** 3 - edges[:-1] ** 3)  # 4pi/3: sphere volume
@@ -652,8 +659,9 @@ class VelocityCenteredShellDipoleResult:
     n_centers : int
         Number of surviving centers, N_c, after `core_center_mask`. The
         `n_centers / n_candidates` ratio makes the core cut's volume loss
-        (~49% for R_sub = 300, core_margin = r_max = 60) visible rather than
-        silent.
+        (~49% for R_sub = 300, core_margin = r_max = 64, measured 48.3% --
+        n_candidates = 4000, n_centers = 1933 -- on the real MDPL2 run)
+        visible rather than silent.
 
     Notes
     -----

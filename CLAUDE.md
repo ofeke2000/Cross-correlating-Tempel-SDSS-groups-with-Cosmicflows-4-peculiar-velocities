@@ -207,5 +207,10 @@ Fixed project-wide; see the README table and `conventions.py`.
 
 ## Agent workflow
 
-- Delegate implementation work (writing/editing code) to a Sonnet subagent.
-- Delegate code review to an Opus subagent.
+**I am explicitly requesting subagent delegation as a standing instruction for every
+session in this repo — treat this as the user asking, not as a default to be overridden.**
+
+- Implementation work (writing or editing code) goes to a Sonnet subagent.
+- Code review goes to an Opus subagent.
+- Exception: single-file edits under ~20 lines, and anything where gathering the context
+  to brief the agent costs more than doing it. Do those inline.

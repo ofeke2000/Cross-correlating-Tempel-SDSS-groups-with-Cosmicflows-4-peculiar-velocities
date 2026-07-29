@@ -14,16 +14,20 @@ import dataclasses
 
 import numpy as np
 import pytest
+from scipy import integrate
 
 from dvcorr import conventions
 from dvcorr.estimators.shell_dipole import shell_dipole
 from dvcorr.config import (
+    SPACING_LINEAR,
+    SPACING_LOG,
     CosmologyConfig,
     PathsConfig,
     SelectionConfig,
     Settings,
     ShellConfig,
     default_settings,
+    volume_weighted_shell_radii,
 )
 
 
@@ -99,6 +103,14 @@ class TestCosmologyConfig:
 # ShellConfig
 # ---------------------------------------------------------------------------
 
+# Named constants for the log-spacing tests below, following this module's
+# existing style of naming edge-generating parameters rather than inlining
+# them (CLAUDE.md hard rule 4).
+_LOG_MIN_RADIUS = 1.0
+_LOG_MAX_RADIUS = 64.0
+_LOG_N_BINS = 12
+_TYPO_SPACING = "lgo"  # plausible typo of SPACING_LOG
+
 
 class TestShellConfig:
     def test_shell_edges_shape_and_monotonicity(self) -> None:
@@ -172,6 +184,168 @@ class TestShellConfig:
         assert result.monopole.shape == (n_bins,)
         assert result.dipole.shape == (n_bins,)
         assert result.pair_count.sum() == pytest.approx(2.0)
+
+    def test_positional_construction_is_unchanged(self) -> None:
+        """Backward-compatibility pin.
+
+        `spacing` and `n_bins` were appended AFTER `sigma_star` in the field
+        order specifically so that every existing positional call site
+        (`ShellConfig(min_radius, max_radius, radii_step)`) keeps binding to
+        the same three fields. This test fails LOUDLY if a future edit ever
+        inserts a new field earlier in the dataclass -- positional arguments
+        would then silently land on the wrong keyword with no error, only a
+        wrong binning.
+        """
+        shells = ShellConfig(20.0, 150.0, 10.0)
+        assert shells.spacing == SPACING_LINEAR
+        np.testing.assert_array_equal(shells.shell_edges, np.arange(20.0, 160.0, 10.0))
+
+    def test_log_shell_edges_are_geometric(self) -> None:
+        shells = ShellConfig(
+            _LOG_MIN_RADIUS, _LOG_MAX_RADIUS, spacing=SPACING_LOG, n_bins=_LOG_N_BINS
+        )
+        edges = shells.shell_edges
+
+        assert edges.size == _LOG_N_BINS + 1
+        # np.geomspace pins BOTH endpoints exactly -- unlike
+        # linear_shell_edges's drop-then-append dance (needed because
+        # np.arange can float-accumulate past max_radius), log_shell_edges
+        # has no drift to defend against, so an exact == is the honest
+        # assertion here; pytest.approx would stop testing that property.
+        assert edges[0] == _LOG_MIN_RADIUS
+        assert edges[-1] == _LOG_MAX_RADIUS
+        np.testing.assert_allclose(np.diff(np.log(edges)), np.log(2.0) / 2.0)
+        assert np.all(np.diff(edges) > 0.0)
+
+    def test_log_spacing_requires_positive_min_radius(self) -> None:
+        """min_radius <= 0 is invalid ONLY under log spacing (np.geomspace is
+        undefined at zero); the identical min_radius=0.0 must remain valid
+        under linear spacing, which is what keeps the existing
+        `ShellConfig(0.0, 0.3, 0.1)` case (test_shell_edges_strictly_
+        increasing_under_float_accumulation, above) working."""
+        with pytest.raises(ValueError):
+            ShellConfig(0.0, 64.0, spacing=SPACING_LOG, n_bins=12)
+
+        linear = ShellConfig(0.0, 64.0, spacing=SPACING_LINEAR)
+        assert linear.min_radius == 0.0
+
+    def test_unknown_spacing_raises(self) -> None:
+        """A plausible typo ('lgo') raises, and the message names the valid values."""
+        with pytest.raises(ValueError) as exc_info:
+            ShellConfig(spacing=_TYPO_SPACING)
+        assert SPACING_LINEAR in str(exc_info.value)
+        assert SPACING_LOG in str(exc_info.value)
+
+    def test_n_bins_must_be_positive(self) -> None:
+        with pytest.raises(ValueError):
+            ShellConfig(n_bins=0)
+        with pytest.raises(ValueError):
+            ShellConfig(n_bins=-3)
+
+    def test_log_shell_edges_respect_max_analysis_radius(self) -> None:
+        with pytest.raises(ValueError):
+            ShellConfig(
+                _LOG_MIN_RADIUS,
+                conventions.MAX_ANALYSIS_RADIUS + 1.0,
+                spacing=SPACING_LOG,
+                n_bins=_LOG_N_BINS,
+            )
+
+        at_ceiling = ShellConfig(
+            _LOG_MIN_RADIUS,
+            conventions.MAX_ANALYSIS_RADIUS,
+            spacing=SPACING_LOG,
+            n_bins=_LOG_N_BINS,
+        )
+        assert at_ceiling.shell_edges[-1] <= conventions.MAX_ANALYSIS_RADIUS
+
+    def test_shell_centers_are_still_midpoints_under_log_spacing(self) -> None:
+        """Anti-regression pin for the deliberate decision NOT to redefine
+        `shell_centers` under log spacing.
+
+        Three existing binning-correctness tests in
+        tests/test_velocity_centered_dipole.py assert
+        `shell_centers == [5, 15, 25]` on LINEAR edges; this is the companion
+        pin that a future edit does not quietly make `shell_centers` track
+        `shell_effective_radii` instead, which would break those tests
+        silently the day log spacing becomes the default.
+        """
+        shells = ShellConfig(
+            _LOG_MIN_RADIUS, _LOG_MAX_RADIUS, spacing=SPACING_LOG, n_bins=_LOG_N_BINS
+        )
+        edges = shells.shell_edges
+        centers = shells.shell_centers
+        midpoint = 0.5 * (edges[:-1] + edges[1:])
+        geometric_mean = np.sqrt(edges[:-1] * edges[1:])
+
+        np.testing.assert_allclose(centers, midpoint)
+        assert np.all(centers > geometric_mean)
+        assert np.all(centers < shells.shell_effective_radii)
+
+
+# ---------------------------------------------------------------------------
+# volume_weighted_shell_radii
+# ---------------------------------------------------------------------------
+
+_QUAD_ATOL = 1e-8       # numerical-quadrature agreement tolerance
+_SCALE_INVARIANT_Q_SQRT2 = 1.01943414   # r_eff/midpoint at bin ratio q = sqrt(2)
+
+
+class TestVolumeWeightedShellRadii:
+    def test_full_sphere_gives_the_closed_form(self) -> None:
+        """edges[0] == 0 gives exactly 0.75 * r2 -- the full-sphere closed form."""
+        r_eff = volume_weighted_shell_radii(np.array([0.0, 4.0]))
+        assert r_eff[0] == 3.0
+
+    def test_thin_shell_limit_matches_the_midpoint(self) -> None:
+        # rtol=1e-5, not the old 1e-3: true and midpoint differ by only
+        # ~1.7e-7 relative on this shell, so 1e-3 passed for anything within
+        # +/-1% and gated almost nothing. 1e-5 still holds with ~60x margin.
+        r_eff = volume_weighted_shell_radii(np.array([10.0, 10.01]))
+        np.testing.assert_allclose(r_eff, [10.005], rtol=1e-5)
+
+    def test_ordering_on_a_wide_shell(self) -> None:
+        """[1, 2]: sqrt(2) < 1.5 < r_eff < 2.0, and r_eff == 45/28 exactly."""
+        r_eff = volume_weighted_shell_radii(np.array([1.0, 2.0]))
+
+        assert np.sqrt(2.0) < 1.5 < r_eff[0] < 2.0
+        assert r_eff[0] == pytest.approx(1.6071428571, abs=1e-10)
+
+    def test_matches_dense_numerical_quadrature(self) -> None:
+        """Catches an algebra slip in the quartic closed form: compare each
+        bin's r_eff against int(r * r**2 dr) / int(r**2 dr), evaluated with
+        `scipy.integrate.quad` directly on that bin -- the same weight the
+        closed form claims to be the first moment of, computed a completely
+        independent way.
+        """
+        edges = np.geomspace(_LOG_MIN_RADIUS, _LOG_MAX_RADIUS, _LOG_N_BINS + 1)
+        r_eff = volume_weighted_shell_radii(edges)
+
+        for b in range(edges.size - 1):
+            r1, r2 = edges[b], edges[b + 1]
+            numerator, _ = integrate.quad(lambda r: r * r**2, r1, r2)
+            denominator, _ = integrate.quad(lambda r: r**2, r1, r2)
+            expected = numerator / denominator
+            assert r_eff[b] == pytest.approx(expected, abs=_QUAD_ATOL)
+
+    def test_scale_invariance_under_fixed_ratio_log_binning(self) -> None:
+        """r_eff / midpoint depends only on the bin ratio q = r2/r1, so for a
+        fixed-ratio (log) binning it is ONE constant across every bin."""
+        edges = np.geomspace(_LOG_MIN_RADIUS, _LOG_MAX_RADIUS, _LOG_N_BINS + 1)
+        r_eff = volume_weighted_shell_radii(edges)
+        midpoint = 0.5 * (edges[:-1] + edges[1:])
+        ratio = r_eff / midpoint
+
+        np.testing.assert_allclose(ratio, ratio[0])
+        assert ratio[0] == pytest.approx(_SCALE_INVARIANT_Q_SQRT2, abs=1e-6)
+
+    def test_non_monotonic_edges_raises(self) -> None:
+        with pytest.raises(ValueError):
+            volume_weighted_shell_radii(np.array([1.0, 3.0, 2.0]))
+
+    def test_single_element_array_raises(self) -> None:
+        with pytest.raises(ValueError):
+            volume_weighted_shell_radii(np.array([5.0]))
 
 
 # ---------------------------------------------------------------------------

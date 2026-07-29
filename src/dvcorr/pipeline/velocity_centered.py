@@ -25,7 +25,17 @@ top of it in `dvcorr.pipeline.velocity_frame_comparison`, which reuses
 `NormalizedDipole`, and `normalize_stacked_dipole` rather than duplicating
 any of them (CLAUDE.md's "one library, two thin consumers" model, applied a
 second time within the library itself: the comparison pipeline is additive
-on top of this one, not a fork of it).
+on top of this one, not a fork of it), and the redshift-space comparison
+built in `dvcorr.pipeline.redshift_space_comparison`, which additionally
+reuses `SharedCenterSet` and `select_shared_centers` (moved here FROM
+`velocity_frame_comparison.py` in that task, since both comparison pipelines
+need them and this module is the shared base both import from -- leaving
+them in `velocity_frame_comparison.py` would have made the redshift-space
+pipeline depend on the velocity-frame one, which it has nothing else to do
+with) and `_load_all_halos` (the single-CSV-read helper `load_and_carve`
+itself is built on, factored out so the redshift-space pipeline's dual carve
+-- a plain `sub_volume_radius` pass to derive `v_margin`, then a second,
+buffered pass -- does not re-read the ~4M-row catalog from disk twice).
 
 Matplotlib backend discipline
 ------------------------------
@@ -40,38 +50,82 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 import matplotlib.pyplot as plt
+import matplotlib.ticker as mticker
 import numpy as np
 import pandas as pd
 
 from dvcorr import conventions
-from dvcorr.config import PathsConfig, ShellConfig
+from dvcorr.config import SPACING_LOG, PathsConfig, ShellConfig, volume_weighted_shell_radii
 from dvcorr.estimators.shell_dipole import (
     VelocityCenteredShellDipoleResult,
     center_standard_error,
+    core_center_mask,
     expected_shell_occupancy,
     velocity_centered_shell_dipole,
 )
 
-# Default radial binning for this run. min_radius defaults to radii_step
-# (NOT 0.0): with candidates subsampled from the tracer array, every
-# candidate is its own tracer at r = 0 -- per the documented coincident-
-# tracer contract (velocity_centered_shell_dipole's Notes) that self-pair
-# adds +1 to pair_count[0] and +u_alpha to monopole[0], a pure self-
-# correlation term that would otherwise pollute exactly the hard-rule-6
-# monopole diagnostic panel. Starting the innermost edge at radii_step
-# excludes r = 0 (below-innermost-edge is excluded, same binning contract as
-# `shell_dipole`). notebook 04's own innermost-bin turnover check found that
-# bin to be one-halo/virial noise anyway, so nothing of value is lost.
-_DEFAULT_RADII_STEP = 5.0
-_DEFAULT_MAX_RADIUS = 60.0
+# Default radial binning for this run: log spacing, min_radius = 1.0,
+# max_radius = 64.0, n_bins = 12 -- edges 1, sqrt2, 2, 2sqrt2, 4, ... 64 (a
+# ratio of exactly sqrt(2) between consecutive edges: exact powers of two and
+# their halves). Five of the twelve bins sit below 5.66 h^-1 Mpc, which is the
+# whole point of the change: the r ~ 5 regime, previously discarded by the
+# old radii_step=5.0 linear default, is now resolved into several bins rather
+# than folded into one.
+#
+# The r = 0 self-pair -- with candidates subsampled from the tracer array,
+# every candidate is its own tracer at r = 0, so an (unguarded) min_radius = 0
+# bin would collect a pure self-correlation into pair_count[0]/monopole[0],
+# polluting exactly the hard-rule-6 monopole diagnostic panel -- is now
+# excluded STRUCTURALLY, not by convention: `ShellConfig.__post_init__`
+# hard-raises on `min_radius <= 0` under `SPACING_LOG`, so nobody can
+# re-admit it by, say, defaulting `min_radius` to 0.0 here.
+#
+# Why min_radius = 1.0 (statistical floor, then the binding physical floor):
+# requiring >= 50 expected uniform-field pairs across the stack
+# (n_bar * V_b * N_c with n_bar ~= 4e-3 (h^-1 Mpc)^-3 and N_c = 1933, measured
+# on the real run, see below) gives r1 >= 0.94; the innermost bin has ~60
+# expected pairs, boosted
+# to a few hundred realized by the clustering factor 1 + xi(r). That floor is
+# not the binding one, though: the catalog is pid = -1 (distinct halos only,
+# no subhalos), so every center carries a hard exclusion hole of
+# R_vir(host) -- 0.20 h^-1 Mpc at 1e12 Msun/h, 0.94 at 1e14, 2.0 at 1e15 --
+# and the massive centers, which dominate the |u|-weighted stack, have the
+# LARGEST holes. MDPL2's force softening (5 h^-1 kpc) and mass resolution sit
+# ~100x below this and are NOT the limit; the exclusion radius is what
+# min_radius = 1.0 is set against, not simulation resolution. The innermost
+# one or two bins are therefore the exclusion / one-halo regime, deliberately
+# SHOWN (alongside their monopole companion, hard rule 6) rather than hidden
+# behind a single wide bin.
+#
+# Why max_radius = 64.0, not 60.0 (cost, paid deliberately): r_max 60 -> 64
+# grows every `query_ball_point(s_alpha, edges[-1])` ball by (64/60)**3 ~=
+# 1.21, and `core_margin` defaults to `cfg.shells.max_radius`
+# (`select_shared_centers`, near line 469), tightening the core ball
+# 240 -> 236 h^-1 Mpc so surviving centers go from ~2048 to ~1933 out of 4000
+# candidates (-5.6%), measured on the real run (48.3% of 4000 candidates
+# survive; the carve itself keeps 464764 of 4093751 halos within
+# R_sub = 300). Worth stating explicitly because it moves the N_c printed
+# in every figure title. Runtime is independent of bin COUNT
+# (`np.bincount` is O(pairs)), so 12 log bins cost the same as the old 11
+# linear ones -- the cost above is entirely from r_max, not from n_bins.
+_DEFAULT_SPACING = SPACING_LOG
+_DEFAULT_MIN_RADIUS = 1.0
+_DEFAULT_MAX_RADIUS = 64.0
+_DEFAULT_N_BINS = 12
 
 
 def _default_shells() -> ShellConfig:
-    """`RunConfig.shells`'s default_factory: min_radius = radii_step (see above)."""
+    """`RunConfig.shells`'s default_factory: log spacing, 1 to 64 h^-1 Mpc, 12 bins.
+
+    `radii_step` is left at `ShellConfig`'s own class default (10.0) -- it is
+    inert under `spacing=SPACING_LOG` (only read for `SPACING_LINEAR`,
+    `ShellConfig`'s docstring), so there is nothing to set here.
+    """
     return ShellConfig(
-        min_radius=_DEFAULT_RADII_STEP,
+        min_radius=_DEFAULT_MIN_RADIUS,
         max_radius=_DEFAULT_MAX_RADIUS,
-        radii_step=_DEFAULT_RADII_STEP,
+        spacing=_DEFAULT_SPACING,
+        n_bins=_DEFAULT_N_BINS,
     )
 
 
@@ -93,8 +147,12 @@ class RunConfig:
         Radius of the spherical sub-volume carved around the observer,
         h^-1 Mpc. Mirrors notebook 04's R_SUB.
     shells : ShellConfig
-        Radial shell binning; see `_default_shells` for why the default
-        `min_radius` is `radii_step`, not 0.
+        Radial shell binning; see `_default_shells` (and its module-level
+        comment block above `_DEFAULT_SPACING`) for why the default
+        `min_radius` is `1.0`, not 0 -- the structural exclusion of the r = 0
+        self-pair under `SPACING_LOG`, then the exclusion-radius floor that
+        actually binds `min_radius = 1.0`. `radii_step` (the old linear
+        default's rationale) is inert under `SPACING_LOG` and not read here.
     n_candidate_centers : int
         Number of candidate velocity-object centers subsampled from the
         carved halos; `velocity_centered_shell_dipole`'s own core cut then
@@ -172,18 +230,204 @@ _GRID_ALPHA = 0.3
 _FIGSIZE = (8.0, 8.0)
 _HEIGHT_RATIOS = (3, 1)
 
+# Major-tick decades for a log radial axis, as multiples of each power of ten
+# (hard rule 4): matplotlib's default `LogLocator` over a sub-decade range
+# like [1, 64] only labels 10^0 and 10^1 and fills the rest with an
+# unlabelled minor forest, so the ticks are pinned explicitly here instead.
+_LOG_TICK_BASE = 10.0
+_LOG_TICK_SUBS = (1.0, 2.0, 5.0)
+
+
+def apply_radial_axis_scale(ax: plt.Axes, shells: ShellConfig) -> None:
+    """Put the radial x-axis in log or linear scale, matching `shells.spacing`.
+
+    Takes a `ShellConfig`, not a `RunConfig`, so it works unchanged for all
+    three config types this pipeline and its two comparison pipelines use
+    (`RunConfig`, `dvcorr.pipeline.velocity_frame_comparison.ComparisonRunConfig`,
+    `dvcorr.pipeline.redshift_space_comparison.RedshiftSpaceRunConfig`) -- only
+    `cfg.shells` is ever read.
+
+    `spacing == SPACING_LINEAR` returns immediately, doing nothing: every
+    existing linear figure must come out pixel-for-pixel unchanged by this
+    function's introduction -- that is the backward-compatibility guarantee.
+
+    Under `SPACING_LOG`:
+    - `ax.set_xscale("log")`.
+    - Major ticks via `matplotlib.ticker.LogLocator(base=10.0, subs=_LOG_TICK_SUBS)`
+      with a `ScalarFormatter` so labels read "1, 2, 5, 10, 20, 50" rather than
+      bare powers of ten, and `NullLocator()` on the minor axis so no
+      unlabelled minor forest appears. A LOCATOR, not a hardcoded tick list,
+      so the axis stays correct if `min_radius`/`max_radius` are later swept
+      to a different sub-decade range.
+    - `ax.set_xlim(edges[0], edges[-1])` from `shells.shell_edges`: log
+      autoscale pads MULTIPLICATIVELY, so without this the left edge would
+      drift toward ~0.1 and waste roughly half the visible axis on empty
+      space below `min_radius` -- necessary, not cosmetic.
+
+    Call this on the BOTTOM axis of a shared-x figure (the one carrying
+    `set_xlabel`); `sharex=True` propagates the scale to the panel(s) above.
+
+    Parameters
+    ----------
+    ax : matplotlib.axes.Axes
+    shells : ShellConfig
+
+    Returns
+    -------
+    None
+    """
+    if shells.spacing != SPACING_LOG:
+        return
+
+    ax.set_xscale("log")
+    ax.xaxis.set_major_locator(mticker.LogLocator(base=_LOG_TICK_BASE, subs=_LOG_TICK_SUBS))
+    ax.xaxis.set_major_formatter(mticker.ScalarFormatter())
+    ax.xaxis.set_minor_locator(mticker.NullLocator())
+    edges = shells.shell_edges
+    ax.set_xlim(edges[0], edges[-1])
+
+
+# Symlog y-axis threshold for the dipole/monopole panels under log radial
+# binning (hard rule 4): below this, curves sit at or below their own SEM
+# (measured: ~13 km/s signal at r ~ 8+ h^-1 Mpc, down to a few km/s in the
+# shuffle null), so a LINEAR region there loses no visible structure, while
+# above it the ~2 decades of dynamic range (670 km/s at r ~ 1.2 down to
+# 20 km/s at r ~ 56 on the real run) get real vertical space instead of
+# being compressed into a sliver at the top of a plain-log axis. Symlog
+# rather than plain log: the shuffle null crosses zero and goes negative, and
+# a plain log y-axis would silently drop those points.
+_SYMLOG_LINTHRESH = 10.0  # km/s
+
+
+def apply_dipole_axis_scale(ax: plt.Axes, shells: ShellConfig) -> None:
+    """Put a dipole/monopole y-axis in symlog scale, matching `shells.spacing`.
+
+    Companion to `apply_radial_axis_scale` (x-axis), same backward-
+    compatibility guarantee: `spacing == SPACING_LINEAR` returns
+    immediately, doing nothing, so every existing linear figure is
+    unchanged by this function's introduction.
+
+    Under `SPACING_LOG`: `ax.set_yscale("symlog", linthresh=_SYMLOG_LINTHRESH)`.
+    Symlog, not plain log, because the shuffle null (and the axis-rotation
+    difference in the comparison figures) crosses zero and goes negative --
+    a plain log y-axis would silently drop those points rather than plot
+    them. `linthresh = 10.0` km/s (see that constant's comment) puts the
+    linear region exactly where the curves are within noise of zero, and
+    gives the log-scaled region above it the dynamic range a fixed-width
+    linear axis cannot show for both a ~670 km/s inner point and a ~13 km/s
+    outer signal at once. The `axhline(0.0)` zero reference line used
+    throughout this module's dipole panels renders correctly under symlog
+    (symlog is defined AT zero, unlike plain log).
+
+    Call this on EVERY axis that plots a dipole or monopole curve under log
+    spacing -- both panels of `make_figure`, `make_comparison_figure`'s
+    dipole panel and (both sides of) its twin-axis monopole panel, and both
+    panels of `make_redshift_comparison_figure` / `make_single_center_figure`
+    (`dvcorr.pipeline.velocity_frame_comparison`,
+    `dvcorr.pipeline.redshift_space_comparison`) -- never on
+    `make_angle_diagnostic_figure`'s axes, which are angular (degrees), not
+    radial-dipole y-axes.
+
+    Parameters
+    ----------
+    ax : matplotlib.axes.Axes
+    shells : ShellConfig
+
+    Returns
+    -------
+    None
+    """
+    if shells.spacing != SPACING_LOG:
+        return
+
+    ax.set_yscale("symlog", linthresh=_SYMLOG_LINTHRESH)
+
+
+def _binning_description(shells: ShellConfig) -> str:
+    """One-line summary of the shell binning, for a figure title.
+
+    `SPACING_LOG` -> "r in [r_min, r_max] h^-1 Mpc, n_bins log bins";
+    `SPACING_LINEAR` -> "r in [r_min, r_max] h^-1 Mpc, step h^-1 Mpc" -- so a
+    saved PNG states its own binning rather than only `r_max` (the titles'
+    previous behavior), and a reader never has to cross-reference the
+    `RunConfig` that produced the figure. Used by all four figure builders
+    that carry a radial x-axis (`make_figure`,
+    `dvcorr.pipeline.velocity_frame_comparison.make_comparison_figure`,
+    `dvcorr.pipeline.redshift_space_comparison.make_redshift_comparison_figure`
+    and `.make_single_center_figure`) -- one home, so the phrasing cannot
+    drift between them.
+
+    Parameters
+    ----------
+    shells : ShellConfig
+
+    Returns
+    -------
+    str
+    """
+    edges = shells.shell_edges
+    # :.4g, not :.2g -- :.2g renders 150.0 as "1.5e+02" (scientific notation),
+    # which docs/architecture.md's own worked example does not reproduce
+    # (item 3 review finding). :.4g stays in plain decimal form across the
+    # range this project can reach (1 to conventions.MAX_ANALYSIS_RADIUS =
+    # 500 h^-1 Mpc) while still trimming trailing zeros for a value like 20.
+    r_range = f"r in [{edges[0]:.4g}, {edges[-1]:.4g}] h$^{{-1}}$Mpc"
+    if shells.spacing == SPACING_LOG:
+        return f"{r_range}, {shells.n_bins} log bins"
+    return f"{r_range}, step={shells.radii_step:.4g} h$^{{-1}}$Mpc"
+
 
 # ---------------------------------------------------------------------------
 # Stage 1: load + carve
 # ---------------------------------------------------------------------------
 
 
+def _load_all_halos(paths: PathsConfig) -> tuple[np.ndarray, np.ndarray]:
+    """Read the MDPL2 catalog's position/velocity columns, uncarved.
+
+    Factored out of `load_and_carve` (which calls this, then carves) so that
+    `dvcorr.pipeline.redshift_space_comparison` can build its OWN dual carve
+    -- a plain `sub_volume_radius` pass to derive the `v_margin` statistic,
+    then a second, buffered pass at `sub_volume_radius + v_margin` -- from a
+    SINGLE CSV read, rather than re-reading the ~4M-row / ~600 MB catalog
+    once per carve. Loads only `dvcorr.conventions.POSITION_COLUMNS +
+    dvcorr.conventions.VELOCITY_COLUMNS` (CLAUDE.md: the catalog is not
+    loaded fully otherwise).
+
+    Parameters
+    ----------
+    paths : PathsConfig
+        Supplies `mdpl2_catalog`'s path.
+
+    Returns
+    -------
+    pos_all : ndarray, shape (N_total, 3)
+    vel_all : ndarray, shape (N_total, 3)
+        Every halo's position and velocity, comoving h^-1 Mpc / km/s, in
+        catalog row order.
+
+    Raises
+    ------
+    RuntimeError
+        If the catalog loads zero rows.
+    """
+    usecols = list(conventions.POSITION_COLUMNS) + list(conventions.VELOCITY_COLUMNS)
+
+    print(f"loading {paths.mdpl2_catalog} (columns: {usecols}) ...")
+    halos = pd.read_csv(paths.mdpl2_catalog, usecols=usecols)
+    if len(halos) == 0:
+        raise RuntimeError(f"{paths.mdpl2_catalog} loaded zero rows.")
+    print(f"loaded {len(halos)} halos")
+
+    pos_all = halos[list(conventions.POSITION_COLUMNS)].to_numpy(dtype=float)
+    vel_all = halos[list(conventions.VELOCITY_COLUMNS)].to_numpy(dtype=float)
+    return pos_all, vel_all
+
+
 def load_and_carve(cfg: RunConfig, paths: PathsConfig) -> tuple[np.ndarray, np.ndarray]:
     """Load the MDPL2 catalog and carve a sphere around the observer.
 
-    Loads only `dvcorr.conventions.POSITION_COLUMNS +
-    dvcorr.conventions.VELOCITY_COLUMNS` (the ~4M-row catalog is not loaded
-    fully otherwise, CLAUDE.md), then keeps halos within
+    Loads via `_load_all_halos`, then keeps halos within
     `cfg.sub_volume_radius` of `dvcorr.conventions.OBSERVER_POSITION`. Plain
     Euclidean distance IS the minimum image here: the sub-volume sits well
     inside the box, clear of the periodic faces (see geometry.py's PBC
@@ -210,16 +454,7 @@ def load_and_carve(cfg: RunConfig, paths: PathsConfig) -> tuple[np.ndarray, np.n
         misleading traceback, not a diagnosis.
     """
     observer = np.asarray(conventions.OBSERVER_POSITION, dtype=float)
-    usecols = list(conventions.POSITION_COLUMNS) + list(conventions.VELOCITY_COLUMNS)
-
-    print(f"loading {paths.mdpl2_catalog} (columns: {usecols}) ...")
-    halos = pd.read_csv(paths.mdpl2_catalog, usecols=usecols)
-    if len(halos) == 0:
-        raise RuntimeError(f"{paths.mdpl2_catalog} loaded zero rows.")
-    print(f"loaded {len(halos)} halos")
-
-    pos_all = halos[list(conventions.POSITION_COLUMNS)].to_numpy(dtype=float)
-    vel_all = halos[list(conventions.VELOCITY_COLUMNS)].to_numpy(dtype=float)
+    pos_all, vel_all = _load_all_halos(paths)
 
     d_obs = np.linalg.norm(pos_all - observer, axis=1)
     in_sub = d_obs <= cfg.sub_volume_radius
@@ -231,10 +466,11 @@ def load_and_carve(cfg: RunConfig, paths: PathsConfig) -> tuple[np.ndarray, np.n
             f"no halos survived the sub_volume_radius = {cfg.sub_volume_radius} "
             "carve; check the observer position and sub_volume_radius."
         )
+    n_total = pos_all.shape[0]
     print(
-        f"carved {n_carved} of {len(halos)} halos within "
+        f"carved {n_carved} of {n_total} halos within "
         f"sub_volume_radius = {cfg.sub_volume_radius} h^-1 Mpc "
-        f"({100.0 * n_carved / len(halos):.2f}%)"
+        f"({100.0 * n_carved / n_total:.2f}%)"
     )
     return pos, vel
 
@@ -279,6 +515,187 @@ def draw_candidates(
     rng = np.random.default_rng(cfg.seed)
     candidate_idx = rng.choice(pos.shape[0], size=n_candidates, replace=False)
     return pos[candidate_idx], vel[candidate_idx]
+
+
+# ---------------------------------------------------------------------------
+# Shared center selection -- used by the comparison pipelines built on top of
+# this one (dvcorr.pipeline.velocity_frame_comparison,
+# dvcorr.pipeline.redshift_space_comparison), not by this module's own
+# single-frame `run_estimator` path.
+# ---------------------------------------------------------------------------
+#
+# MOVED HERE from `dvcorr.pipeline.velocity_frame_comparison` (where it was
+# originally written for the observer-frame/velocity-frame comparison) rather
+# than generalized in place, because the redshift-space comparison
+# (`dvcorr.pipeline.redshift_space_comparison`) needs it too and this module
+# is already the shared base BOTH comparison pipelines import `RunConfig`,
+# `load_and_carve`, `draw_candidates`, and `global_number_density` from --
+# leaving it in `velocity_frame_comparison.py` would have made the
+# redshift-space pipeline depend on the velocity-frame one, which it has
+# nothing else to do with. `velocity_frame_comparison.py` now imports both
+# names from here unchanged; existing code that imports them FROM
+# `velocity_frame_comparison` still works, since that module re-exports them.
+#
+# The only substantive change from the original: `core_margin` is now an
+# explicit argument (previously hardcoded to `cfg.shells.max_radius` inside
+# the function body), and the `cfg` type hint is loosened from
+# `ComparisonRunConfig` to base `RunConfig` -- the function only ever touched
+# `cfg.sub_volume_radius` and `cfg.min_center_speed`, both base-`RunConfig`
+# fields, so the narrower comparison-subclass type was never required.
+
+
+@dataclass(frozen=True)
+class SharedCenterSet:
+    """The single center set multiple pipelines are run on.
+
+    Built by `select_shared_centers` in two cuts, funnel-style:
+    `n_candidates` (input) -> core cut (`core_center_mask`) -> `n_core` ->
+    speed floor (`cfg.min_center_speed`) -> `n_centers` (final). Selecting
+    ONCE and handing the identical `s_centers` / `v_centers` arrays to every
+    estimator run on them (see `dvcorr.pipeline.velocity_frame_comparison
+    .run_both_frames` and `dvcorr.pipeline.redshift_space_comparison`) is
+    what guarantees the only difference between runs built on the same
+    `SharedCenterSet` is whatever each run deliberately varies -- not a
+    difference in which centers were measured.
+
+    Attributes
+    ----------
+    s_centers : ndarray, shape (N_c, 3)
+        Surviving center positions, comoving h^-1 Mpc.
+    v_centers : ndarray, shape (N_c, 3)
+        Surviving center velocities, km/s, same row order as `s_centers`.
+    n_candidates : int
+        Number of candidates handed in, before either cut.
+    n_core : int
+        Number surviving `core_center_mask` alone (before the speed floor).
+    n_dropped_slow : int
+        `n_core - n_centers`: the number of otherwise-valid centers dropped
+        by the speed floor alone. RETURNED as a field, not merely printed,
+        so a caller (or a test) can assert on it directly.
+    n_centers : int
+        Final surviving count, `s_centers.shape[0]`.
+    """
+
+    s_centers: np.ndarray
+    v_centers: np.ndarray
+    n_candidates: int
+    n_core: int
+    n_dropped_slow: int
+    n_centers: int
+
+
+def select_shared_centers(
+    cfg: RunConfig,
+    s_candidates: np.ndarray,
+    v_candidates: np.ndarray,
+    observer: np.ndarray,
+    core_margin: float | None = None,
+) -> SharedCenterSet:
+    """Apply the core cut, then the speed floor, ONCE, for other stages to share.
+
+    Two sequential cuts:
+
+    1. `core_center_mask(s_candidates, cfg.sub_volume_radius, core_margin,
+       observer=observer)` -- the IDENTICAL function every estimator applies
+       internally (see e.g. `dvcorr.pipeline.velocity_frame_comparison
+       .run_both_frames`'s docstring on why re-applying it there is
+       idempotent). `core_margin` defaults to `cfg.shells.max_radius`,
+       matching `velocity_centered_shell_dipole`'s own default
+       (`core_margin=None` -> `shell_edges[-1]` = r_max), so a surviving
+       center's full shell fits inside the carved sub-volume; a caller with a
+       different margin requirement (e.g. `dvcorr.pipeline
+       .redshift_space_comparison`, whose centers additionally need `r_max +
+       v_margin` of clearance so their OWN redshift-space displacement stays
+       inside the sub-volume) passes it explicitly rather than this function
+       guessing.
+    2. `speeds = |v_core|; keep = (speeds > 0.0) & (speeds >= cfg.min_center_speed)`
+       -- the floor that gives every surviving center a well-defined flow
+       direction (see
+       `dvcorr.estimators.velocity_frame_dipole.velocity_frame_shell_dipole`'s
+       zero-speed `ValueError`, which this floor exists to prevent a caller
+       from ever triggering). The explicit `speeds > 0.0` conjunct matters
+       specifically for `cfg.min_center_speed == 0.0`: `speeds >=
+       cfg.min_center_speed` is trivially true for every speed (a norm can
+       never be negative), so without it the documented "0.0 means drop only
+       exactly-zero-speed centers" contract (`RunConfig.min_center_speed`'s
+       docstring) would be false -- a floor of 0.0 would drop nothing at
+       all, including the exact-zero centers the floor exists to guard
+       against. For any `min_center_speed > 0.0` the extra conjunct is a
+       no-op (a positive floor already implies `speeds > 0.0`).
+
+    Parameters
+    ----------
+    cfg : RunConfig
+        Only `cfg.sub_volume_radius`, `cfg.shells.max_radius` (the
+        `core_margin` default), and `cfg.min_center_speed` are used -- base
+        `RunConfig` fields, so any subclass (`ComparisonRunConfig`,
+        `dvcorr.pipeline.redshift_space_comparison.RedshiftSpaceRunConfig`)
+        works unchanged.
+    s_candidates, v_candidates : ndarray, shape (N_cand, 3)
+        Candidate positions/velocities, e.g. from `draw_candidates`.
+    observer : ndarray, shape (3,)
+    core_margin : float, optional
+        Minimum clearance to the sub-volume boundary required of a
+        surviving center (see `dvcorr.estimators.shell_dipole
+        .core_center_mask`). `None` (the default) uses
+        `cfg.shells.max_radius`, i.e. r_max.
+
+    Returns
+    -------
+    SharedCenterSet
+
+    Raises
+    ------
+    RuntimeError
+        If `s_candidates` is empty, or if zero centers survive both cuts.
+        The empty-input case is checked BEFORE the core-cut survival
+        percentage is printed, so a zero-candidate call raises this
+        `RuntimeError` rather than a bare `n / 0` `ZeroDivisionError` with a
+        misleading traceback (the same hazard `load_and_carve`'s docstring
+        calls out and guards against).
+    """
+    n_candidates = s_candidates.shape[0]
+    if n_candidates == 0:
+        raise RuntimeError("select_shared_centers: s_candidates is empty.")
+
+    if core_margin is None:
+        core_margin = cfg.shells.max_radius
+
+    core_mask = core_center_mask(
+        s_candidates, cfg.sub_volume_radius, core_margin, observer=observer
+    )
+    s_core = s_candidates[core_mask]
+    v_core = v_candidates[core_mask]
+    n_core = s_core.shape[0]
+
+    speeds = np.linalg.norm(v_core, axis=1)
+    keep = (speeds > 0.0) & (speeds >= cfg.min_center_speed)
+    s_centers = s_core[keep]
+    v_centers = v_core[keep]
+    n_centers = s_centers.shape[0]
+    n_dropped_slow = n_core - n_centers
+
+    print(
+        f"n_candidates = {n_candidates} -> core cut (core_margin = {core_margin}) "
+        f"-> n_core = {n_core} ({100.0 * n_core / n_candidates:.1f}% survive) -> "
+        f"speed floor (min_center_speed = {cfg.min_center_speed} km/s) -> "
+        f"n_centers = {n_centers} ({n_dropped_slow} dropped as too slow)"
+    )
+    if n_centers == 0:
+        raise RuntimeError(
+            "select_shared_centers: zero centers survived the core cut and "
+            "speed floor combined; widen sub_volume_radius, shrink the "
+            "shell range, or lower min_center_speed."
+        )
+
+    return SharedCenterSet(
+        s_centers=s_centers,
+        v_centers=v_centers,
+        n_candidates=n_candidates,
+        n_core=n_core,
+        n_dropped_slow=n_dropped_slow,
+        n_centers=n_centers,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -639,7 +1056,9 @@ def make_figure(
         2, 1, figsize=_FIGSIZE, sharex=True, gridspec_kw={"height_ratios": _HEIGHT_RATIOS}
     )
 
-    r = result.shell_centers
+    # result.shell_centers (the plain midpoint) is deliberately left alone --
+    # r_eff, the volume-weighted radius, is the plotting abscissa.
+    r = volume_weighted_shell_radii(result.shell_edges)
 
     ax_dipole.fill_between(
         r, normalized.zeta_hat - normalized.sem, normalized.zeta_hat + normalized.sem,
@@ -664,7 +1083,7 @@ def make_figure(
     ax_dipole.set_title(
         f"velocity-centered dipole  "
         f"(R_sub={cfg.sub_volume_radius:.0f} h$^{{-1}}$Mpc, "
-        f"r_max={cfg.shells.max_radius:.0f} h$^{{-1}}$Mpc, N_c={result.n_centers})"
+        f"{_binning_description(cfg.shells)}, N_c={result.n_centers})"
     )
 
     # No zero reference line here: with the |u_alpha| weight the monopole sits
@@ -676,6 +1095,10 @@ def make_figure(
     ax_mono.grid(alpha=_GRID_ALPHA)
     ax_mono.spines["top"].set_visible(False)
     ax_mono.spines["right"].set_visible(False)
+
+    apply_radial_axis_scale(ax_mono, cfg.shells)
+    apply_dipole_axis_scale(ax_dipole, cfg.shells)
+    apply_dipole_axis_scale(ax_mono, cfg.shells)
 
     fig.tight_layout()
     return fig
