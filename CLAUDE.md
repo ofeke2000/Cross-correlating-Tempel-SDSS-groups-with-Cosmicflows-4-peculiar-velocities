@@ -11,8 +11,8 @@ and the answer can be checked before it is trusted on data.
 Read these for context before non-trivial work:
 
 - [docs/summary.md](docs/summary.md) — science context, conventions, pipeline (best overview)
-- [docs/architecture.md](docs/architecture.md) — per-file responsibilities; the live map,
-  kept in sync with the code
+- [docs/architecture.md](docs/architecture.md) — module index and cross-module contracts;
+  it points you at the right file, the file's docstring tells you what it does
 - [docs/research_notes.md](docs/research_notes.md) — current goals; what we are working on now
 - [README.md](README.md) — science goals, frozen conventions table, full pipeline, null tests
 - [literature/tempel_cf4_velocity_correlations.pdf](literature/tempel_cf4_velocity_correlations.pdf)
@@ -47,6 +47,7 @@ notebooks/             exploration only — nothing load-bearing
 scripts/               runnable, load-bearing scripts (e.g. plot_velocity_centered_dipole.py)
 data/                  input catalogs (gitignored, see README)
 literature/            papers and the methodological note
+.claude/agents/        subagent definitions with pinned models (implementer, reviewer)
 Imports from old repo/   reference code from the bulk-flow project; not importable, read only
 ```
 
@@ -116,36 +117,43 @@ task needs it, and ask before running anything long.
    no exception, no NaN, just the wrong sign on the growth rate. Treat any positive dipole
    from an infall mock as an orientation bug, not a result.
 
-3. **Periodic boundary conditions everywhere.** The MDPL2 box is 1000 h⁻¹ Mpc with PBC.
+3. **Periodic boundary conditions everywhere simulation data is used.** The MDPL2 box is 
+   1000 h⁻¹ Mpc with PBC.
    Every spatial calculation — separations, KDTree queries, lines of sight, masks — uses the
    minimum-image convention. A plain Euclidean difference on box coordinates is a bug.
    Corollary: no shell may exceed `conventions.MAX_ANALYSIS_RADIUS` = BOX_SIZE/2.
+   however, none of this is relevant to the real data from CF4 or Temple_SDSS
 
 4. **No bare numbers.** Any numeric literal in analysis code belongs in `conventions.py` or in a
    class attribute — never inline. For each new number, ask where it belongs before writing
    the code. (Pure-mathematics constants inside a formula, like the 1/3 from ⟨µ²⟩ over a
    uniform shell, are part of the derivation and stay in the expression, with a comment.)
 
-5. **Missing velocity is missing data.** An object without a peculiar-velocity measurement
-   is dropped from the pair count. It is never entered as u = 0 — that would bias the mean
-   toward zero and dilute the dipole.
+5. **Missing velocity is missing data.** An object without a peculiar-velocity 
+   measurement is dropped from the pair count. It is never entered as u = 0 — that would bias the mean toward zero and dilute the dipole.
 
 6. **Monopole and dipole are reported together.** The monopole is the geometry diagnostic
    that says whether the dipole is trustworthy (finite-distance leakage, incomplete shells,
    residual bulk motion). Never return or plot a dipole alone.
 
-7. **Cache-and-skip for derived columns.** Derived quantities computed once, written back to
+7. **Cache-and-skip for derived columns.** Derived quantities computed once, written 
+   back to
    the catalog, existence-checked before recomputation: check column → skip if present →
    compute → save.
 
-8. **Keep docs in sync.** Any change to code structure — a new module, a moved
-   responsibility, a changed public signature — updates [docs/architecture.md](docs/architecture.md)
-   in the same task; it is the live per-file map and must never lag the code. A change to
+8. **Docstrings are the definition site; `architecture.md` is an index.** A changed
+   signature, shape contract, or behavior updates the **docstring** — the file you are
+   already editing — and nothing else. [docs/architecture.md](docs/architecture.md) is
+   touched only when a file is **added, removed, or changes what it is responsible for**,
+   and then only its one-line entry. Contracts that span modules (the PBC carving
+   contract, import layering) live in that file's **Contracts** section and update when
+   the contract changes. Never restate per-file detail there: it is duplication, it
+   drifts, and the code wins every disagreement anyway. A change to
    conventions also updates `README.md` and this file. [docs/summary.md](docs/summary.md)
    and [docs/research_notes.md](docs/research_notes.md) exist to complete the doc structure
    but are **not actively maintained yet** — leave them until explicitly asked.
 
-9. **Check every name for typos before writing it — even one you were given.** Any new name
+9.  **Check every name for typos before writing it — even one you were given.** Any new name
    — a file, function, variable, column, class, or dict key — is spell-checked before it
    lands, *including when I asked for that exact name*. If a requested or proposed name looks
    like a typo (e.g. `veloctiy`, `seperation`, `analyis`, `dipoel`), do not silently adopt
@@ -207,10 +215,41 @@ Fixed project-wide; see the README table and `conventions.py`.
 
 ## Agent workflow
 
-**I am explicitly requesting subagent delegation as a standing instruction for every
-session in this repo — treat this as the user asking, not as a default to be overridden.**
+Delegation in this repo goes through two defined agents in `.claude/agents/`, never
+through a bare `general-purpose` spawn — the definitions pin the model, so routing is
+enforced by config rather than by remembering to pass one:
 
-- Implementation work (writing or editing code) goes to a Sonnet subagent.
-- Code review goes to an Opus subagent.
-- Exception: single-file edits under ~20 lines, and anything where gathering the context
-  to brief the agent costs more than doing it. Do those inline.
+- **`implementer`** (Sonnet) — writing or editing code.
+- **`reviewer`** (Opus) — reviewing a non-trivial change after it lands.
+
+### When to delegate
+
+The test is whether the agent needs to *discover* anything. Delegate when the task
+requires searching or touching files the main session has not already read — the agent
+does its own exploration and returns a conclusion instead of filling this context with
+file dumps.
+
+Do it inline when the relevant files are already open in the session. A subagent starts
+cold: it re-reads `CLAUDE.md`, re-derives the layout, and re-opens files that are already
+free in the main context, which for a small edit costs more than the edit.
+
+### The same-model exception
+
+**These routing rules do not apply when the subagent would run the same model as the main
+session.** `implementer` exists to move code-writing onto a cheaper model than the main
+agent; if the main session is already on Sonnet, there is no saving left to capture, and
+delegating just buys a second cold start. Do that work inline.
+
+`reviewer` is the deliberate exception to the exception: it runs Opus alongside an Opus
+main session, and what it buys is **fresh context rather than a cheaper model** — a
+reader who did not write the code and so does not inherit the author's assumptions. That
+is worth the spawn for a substantial change, and not worth it for a small diff or for
+code the main agent did not write itself.
+
+### Briefing discipline
+
+A subagent's cost is dominated by what it reads before doing anything. Brief it with the
+file paths it needs so it can skip discovery, and point it at the **module docstring** —
+that is the authority on any function it touches. [docs/architecture.md](docs/architecture.md)
+is a ~180-line index and is cheap to read whole; it tells an agent which file to open, not
+what the code in it does.
