@@ -38,6 +38,8 @@ Usage
 
 from __future__ import annotations
 
+import argparse
+
 import matplotlib
 
 matplotlib.use("Agg")  # headless: write straight to file, no display
@@ -45,7 +47,7 @@ matplotlib.use("Agg")  # headless: write straight to file, no display
 import numpy as np
 
 from dvcorr import conventions
-from dvcorr.config import PathsConfig
+from dvcorr.config import PathsConfig, add_catalog_arguments, catalog_from_args
 from dvcorr.pipeline.mass_diagnostics import mass_funnel, print_mass_funnel
 from dvcorr.pipeline.velocity_centered import draw_candidates_from_arrays
 from dvcorr.pipeline.redshift_space_comparison import (
@@ -62,7 +64,8 @@ from dvcorr.pipeline.redshift_space_comparison import (
 
 def main() -> None:
     """Chain the pipeline stages and write both PNGs."""
-    cfg = RedshiftSpaceRunConfig()
+    args = add_catalog_arguments(argparse.ArgumentParser(description=__doc__)).parse_args()
+    cfg = RedshiftSpaceRunConfig(catalog=catalog_from_args(args))
     paths = PathsConfig()
     observer = np.asarray(conventions.OBSERVER_POSITION, dtype=float)
 

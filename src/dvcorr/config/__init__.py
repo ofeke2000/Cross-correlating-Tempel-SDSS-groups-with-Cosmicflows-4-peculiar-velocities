@@ -25,6 +25,8 @@ from dvcorr.config.catalog import (
     CATALOG_MVIR12,
     VALID_CATALOGS,
     CatalogConfig,
+    add_catalog_arguments,
+    catalog_from_args,
 )
 from dvcorr.config.cosmology import CosmologyConfig
 from dvcorr.config.paths import PathsConfig
@@ -50,6 +52,8 @@ __all__ = [
     "CATALOG_FULL",
     "CATALOG_MVIR12",
     "VALID_CATALOGS",
+    "add_catalog_arguments",
+    "catalog_from_args",
     "SPACING_LINEAR",
     "SPACING_LOG",
     "linear_shell_edges",

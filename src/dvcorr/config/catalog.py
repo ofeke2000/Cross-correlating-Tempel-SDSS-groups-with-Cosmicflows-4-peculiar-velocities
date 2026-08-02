@@ -45,6 +45,7 @@ against when excluding it instead.
 
 from __future__ import annotations
 
+import argparse
 from dataclasses import dataclass
 
 #: The raw MDPL2 snapshot-125 Rockstar catalog: ~127M halos, reaching down to
@@ -160,3 +161,77 @@ class CatalogConfig:
                 parts.append(f"mvir <= {self.mass_max:.3g}")
         parts.append("subhalos included" if self.include_subhalos else "distinct halos only")
         return ", ".join(parts)
+
+
+# ---------------------------------------------------------------------------
+# Command-line construction
+# ---------------------------------------------------------------------------
+# Lives here, next to the validation it reuses, rather than in each driver
+# script: the three scripts would otherwise carry three copies of the same
+# option list, and CLAUDE.md's graduation rule puts anything worth reusing in
+# the library. The scripts stay thin -- they call these two functions and own
+# no parsing logic of their own.
+
+
+def add_catalog_arguments(parser: argparse.ArgumentParser) -> argparse.ArgumentParser:
+    """Add the catalog-selection options to a driver script's parser.
+
+    Gives every script the same spelling for "which halos", so switching
+    catalogs or cuts never means editing a script. Defaults mirror
+    `CatalogConfig`'s own, so omitting every option reproduces `CatalogConfig()`.
+
+    Parameters
+    ----------
+    parser : argparse.ArgumentParser
+
+    Returns
+    -------
+    argparse.ArgumentParser
+        The same parser, for chaining.
+    """
+    parser.add_argument(
+        "--catalog",
+        choices=sorted(VALID_CATALOGS),
+        default=CATALOG_FULL,
+        help=f"Which halo catalog to read (default: {CATALOG_FULL}).",
+    )
+    parser.add_argument(
+        "--mass-min",
+        type=float,
+        default=None,
+        help="Minimum mvir, h^-1 M_sun. Omit for no floor (the default).",
+    )
+    parser.add_argument(
+        "--mass-max",
+        type=float,
+        default=None,
+        help="Maximum mvir, h^-1 M_sun. Omit for no ceiling (the default).",
+    )
+    parser.add_argument(
+        "--no-subhalos",
+        action="store_true",
+        help="Drop halos with pid != -1. Subhalos are included by default.",
+    )
+    return parser
+
+
+def catalog_from_args(args: argparse.Namespace) -> CatalogConfig:
+    """Build a `CatalogConfig` from a parser carrying `add_catalog_arguments`.
+
+    Parameters
+    ----------
+    args : argparse.Namespace
+
+    Returns
+    -------
+    CatalogConfig
+        Validated by `CatalogConfig.__post_init__`, so a bad combination (e.g.
+        `--mass-max` below `--mass-min`) fails at parse time rather than after
+        a multi-minute catalog load.
+    """
+    return CatalogConfig(
+        name=args.catalog,
+        mass_min=args.mass_min,
+        mass_max=args.mass_max,
+        include_subhalos=not args.no_subhalos,
+    )
