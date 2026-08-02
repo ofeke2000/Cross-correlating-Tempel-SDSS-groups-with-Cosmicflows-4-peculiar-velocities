@@ -105,7 +105,9 @@ Two halo catalogs are supported and **both stay available** — a run picks one 
   mvir ≥ 1e12. Every result before the full catalog landed used this one.
 
 `full` is a strict superset: filtering it at `mvir >= 1e12` with `include_subhalos=False`
-reproduces `mvir12` exactly. The pipeline reads Parquet, not CSV — convert once with
+reproduces `mvir12` exactly. Box coordinates are half-open, [0, BOX_SIZE): conversion folds
+the ~196 halos Rockstar emits at exactly `BOX_SIZE` down to `0.0`, matching what `mvir12`
+already did. The pipeline reads Parquet, not CSV — convert once with
 `python -m scripts.convert_mdpl2_catalog` (~10 min, ~2.9 GB for `full`). A full-catalog
 run needs ~16 GB of RAM and a couple of minutes; ask before running anything long.
 
@@ -226,7 +228,9 @@ Fixed project-wide; see the README table and `conventions.py`.
 - MDPL2 particle mass: 1.5054e9 h⁻¹ M☉ (`conventions.PARTICLE_MASS`). `mvir` is exactly
   quantized in multiples of it, so `mvir / PARTICLE_MASS` is an exact particle count.
   Resolution thresholds: `RESOLVED_PARTICLE_COUNT` = 20, `CONVERGED_PARTICLE_COUNT` = 100
-- Small-scale velocity noise: σ* ≈ 250 km/s
+- Small-scale velocity noise: σ* ≈ 250 km/s (`ShellConfig.sigma_star`) — **not read by any
+  code yet**; a placeholder for the error model, and measured on the mvir ≥ 1e12 population,
+  so it needs re-measuring before first use on the full catalog
 
 ## Agent workflow
 

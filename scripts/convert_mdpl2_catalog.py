@@ -34,12 +34,16 @@ from dvcorr.pipeline.catalog_conversion import convert_catalog_to_parquet
 def main() -> None:
     """Convert the requested catalogs and print each report."""
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[3])
+    # No `choices=` here, and the names are validated by hand below: with
+    # `nargs="*"`, argparse checks the *whole list* against `choices` -- an
+    # empty list included -- so an argument-free invocation fails with
+    # "invalid choice: []". Validating after parsing avoids that and gives a
+    # clearer message than argparse's for a real typo.
     parser.add_argument(
         "catalogs",
         nargs="*",
-        choices=sorted(VALID_CATALOGS),
-        default=sorted(VALID_CATALOGS),
-        help="Which catalogs to convert. Default: all of them.",
+        help=f"Which catalogs to convert ({', '.join(sorted(VALID_CATALOGS))}). "
+        "Default: all of them.",
     )
     parser.add_argument(
         "--force",
@@ -48,8 +52,15 @@ def main() -> None:
     )
     args = parser.parse_args()
 
+    requested = args.catalogs or sorted(VALID_CATALOGS)
+    unknown = [name for name in requested if name not in VALID_CATALOGS]
+    if unknown:
+        parser.error(
+            f"unknown catalog(s) {unknown}; expected one of {sorted(VALID_CATALOGS)}"
+        )
+
     paths = PathsConfig()
-    for name in args.catalogs:
+    for name in requested:
         report = convert_catalog_to_parquet(
             paths.halo_catalog(name, parquet=False),
             paths.halo_catalog(name),

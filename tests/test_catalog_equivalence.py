@@ -65,41 +65,22 @@ _MVIR12_EQUIVALENT = CatalogConfig(
 )
 
 
-def _wrapped(pos: np.ndarray) -> np.ndarray:
-    """Positions folded into [0, BOX_SIZE), so periodic images compare equal.
-
-    The two catalogs disagree about the boundary coordinate of exactly four
-    halos: each sits at `BOX_SIZE` in `CATALOG_FULL` and at `0.0` in
-    `CATALOG_MVIR12`, with identical velocity and mass. In a periodic box those
-    are the SAME point, so the two files agree physically and differ only in
-    which representative of the periodic image they stored.
-
-    Comparing raw coordinates would therefore report a difference that does not
-    exist, and -- worse -- would make a genuine four-halo disagreement
-    indistinguishable from this benign one. Folding first states the invariant
-    that actually holds: the catalogs contain the same halos up to periodic
-    image (CLAUDE.md hard rule 3).
-
-    Note that `CATALOG_FULL` containing a coordinate exactly equal to
-    `BOX_SIZE` means box coordinates are NOT guaranteed to lie in the
-    half-open interval [0, BOX_SIZE). Nothing in the current pipeline depends
-    on that -- the analysis carve spans [200, 800] and never reaches a face --
-    but any future code that assumes the half-open convention needs to fold
-    first.
-    """
-    return np.mod(np.asarray(pos, dtype=float), conventions.BOX_SIZE)
-
-
 def _sorted_rows(pos: np.ndarray) -> np.ndarray:
-    """Wrapped rows of `pos` in a canonical, file-order-independent order.
+    """Rows of `pos` in a canonical, file-order-independent order.
 
     The two catalogs store the same halos in different row orders (both are
     mass-sorted, but ties break differently), so every comparison here is on
     lexicographically sorted rows. Comparing raw row order would fail for a
     reason that has nothing to do with which halos are present.
+
+    No periodic folding is applied, and none is needed: conversion already
+    folds every position into [0, BOX_SIZE) (see
+    `dvcorr.pipeline.catalog_conversion`), so the two files now agree on which
+    representative of a periodic image to store. Folding here as well would
+    hide a regression in that, which is precisely what
+    `test_box_coordinates_are_half_open` exists to catch.
     """
-    wrapped = _wrapped(pos)
-    return wrapped[np.lexsort((wrapped[:, 2], wrapped[:, 1], wrapped[:, 0]))]
+    return pos[np.lexsort((pos[:, 2], pos[:, 1], pos[:, 0]))]
 
 
 def test_full_catalog_filtered_has_the_mvir12_row_count() -> None:
@@ -130,14 +111,13 @@ def test_the_two_paths_select_the_same_halos() -> None:
 
     A row-count match alone would pass even if the two files disagreed about
     WHICH halos sit above the floor, so positions, velocities and masses are
-    all compared, as a multiset over canonically ordered rows and with
-    positions folded into the box (see `_wrapped`).
+    all compared, as a multiset over canonically ordered rows.
     """
     from_full = _load_all_halos(_PATHS, _MVIR12_EQUIVALENT)
     from_mvir12 = _load_all_halos(_PATHS, CatalogConfig(name=CATALOG_MVIR12))
 
     def canonical(halos) -> np.ndarray:
-        pos = _wrapped(halos.pos)
+        pos = halos.pos
         record = np.empty(
             halos.n_total,
             dtype=[(name, "f8") for name in ("x", "y", "z", "vx", "vy", "vz", "mvir")],
@@ -153,30 +133,23 @@ def test_the_two_paths_select_the_same_halos() -> None:
     np.testing.assert_array_equal(canonical(from_full), canonical(from_mvir12))
 
 
-def test_boundary_halos_differ_only_by_a_periodic_image() -> None:
-    """The four boundary halos are the SAME objects, wrapped -- not extra ones.
+def test_box_coordinates_are_half_open() -> None:
+    """Every position lies in [0, BOX_SIZE) in BOTH catalogs.
 
-    Pins the finding `_wrapped` exists for. Without this, folding positions
-    before comparing would look like a comparison quietly loosened until it
-    passed; with it, the exact nature and size of the raw disagreement is
-    recorded, and any growth in it fails.
+    Rockstar emits a handful of halos with a coordinate at exactly `BOX_SIZE`
+    (196 rows in the raw full catalog, none in the pre-cut one) -- the same
+    point as `0.0` under PBC, but a different representative, which made the
+    two files disagree on shared halos and left the half-open convention
+    unsafe to assume. `dvcorr.pipeline.catalog_conversion` now folds at ingest.
+
+    This is the test that keeps that true: if a future catalog is converted by
+    some other route, or the fold is removed, downstream code that relies on
+    half-open coordinates would otherwise fail silently and far from the cause.
     """
-    from_full = _load_all_halos(_PATHS, _MVIR12_EQUIVALENT)
-    from_mvir12 = _load_all_halos(_PATHS, CatalogConfig(name=CATALOG_MVIR12))
-
-    at_box_edge = np.any(from_full.pos >= conventions.BOX_SIZE, axis=1)
-    at_origin = np.any(from_mvir12.pos == 0.0, axis=1)
-
-    # Small, and equal on both sides: every halo stored at BOX_SIZE in one file
-    # is stored at 0.0 in the other.
-    assert int(at_box_edge.sum()) == int(at_origin.sum())
-    assert 0 < int(at_box_edge.sum()) < 100
-
-    # And they carry identical velocities and masses, which is what makes them
-    # the same objects rather than a genuine four-halo disagreement.
-    np.testing.assert_array_equal(
-        np.sort(from_full.mvir[at_box_edge]), np.sort(from_mvir12.mvir[at_origin])
-    )
+    for catalog in (CatalogConfig(name=CATALOG_MVIR12), CatalogConfig(name=CATALOG_FULL)):
+        halos = _load_all_halos(_PATHS, catalog)
+        assert float(halos.pos.min()) >= 0.0
+        assert float(halos.pos.max()) < conventions.BOX_SIZE
 
 
 def test_the_two_paths_carve_identical_sub_volumes() -> None:

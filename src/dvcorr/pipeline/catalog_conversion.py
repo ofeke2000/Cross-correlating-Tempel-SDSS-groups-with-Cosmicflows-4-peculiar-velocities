@@ -50,6 +50,27 @@ mass to a round threshold like `MVIR12_CATALOG_FLOOR`. Row counts either side
 of a cut are unchanged by the cast, which is why
 `tests/test_catalog_equivalence.py` can assert an exact figure.
 
+Positions are folded into the box
+---------------------------------
+Rockstar emits a small number of halos with a coordinate at exactly
+`conventions.BOX_SIZE` (196 rows in the full catalog, 0 in the pre-cut one)
+rather than at `0.0`. In a periodic box those are the SAME point, so this is a
+choice of representative, not a disagreement about where the halo is -- but it
+meant the two catalogs stored some shared halos differently, and it meant box
+coordinates could not be assumed to lie in the half-open interval
+[0, `BOX_SIZE`).
+
+Conversion folds every position with `np.mod(pos, BOX_SIZE)`, adopting the
+representative the pre-cut catalog already used. The fold is exact and a
+no-op for every interior coordinate: at float32, `mod` returns 1000.0 -> 0.0
+and leaves everything in [0, 1000) bit-identical. Afterwards both catalogs
+satisfy the half-open convention, so downstream code may rely on it.
+
+This is a normalization of the coordinate's REPRESENTATION, not a minimum-image
+reduction of a separation, and so is not the thing CLAUDE.md hard rule 3
+forbids doing inside geometry -- it happens once, at ingest, before any
+separation exists.
+
 Row order is preserved
 ----------------------
 `CATALOG_FULL` arrives sorted ascending by `mvir`. Writing rows in input order
@@ -135,6 +156,11 @@ class ConversionReport:
         column. Reported rather than silently dropped: a missing velocity is
         missing data (CLAUDE.md hard rule 5) and the decision of what to do
         about it belongs to the selection stage, not to a format conversion.
+    n_folded : int
+        Rows that had a coordinate at or beyond `conventions.BOX_SIZE` and
+        were folded into [0, BOX_SIZE). Reported because it is a fact about
+        the SOURCE file: it should be a handful, and a large or newly-changed
+        value means the upstream catalog changed coordinate convention.
     skipped : bool
         True if an existing, provenance-matching Parquet file was reused and
         nothing was rewritten.
@@ -147,6 +173,7 @@ class ConversionReport:
     mvir_min: float
     mvir_max: float
     n_nonfinite: int
+    n_folded: int
     skipped: bool
 
     @property
@@ -172,6 +199,7 @@ class ConversionReport:
             f"  mvir range    {self.mvir_min:.4g} .. {self.mvir_max:.4g} h^-1 M_sun\n"
             f"  mass floor    {self.min_particle_count:.1f} particles\n"
             f"  non-finite    {self.n_nonfinite:,}\n"
+            f"  folded to box {self.n_folded:,}\n"
             f"  size          {self.parquet_path.stat().st_size / 1e9:.2f} GB"
         )
 
@@ -221,6 +249,7 @@ def _read_report(csv_path: Path, parquet_path: Path) -> ConversionReport | None:
         mvir_min=float(stored[_META_MVIR_MIN]),
         mvir_max=float(stored[_META_MVIR_MAX]),
         n_nonfinite=0,
+        n_folded=0,
         skipped=True,
     )
 
@@ -290,9 +319,13 @@ def convert_catalog_to_parquet(
         + [(IS_DISTINCT_COLUMN, pa.bool_())]
     )
 
+    n_position_columns = len(conventions.POSITION_COLUMNS)
+    box_size = np.float32(conventions.BOX_SIZE)
+
     n_rows = 0
     n_distinct = 0
     n_nonfinite = 0
+    n_folded = 0
     mvir_min = np.inf
     mvir_max = -np.inf
 
@@ -308,6 +341,14 @@ def convert_catalog_to_parquet(
         for chunk in reader:
             is_distinct = (chunk[parent_col] == _DISTINCT_PARENT_ID).to_numpy()
             values = chunk[float_cols].to_numpy()
+
+            # Fold positions into [0, BOX_SIZE) -- see this module's docstring.
+            # Counted, not silent: the number of rows this touches is a fact
+            # about the input file worth reporting, and a sudden change in it
+            # means the upstream catalog changed convention.
+            positions = values[:, :n_position_columns]
+            n_folded += int(np.any(positions >= box_size, axis=1).sum())
+            values[:, :n_position_columns] = np.mod(positions, box_size)
 
             n_rows += len(chunk)
             n_distinct += int(is_distinct.sum())
@@ -354,5 +395,6 @@ def convert_catalog_to_parquet(
         mvir_min=mvir_min,
         mvir_max=mvir_max,
         n_nonfinite=n_nonfinite,
+        n_folded=n_folded,
         skipped=False,
     )

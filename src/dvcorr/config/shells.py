@@ -151,6 +151,15 @@ class ShellConfig:
         inert (but still validated as well-formed) under `SPACING_LOG`.
     sigma_star : float
         Small-scale velocity noise, km/s (CLAUDE.md Units: sigma* ~ 250 km/s).
+        NOT READ BY ANYTHING YET -- a placeholder for the error model, carried
+        so the number has one home when that lands. It does not enter the
+        estimator, the normalization, or the error bars, so changing it
+        changes no output. Said explicitly because the field previously read
+        as though it were live; `SelectionConfig.mass_min` sat unread in the
+        same way and quietly became wrong. Note also that 250 km/s describes
+        the mvir >= 1e12 population; the full catalog's low-mass halos have a
+        larger effective dispersion, so this value needs re-measuring before
+        it is first used, not merely wiring up.
     spacing : str
         Shell-edge spacing, one of `_VALID_SPACINGS`
         (`SPACING_LINEAR`, `SPACING_LOG`). Defaults to `SPACING_LINEAR`, so

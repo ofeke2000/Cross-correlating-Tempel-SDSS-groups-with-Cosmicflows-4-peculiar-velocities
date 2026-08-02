@@ -169,10 +169,16 @@ truth; the pipeline reads the **Parquet** files `pipeline/catalog_conversion.py`
 from them, and both catalogs are written with one identical schema so the loader has a
 single code path. `CATALOG_FULL` filtered at `mvir ≥ 1e12` with subhalos excluded
 reproduces `CATALOG_MVIR12` exactly — asserted by `tests/test_catalog_equivalence.py`,
-which is what keeps the two interchangeable. The two files disagree about the boundary
-coordinate of exactly four halos (`BOX_SIZE` in one, `0.0` in the other, same object under
-PBC), so box coordinates are **not** guaranteed to lie in the half-open interval
-[0, `BOX_SIZE`); code that needs that convention must fold first.
+which is what keeps the two interchangeable.
+
+**Box coordinates are half-open: [0, `BOX_SIZE`).** Rockstar emits a small number of halos
+with a coordinate at exactly `BOX_SIZE` (196 rows in the raw full catalog, 0 in the pre-cut
+one) — the same point as `0.0` under PBC, but a different representative, which made the two
+files disagree on shared halos. Conversion folds every position with `np.mod`, adopting the
+pre-cut catalog's convention; the fold is exact and a no-op on interior coordinates.
+Downstream code may therefore rely on the half-open interval, and
+`test_box_coordinates_are_half_open` is what keeps that true. Any catalog reaching the
+pipeline by some other route must be folded the same way.
 
 **The seeded draw selects halos, not file rows.** `draw_candidates_from_arrays` sorts the
 carved population into a canonical order — lexicographic on box-folded position — before
@@ -182,8 +188,9 @@ identical population (measured: 291 of 4000 in common, multipoles differing ~1σ
 With it, the same halos give the same centers whichever file they were read from, so a
 comparison between the two catalogs isolates the catalogs rather than the sampling. The
 folding is a canonicalization of *identity*, not a minimum-image reduction, and never
-reaches the coordinates handed to an estimator — it is what makes the four box-face halos
-above sort together. Asserted synthetically in `test_velocity_centered_dipole.py` and
+reaches the coordinates handed to an estimator — it is belt-and-braces now that conversion
+folds at ingest, and the guarantee for any population that did not come through it. Asserted
+synthetically in `test_velocity_centered_dipole.py` and
 against the real files in `test_catalog_equivalence.py`. Two runs over the same halos in
 different array order still differ at ~1e-16 in the dipole, from float addition order.
 

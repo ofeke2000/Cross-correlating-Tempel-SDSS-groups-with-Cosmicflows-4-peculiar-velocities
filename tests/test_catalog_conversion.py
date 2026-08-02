@@ -84,6 +84,55 @@ class TestSchema:
         )
 
 
+class TestPositionFolding:
+    def test_box_face_coordinates_are_folded_to_the_origin(self, tmp_path) -> None:
+        """A coordinate at exactly BOX_SIZE is the same point as 0.0 under PBC.
+
+        Rockstar emits a handful of these (196 in the real full catalog), and
+        the pre-cut catalog already stored them at 0.0 -- so the two files
+        disagreed about shared halos until conversion adopted one convention.
+        """
+        csv_path = tmp_path / "c.csv"
+        source = _write_csv(csv_path, n=50)
+        source.loc[0, "x"] = conventions.BOX_SIZE
+        source.loc[1, "z"] = conventions.BOX_SIZE
+        source.to_csv(csv_path, index=False)
+
+        report = convert_catalog_to_parquet(csv_path, tmp_path / "c.parquet")
+        frame = pd.read_parquet(report.parquet_path)
+
+        assert report.n_folded == 2
+        assert frame.loc[0, "x"] == 0.0
+        assert frame.loc[1, "z"] == 0.0
+
+    def test_every_position_lands_in_the_half_open_box(self, tmp_path) -> None:
+        csv_path = tmp_path / "c.csv"
+        source = _write_csv(csv_path, n=50)
+        source.loc[0, ["x", "y", "z"]] = conventions.BOX_SIZE
+        source.to_csv(csv_path, index=False)
+
+        report = convert_catalog_to_parquet(csv_path, tmp_path / "c.parquet")
+        frame = pd.read_parquet(report.parquet_path)
+        positions = frame[list(conventions.POSITION_COLUMNS)].to_numpy()
+        assert positions.min() >= 0.0
+        assert positions.max() < conventions.BOX_SIZE
+
+    def test_interior_coordinates_are_untouched(self, tmp_path) -> None:
+        """The fold must be a no-op everywhere else -- it is applied to every
+        row, so a `mod` that perturbed interior values would silently shift the
+        whole catalog rather than fix 196 rows."""
+        csv_path = tmp_path / "c.csv"
+        source = _write_csv(csv_path, n=200)
+        report = convert_catalog_to_parquet(csv_path, tmp_path / "c.parquet")
+        frame = pd.read_parquet(report.parquet_path)
+
+        assert report.n_folded == 0
+        for name in conventions.POSITION_COLUMNS:
+            np.testing.assert_array_equal(
+                frame[name].to_numpy(), source[name].to_numpy().astype(np.float32)
+            )
+
+
 class TestRowOrder:
     def test_row_order_is_preserved(self, tmp_path) -> None:
         """Order is what gives row groups narrow mass ranges, and so what makes
