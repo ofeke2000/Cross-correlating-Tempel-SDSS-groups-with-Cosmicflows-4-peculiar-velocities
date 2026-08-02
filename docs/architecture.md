@@ -35,12 +35,15 @@ extra (`pytest`), and `testpaths = ["tests"]`. `requirements.txt` is `-e .[dev]`
 
 ### `src/dvcorr/config/` — tunable settings (counterpart to `conventions`'s frozen ones)
 
-- `paths.py` **[done]** — `PathsConfig`: catalog/output locations, repo-root-relative.
+- `paths.py` **[done]** — `PathsConfig`: catalog/output locations, repo-root-relative;
+  `halo_catalog(name)` resolves a catalog name to its CSV or Parquet path.
 - `cosmology.py` **[done]** — `CosmologyConfig`: MDPL2 cosmology metadata; self-checks
   against `conventions.HUBBLE_PARAM`.
 - `shells.py` **[done]** — `ShellConfig` + free builders (`linear_shell_edges`,
   `log_shell_edges`, `volume_weighted_shell_radii`): radial shell binning.
 - `selection.py` **[done]** — `SelectionConfig`: placeholder knobs for `mocks/`/`selection/`.
+- `catalog.py` **[done]** — `CatalogConfig`: which halo catalog a run reads (`CATALOG_FULL`,
+  `CATALOG_MVIR12`) and which halos it keeps from it (mass bounds, subhalos).
 - `settings.py` **[done]** — `Settings` aggregator + `default_settings()` factory.
 - `__init__.py` **[done]** — re-export surface over the above.
 
@@ -60,6 +63,10 @@ extra (`pytest`), and `testpaths = ["tests"]`. `requirements.txt` is `-e .[dev]`
 
 - `__init__.py` **[done]** — package docstring only; no re-exports, each module is
   imported by name.
+- `catalog_conversion.py` **[done]** — one-time CSV → Parquet conversion of the halo
+  catalogs, streamed and cache-and-skip; both catalogs get one shared schema.
+- `mass_diagnostics.py` **[done]** — the mass funnel: log₁₀(m_vir) distribution of the
+  halos surviving each selection stage, as a printed table and a two-panel figure.
 - `velocity_centered.py` **[done]** — the shared base: load/carve, candidate drawing,
   shared-center selection (`SharedCenterSet`/`select_shared_centers`), running
   `velocity_centered_shell_dipole`, normalization (`NormalizedDipole`,
@@ -89,6 +96,8 @@ repo's `overdensity.py` (periodic KDTree overdensity), `data_loader.py`.
 - `plot_velocity_centered_dipole.py` **[done]** — drives `pipeline.velocity_centered`, saves one PNG.
 - `plot_velocity_frame_comparison.py` **[done]** — drives `pipeline.velocity_frame_comparison`, saves two PNGs.
 - `plot_redshift_space_comparison.py` **[done]** — drives `pipeline.redshift_space_comparison`, saves two PNGs.
+- `convert_mdpl2_catalog.py` **[done]** — drives `pipeline.catalog_conversion`; run once per
+  catalog before any pipeline run.
 
 Each sets `matplotlib.use("Agg")` at import time, before importing its pipeline module;
 none contain algorithmic content (see Cross-cutting contracts below).
@@ -107,6 +116,11 @@ none contain algorithmic content (see Cross-cutting contracts below).
 - `test_velocity_frame_dipole.py` **[done]** — sign gate and frame-agreement limit for the
   observer-free dipole; random-axis null.
 - `test_settings.py` **[done]** — `dvcorr.config` dataclass tests.
+- `test_catalog_conversion.py` **[done]** — conversion schema, row order, cache-and-skip,
+  on tiny synthetic CSVs.
+- `test_catalog_equivalence.py` **[done]** — the superset relation between the two
+  catalogs, against the real files; skipped when they are absent.
+- `test_mass_diagnostics.py` **[done]** — mass-funnel construction guards and figure build.
 - `test_plot_wiring.py` **[done]** — pins the log/linear axis-scale wiring.
 - `__init__.py` — present so `from tests.test_geometry import …` resolves.
 
@@ -146,6 +160,28 @@ separations — it would look like a fix and would in fact wrap a legitimate nei
 across the box. The only obligation the primitives themselves enforce is that no shell
 may exceed `conventions.MAX_ANALYSIS_RADIUS = BOX_SIZE / 2`, beyond which the nearest
 image is not unique and the carving itself is ill-defined.
+
+**Catalog contract.** Two MDPL2 catalogs are supported and neither supersedes the other:
+`CATALOG_FULL` (~127M halos, down to 2 particles, subhalos included) and `CATALOG_MVIR12`
+(4,093,751 distinct halos at m_vir ≥ 1e12). A run names one in its `CatalogConfig`, and
+`_load_all_halos` is the only place that name becomes arrays. The CSVs are the source of
+truth; the pipeline reads the **Parquet** files `pipeline/catalog_conversion.py` writes
+from them, and both catalogs are written with one identical schema so the loader has a
+single code path. `CATALOG_FULL` filtered at `mvir ≥ 1e12` with subhalos excluded
+reproduces `CATALOG_MVIR12` exactly — asserted by `tests/test_catalog_equivalence.py`,
+which is what keeps the two interchangeable. The two files disagree about the boundary
+coordinate of exactly four halos (`BOX_SIZE` in one, `0.0` in the other, same object under
+PBC), so box coordinates are **not** guaranteed to lie in the half-open interval
+[0, `BOX_SIZE`); code that needs that convention must fold first.
+
+**Row order is not a convention.** Candidate centers are drawn by row index
+(`draw_candidates_from_arrays`), so the *sample* a run measures depends on the order rows
+happen to sit in the catalog file — while the *population* does not. The two catalogs
+store the same halos in different tie orders, so a run on one and a run on the equivalent
+cut of the other select the same halos but different centers, and their multipoles differ
+by ordinary center-sampling noise (~1σ per shell, not a bug). Compare catalogs on their
+populations, or at fixed center count with the sampling scatter accounted for; do not
+expect identical numbers.
 
 **Import layering.** `conventions.py` and `geometry.py` are leaf modules: no intra-project
 imports (their docstrings name each other but do not import them). `config/*` imports only

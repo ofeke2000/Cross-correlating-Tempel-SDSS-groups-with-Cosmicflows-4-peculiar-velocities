@@ -27,7 +27,7 @@ import pytest
 
 from dvcorr import conventions
 from dvcorr.redshift_space import radial_velocity, to_redshift_space, v_margin_from_statistic
-from dvcorr.pipeline.velocity_centered import draw_candidates
+from dvcorr.pipeline.velocity_centered import draw_candidates_from_arrays
 from dvcorr.pipeline.redshift_space_comparison import (
     BufferedCarve,
     RedshiftSpaceRunConfig,
@@ -58,6 +58,11 @@ def _synthetic_buffer(
     radii = rng.uniform(0.0, (sub_volume_radius * 1.3) ** 3, size=n) ** (1.0 / 3.0)
     pos_all = _OBSERVER + radii[:, None] * directions
     vel_all = rng.normal(scale=velocity_scale, size=(n, 3))
+    # Masses span the real catalog's range in particle counts so anything
+    # reading them sees a plausible spread; nothing under test depends on the
+    # values, only on their row alignment surviving the cuts.
+    mvir_all = conventions.PARTICLE_MASS * rng.integers(2, 10_000, size=n).astype(float)
+    is_distinct_all = rng.random(n) > 0.12
 
     d_obs = np.linalg.norm(pos_all - _OBSERVER, axis=1)
     in_core = d_obs <= sub_volume_radius
@@ -82,6 +87,9 @@ def _synthetic_buffer(
         v_margin_kms=v_margin_kms,
         v_margin_mpc=v_margin_mpc,
         buffered_radius=sub_volume_radius + v_margin_mpc,
+        mvir_core=mvir_all[in_core],
+        is_distinct_core=is_distinct_all[in_core],
+        catalog_mvir=mvir_all,
     )
     return buffer, cfg
 
@@ -101,7 +109,10 @@ def test_shared_centers_are_row_aligned_across_both_spaces():
     two runs' center index sets are identical, not merely equal in size.
     """
     buffer, cfg = _synthetic_buffer(n=5000, sub_volume_radius=200.0, seed=1)
-    s_candidates, v_candidates = draw_candidates(cfg, buffer.pos_core, buffer.vel_core)
+    candidates = draw_candidates_from_arrays(
+        cfg, buffer.pos_core, buffer.vel_core, buffer.mvir_core, buffer.is_distinct_core
+    )
+    s_candidates, v_candidates = candidates.s, candidates.v
 
     centers = select_redshift_shared_centers(
         cfg, s_candidates, v_candidates, _OBSERVER, buffer.v_margin_kms, buffer.v_margin_mpc
@@ -125,7 +136,10 @@ def test_run_both_spaces_preserves_n_centers_and_does_not_raise():
     guarantee documented in `select_redshift_shared_centers`)."""
     buffer, cfg = _synthetic_buffer(n=5000, sub_volume_radius=200.0, seed=2)
     tracers = build_tracer_spaces(cfg, buffer, _OBSERVER)
-    s_candidates, v_candidates = draw_candidates(cfg, buffer.pos_core, buffer.vel_core)
+    candidates = draw_candidates_from_arrays(
+        cfg, buffer.pos_core, buffer.vel_core, buffer.mvir_core, buffer.is_distinct_core
+    )
+    s_candidates, v_candidates = candidates.s, candidates.v
     centers = select_redshift_shared_centers(
         cfg, s_candidates, v_candidates, _OBSERVER, buffer.v_margin_kms, buffer.v_margin_mpc
     )
@@ -152,7 +166,10 @@ def test_select_redshift_shared_centers_percentile_statistic_drops_globally():
     v_margin_kms = v_margin_from_statistic(v_r_core, "percentile", 50.0)
     v_margin_mpc = v_margin_kms / 100.0
 
-    s_candidates, v_candidates = draw_candidates(cfg, buffer.pos_core, buffer.vel_core)
+    candidates = draw_candidates_from_arrays(
+        cfg, buffer.pos_core, buffer.vel_core, buffer.mvir_core, buffer.is_distinct_core
+    )
+    s_candidates, v_candidates = candidates.s, candidates.v
     centers = select_redshift_shared_centers(
         cfg, s_candidates, v_candidates, _OBSERVER, v_margin_kms, v_margin_mpc
     )
@@ -189,13 +206,19 @@ def test_membership_diagnostics_zero_velocity_gives_zero_net_change_and_churn():
         v_margin_kms=0.0,
         v_margin_mpc=0.0,
         buffered_radius=cfg.sub_volume_radius,
+        mvir_core=buffer.mvir_core,
+        is_distinct_core=buffer.is_distinct_core,
+        catalog_mvir=buffer.catalog_mvir,
     )
     tracers = build_tracer_spaces(cfg, zero_buffer, _OBSERVER)
 
     assert tracers.n_real_inside == tracers.n_redshift_inside
     np.testing.assert_array_equal(np.sort(tracers.real_ids), np.sort(tracers.redshift_ids))
 
-    s_candidates, v_candidates = draw_candidates(cfg, zero_buffer.pos_core, zero_buffer.vel_core)
+    candidates = draw_candidates_from_arrays(
+        cfg, zero_buffer.pos_core, zero_buffer.vel_core, zero_buffer.mvir_core, zero_buffer.is_distinct_core
+    )
+    s_candidates, v_candidates = candidates.s, candidates.v
     # min_center_speed > 0 would drop every zero-velocity candidate; relax it
     # for this test only, since membership (not the estimator's own speed
     # floor) is what is under test here.

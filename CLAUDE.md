@@ -34,12 +34,13 @@ pyproject.toml        package metadata, deps, pytest config — the one dependen
 src/dvcorr/
   conventions.py       frozen conventions — sign, pair orientation, observer, box, columns
   config/              tunable settings, one dataclass per file — paths, cosmology,
-                       shell binning, selection — plus a Settings aggregator
+                       shell binning, selection, catalog — plus a Settings aggregator
   geometry.py          pure geometry primitives (unit_vector, pair_separation, mu_cosine)
   estimators/          shell_dipole.py — monopole + dipole accumulators per radial shell,
                        group-centered (xi_Tu) and velocity-centered (zeta, Nusser eq. 23-24)
   pipeline/            velocity_centered.py — reusable stage functions shared by the script
-                       and its notebook twin (load/carve, run, normalize, plot)
+                       and its notebook twin (load/carve, run, normalize, plot);
+                       catalog_conversion.py — CSV→Parquet; mass_diagnostics.py — mass funnel
   selection/           masks, selection functions, random catalogs (empty)
   mocks/               MDPL2 observers, halo selection, mock covariance (empty)
 tests/                 unit tests, including the spherical-infall sign gate
@@ -86,6 +87,7 @@ python -m venv .venv                    # once
 source .venv/bin/activate               # every session
 pip install -e .[dev]                  # once, inside the .venv — editable install, dvcorr + pytest
 
+python -m scripts.convert_mdpl2_catalog # once — CSV -> Parquet, both catalogs
 pytest                                 # geometry and sign-convention tests
 ```
 
@@ -94,8 +96,18 @@ The sign-gate tests in [tests/test_geometry.py](tests/test_geometry.py) are curr
 marker. **Never weaken an assertion to make a test pass**; if an assertion looks wrong,
 that is a conversation about conventions, not an edit.
 
-`data/mdpl2_rockstar_125_pid-1_mvir12.csv` is ~4M halos. Don't load it fully unless the
-task needs it, and ask before running anything long.
+Two halo catalogs are supported and **both stay available** — a run picks one with
+`RunConfig(catalog=CatalogConfig(name=...))`:
+
+- `full` — `data/mdpl2_rockstar_snapnum125.csv`, ~127M halos down to 2 particles,
+  subhalos included. The default.
+- `mvir12` — `data/mdpl2_rockstar_125_pid-1_mvir12.csv`, 4,093,751 distinct halos at
+  mvir ≥ 1e12. Every result before the full catalog landed used this one.
+
+`full` is a strict superset: filtering it at `mvir >= 1e12` with `include_subhalos=False`
+reproduces `mvir12` exactly. The pipeline reads Parquet, not CSV — convert once with
+`python -m scripts.convert_mdpl2_catalog` (~10 min, ~2.9 GB for `full`). A full-catalog
+run needs ~16 GB of RAM and a couple of minutes; ask before running anything long.
 
 ## Hard rules
 
@@ -211,6 +223,9 @@ Fixed project-wide; see the README table and `conventions.py`.
 - Positions: comoving h⁻¹ Mpc (periodic box coordinates)
 - Velocities: km/s; masses: `mvir` in h⁻¹ M☉
 - MDPL2 cosmology: H0 = 67.77, Ωm = 0.307115, σ8 = 0.8228; box 1000 h⁻¹ Mpc
+- MDPL2 particle mass: 1.5054e9 h⁻¹ M☉ (`conventions.PARTICLE_MASS`). `mvir` is exactly
+  quantized in multiples of it, so `mvir / PARTICLE_MASS` is an exact particle count.
+  Resolution thresholds: `RESOLVED_PARTICLE_COUNT` = 20, `CONVERGED_PARTICLE_COUNT` = 100
 - Small-scale velocity noise: σ* ≈ 250 km/s
 
 ## Agent workflow

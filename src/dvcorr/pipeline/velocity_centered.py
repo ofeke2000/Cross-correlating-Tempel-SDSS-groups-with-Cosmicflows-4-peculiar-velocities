@@ -54,7 +54,14 @@ import numpy as np
 import pandas as pd
 
 from dvcorr import conventions
-from dvcorr.config import SPACING_LOG, PathsConfig, ShellConfig, volume_weighted_shell_radii
+from dvcorr.config import (
+    SPACING_LOG,
+    CatalogConfig,
+    PathsConfig,
+    ShellConfig,
+    volume_weighted_shell_radii,
+)
+from dvcorr.pipeline.catalog_conversion import IS_DISTINCT_COLUMN
 from dvcorr.estimators.shell_dipole import (
     VelocityCenteredShellDipoleResult,
     center_standard_error,
@@ -145,6 +152,14 @@ class RunConfig:
     sub_volume_radius : float
         Radius of the spherical sub-volume carved around the observer,
         h^-1 Mpc. Mirrors notebook 04's R_SUB.
+    catalog : CatalogConfig
+        Which halo catalog this run reads and which halos it keeps from it.
+        Composed for the same reason `shells` is: `CatalogConfig` already
+        validates the catalog name and the mass bounds, and composing it means
+        switching catalogs is one line at the call site with no pipeline
+        signature change. Defaults to the full catalog, uncut -- see
+        `dvcorr.config.catalog` for what that population contains and why the
+        absence of a mass floor is a choice rather than an oversight.
     shells : ShellConfig
         Radial shell binning; see `_default_shells` (and its module-level
         comment block above `_DEFAULT_SPACING`) for why the default
@@ -187,6 +202,7 @@ class RunConfig:
     """
 
     sub_volume_radius: float = 300.0
+    catalog: CatalogConfig = field(default_factory=CatalogConfig)
     shells: ShellConfig = field(default_factory=_default_shells)
     n_candidate_centers: int = 4000
     seed: int = 42
@@ -268,50 +284,184 @@ def _binning_description(shells: ShellConfig) -> str:
 # ---------------------------------------------------------------------------
 
 
-def _load_all_halos(paths: PathsConfig) -> tuple[np.ndarray, np.ndarray]:
-    """Read the MDPL2 catalog's position/velocity columns, uncarved.
+@dataclass(frozen=True)
+class HaloArrays:
+    """Every halo a run selected from its catalog, before any spatial carve.
+
+    Returned by `_load_all_halos`. Arrays are float32 (see below) and share a
+    single row order; row i of each describes the same halo.
+
+    Why float32 here and float64 after the carve. The full catalog is ~127M
+    halos, where each float64 (N, 3) array costs ~3 GB and each float32 one
+    ~1.5 GB. Only ~11% of it survives the carve, so holding the whole catalog
+    at reduced width and widening only the survivors (`load_and_carve`) is
+    what keeps a full-catalog run inside memory. The narrowing is lossless
+    relative to the source text -- see `dvcorr.pipeline.catalog_conversion`'s
+    docstring -- but the estimators' documented contract is float64, so the
+    widening is not optional either.
+
+    Attributes
+    ----------
+    pos : ndarray, shape (N_total, 3), float32
+        Positions, comoving h^-1 Mpc, in catalog row order.
+    vel : ndarray, shape (N_total, 3), float32
+        Peculiar velocities, km/s, same row order.
+    mvir : ndarray, shape (N_total,), float32
+        Virial masses, h^-1 M_sun. Carried so the selection funnel can be
+        reported by mass (`dvcorr.pipeline.mass_diagnostics`) rather than only
+        by count.
+    is_distinct : ndarray, shape (N_total,), bool
+        True where the halo is not a subhalo (`pid == -1`).
+    n_total : int
+        `pos.shape[0]`, after the catalog's own cuts.
+    """
+
+    pos: np.ndarray
+    vel: np.ndarray
+    mvir: np.ndarray
+    is_distinct: np.ndarray
+    n_total: int
+
+
+def _load_all_halos(paths: PathsConfig, catalog: CatalogConfig) -> HaloArrays:
+    """Read a halo catalog and apply its mass / subhalo cuts, uncarved.
 
     Factored out of `load_and_carve` (which calls this, then carves) so that
     `dvcorr.pipeline.redshift_space_comparison` can build its OWN dual carve
     -- a plain `sub_volume_radius` pass to derive the `v_margin` statistic,
     then a second, buffered pass at `sub_volume_radius + v_margin` -- from a
-    SINGLE CSV read, rather than re-reading the ~4M-row / ~600 MB catalog
-    once per carve. Loads only `dvcorr.conventions.POSITION_COLUMNS +
-    dvcorr.conventions.VELOCITY_COLUMNS` (CLAUDE.md: the catalog is not
-    loaded fully otherwise).
+    SINGLE catalog read rather than one read per carve.
+
+    This is the ONLY place a `CatalogConfig` becomes halo arrays, so it is the
+    only place the catalog choice has to be resolved. It reads Parquet, not
+    CSV: `dvcorr.pipeline.catalog_conversion` writes that file and its
+    docstring explains why (the full catalog is 11.2 GB of text, ~10 minutes
+    and ~12 GB of RAM to parse, versus seconds from the converted file).
+
+    `mass_min` is pushed down as a Parquet row-group filter rather than
+    applied after loading. On the full catalog -- which is stored in ascending
+    mvir order -- that means a high floor skips most of the file unread
+    instead of reading and discarding it. `mass_max` and `include_subhalos`
+    are applied in memory afterwards, since neither can skip contiguous row
+    groups the way a floor on the sort column can.
 
     Parameters
     ----------
     paths : PathsConfig
-        Supplies `mdpl2_catalog`'s path.
+        Resolves `catalog.name` to a file via `halo_catalog`.
+    catalog : CatalogConfig
+        Which catalog, and which halos to keep from it.
 
     Returns
     -------
-    pos_all : ndarray, shape (N_total, 3)
-    vel_all : ndarray, shape (N_total, 3)
-        Every halo's position and velocity, comoving h^-1 Mpc / km/s, in
-        catalog row order.
+    HaloArrays
 
     Raises
     ------
+    FileNotFoundError
+        If the Parquet file has not been built yet, with the command that
+        builds it -- this is a setup step, not a bug, and the message says so
+        rather than surfacing as a bare missing-file traceback.
     RuntimeError
-        If the catalog loads zero rows.
+        If zero halos survive. Distinguishes an empty catalog from cuts that
+        removed everything, since the fix differs.
     """
-    usecols = list(conventions.POSITION_COLUMNS) + list(conventions.VELOCITY_COLUMNS)
+    parquet_path = paths.halo_catalog(catalog.name)
+    if not parquet_path.exists():
+        raise FileNotFoundError(
+            f"{parquet_path} does not exist. Build it once with:\n"
+            f"    python -m scripts.convert_mdpl2_catalog {catalog.name}"
+        )
 
-    print(f"loading {paths.mdpl2_catalog} (columns: {usecols}) ...")
-    halos = pd.read_csv(paths.mdpl2_catalog, usecols=usecols)
-    if len(halos) == 0:
-        raise RuntimeError(f"{paths.mdpl2_catalog} loaded zero rows.")
-    print(f"loaded {len(halos)} halos")
+    mass_col = conventions.HALO_COLUMNS["mass"]
+    columns = [
+        *conventions.POSITION_COLUMNS,
+        *conventions.VELOCITY_COLUMNS,
+        mass_col,
+        IS_DISTINCT_COLUMN,
+    ]
+    filters = None if catalog.mass_min is None else [(mass_col, ">=", catalog.mass_min)]
 
-    pos_all = halos[list(conventions.POSITION_COLUMNS)].to_numpy(dtype=float)
-    vel_all = halos[list(conventions.VELOCITY_COLUMNS)].to_numpy(dtype=float)
-    return pos_all, vel_all
+    print(f"loading {parquet_path.name} [{catalog.describe_cuts()}] ...")
+    halos = pd.read_parquet(parquet_path, columns=columns, filters=filters)
+    n_read = len(halos)
+    if n_read == 0:
+        raise RuntimeError(
+            f"{parquet_path} yielded zero rows"
+            + ("." if catalog.mass_min is None else f" at mass_min = {catalog.mass_min:.3g}.")
+        )
+
+    keep = np.ones(n_read, dtype=bool)
+    if catalog.mass_max is not None:
+        keep &= halos[mass_col].to_numpy() <= catalog.mass_max
+    if not catalog.include_subhalos:
+        keep &= halos[IS_DISTINCT_COLUMN].to_numpy()
+
+    pos = halos[list(conventions.POSITION_COLUMNS)].to_numpy()[keep]
+    vel = halos[list(conventions.VELOCITY_COLUMNS)].to_numpy()[keep]
+    mvir = halos[mass_col].to_numpy()[keep]
+    is_distinct = halos[IS_DISTINCT_COLUMN].to_numpy()[keep]
+
+    n_total = pos.shape[0]
+    if n_total == 0:
+        raise RuntimeError(
+            f"every one of the {n_read} halos read from {parquet_path.name} was "
+            f"removed by the catalog cuts ({catalog.describe_cuts()}); widen them."
+        )
+    print(f"loaded {n_total} halos ({n_read - n_total} removed by in-memory cuts)")
+
+    return HaloArrays(
+        pos=pos, vel=vel, mvir=mvir, is_distinct=is_distinct, n_total=n_total
+    )
 
 
-def load_and_carve(cfg: RunConfig, paths: PathsConfig) -> tuple[np.ndarray, np.ndarray]:
-    """Load the MDPL2 catalog and carve a sphere around the observer.
+@dataclass(frozen=True)
+class CarvedHalos:
+    """The halos inside the analysis sub-volume, with the masses that selected them.
+
+    Returned by `load_and_carve`. This is a dataclass rather than the bare
+    `(pos, vel)` tuple it replaces because `mvir` and `is_distinct` now travel
+    with the population: the mass-funnel diagnostic
+    (`dvcorr.pipeline.mass_diagnostics`) reports which halos a run actually
+    measured, and reconstructing that downstream would mean re-deriving the
+    selection outside the one place that performs it.
+
+    `pos` / `vel` are float64 (the estimators' contract); `mvir` and
+    `is_distinct` stay at their loaded width, since nothing computes geometry
+    from them.
+
+    Attributes
+    ----------
+    pos : ndarray, shape (N_carved, 3), float64
+    vel : ndarray, shape (N_carved, 3), float64
+        Carved positions and velocities, comoving h^-1 Mpc / km/s.
+    mvir : ndarray, shape (N_carved,)
+        Carved virial masses, h^-1 M_sun, same row order.
+    is_distinct : ndarray, shape (N_carved,), bool
+        False for subhalos.
+    n_carved : int
+        `pos.shape[0]`.
+    n_total : int
+        Halos the catalog supplied before the carve, for the survival fraction.
+    catalog_mvir : ndarray, shape (N_total,)
+        Masses of the FULL pre-carve population. Kept so the mass funnel can
+        show the carve against the catalog it was cut from -- a spatial carve
+        should be mass-blind, and this is what lets that be checked rather
+        than assumed. It is the one uncarved array retained; positions and
+        velocities are released with the rest of `HaloArrays`.
+    """
+
+    pos: np.ndarray
+    vel: np.ndarray
+    mvir: np.ndarray
+    is_distinct: np.ndarray
+    n_carved: int
+    n_total: int
+    catalog_mvir: np.ndarray
+
+
+def load_and_carve(cfg: RunConfig, paths: PathsConfig) -> CarvedHalos:
+    """Load the selected halo catalog and carve a sphere around the observer.
 
     Loads via `_load_all_halos`, then keeps halos within
     `cfg.sub_volume_radius` of `dvcorr.conventions.OBSERVER_POSITION`. Plain
@@ -322,14 +472,14 @@ def load_and_carve(cfg: RunConfig, paths: PathsConfig) -> tuple[np.ndarray, np.n
     Parameters
     ----------
     cfg : RunConfig
+        Supplies `sub_volume_radius` and, via `cfg.catalog`, which halos to
+        read in the first place.
     paths : PathsConfig
-        Supplies `mdpl2_catalog`'s path.
+        Resolves the catalog name to a file.
 
     Returns
     -------
-    pos : ndarray, shape (N_carved, 3)
-    vel : ndarray, shape (N_carved, 3)
-        Carved halo positions and velocities, comoving h^-1 Mpc / km/s.
+    CarvedHalos
 
     Raises
     ------
@@ -340,25 +490,35 @@ def load_and_carve(cfg: RunConfig, paths: PathsConfig) -> tuple[np.ndarray, np.n
         misleading traceback, not a diagnosis.
     """
     observer = np.asarray(conventions.OBSERVER_POSITION, dtype=float)
-    pos_all, vel_all = _load_all_halos(paths)
+    halos = _load_all_halos(paths, cfg.catalog)
 
-    d_obs = np.linalg.norm(pos_all - observer, axis=1)
+    d_obs = np.linalg.norm(halos.pos - observer, axis=1)
     in_sub = d_obs <= cfg.sub_volume_radius
-    pos = pos_all[in_sub]
-    vel = vel_all[in_sub]
+    # float64 from here on: the carved subset is small enough to widen, and the
+    # geometry primitives and estimators document a float64 contract. See
+    # `HaloArrays` for why the uncarved catalog is not held this way.
+    pos = halos.pos[in_sub].astype(float)
+    vel = halos.vel[in_sub].astype(float)
     n_carved = pos.shape[0]
     if n_carved == 0:
         raise RuntimeError(
             f"no halos survived the sub_volume_radius = {cfg.sub_volume_radius} "
             "carve; check the observer position and sub_volume_radius."
         )
-    n_total = pos_all.shape[0]
     print(
-        f"carved {n_carved} of {n_total} halos within "
+        f"carved {n_carved} of {halos.n_total} halos within "
         f"sub_volume_radius = {cfg.sub_volume_radius} h^-1 Mpc "
-        f"({100.0 * n_carved / n_total:.2f}%)"
+        f"({100.0 * n_carved / halos.n_total:.2f}%)"
     )
-    return pos, vel
+    return CarvedHalos(
+        pos=pos,
+        vel=vel,
+        mvir=halos.mvir[in_sub],
+        is_distinct=halos.is_distinct[in_sub],
+        n_carved=n_carved,
+        n_total=halos.n_total,
+        catalog_mvir=halos.mvir,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -366,41 +526,117 @@ def load_and_carve(cfg: RunConfig, paths: PathsConfig) -> tuple[np.ndarray, np.n
 # ---------------------------------------------------------------------------
 
 
-def draw_candidates(
-    cfg: RunConfig, pos: np.ndarray, vel: np.ndarray
-) -> tuple[np.ndarray, np.ndarray]:
-    """Seeded subsample of the carved halos, as candidate velocity centers.
+@dataclass(frozen=True)
+class CandidateCenters:
+    """The seeded subsample of carved halos offered as velocity centers.
 
-    `velocity_centered_shell_dipole`'s own core cut (`core_center_mask`)
-    decides which of these candidates survive as centers; this stage only
-    performs the subsample.
+    Returned by `draw_candidates`. Like `CarvedHalos`, a dataclass rather than
+    a tuple so the drawn halos' masses travel with their positions.
+
+    Attributes
+    ----------
+    s : ndarray, shape (N_candidates, 3), float64
+    v : ndarray, shape (N_candidates, 3), float64
+        Candidate positions and velocities, comoving h^-1 Mpc / km/s.
+    mvir : ndarray, shape (N_candidates,)
+        Candidate virial masses, h^-1 M_sun.
+    is_distinct : ndarray, shape (N_candidates,), bool
+        False for subhalos.
+    draw_index : ndarray, shape (N_candidates,), int
+        Rows of the `CarvedHalos` arrays these were drawn from. Retained so a
+        caller can trace a candidate back to the carved population without
+        re-running the seeded draw.
+    """
+
+    s: np.ndarray
+    v: np.ndarray
+    mvir: np.ndarray
+    is_distinct: np.ndarray
+    draw_index: np.ndarray
+
+
+def draw_candidates_from_arrays(
+    cfg: RunConfig,
+    pos: np.ndarray,
+    vel: np.ndarray,
+    mvir: np.ndarray,
+    is_distinct: np.ndarray,
+) -> CandidateCenters:
+    """Seeded subsample of a carved population, from bare arrays.
+
+    The definition site of the draw. `draw_candidates` is the `CarvedHalos`
+    convenience wrapper over it; `dvcorr.pipeline.redshift_space_comparison`
+    calls this form directly, because its candidates come from a
+    `BufferedCarve`'s core arrays rather than from a `CarvedHalos`. One
+    implementation either way, so the two pipelines cannot drift into drawing
+    differently.
+
+    The draw is uniform over the carved population and therefore MASS-BLIND:
+    on a catalog with no mass floor, the candidates inherit the catalog's mass
+    distribution, which is dominated by its smallest halos. That is a property
+    of the catalog, not of this function -- the mass funnel
+    (`dvcorr.pipeline.mass_diagnostics`) is what makes it visible.
 
     Parameters
     ----------
     cfg : RunConfig
+        Supplies `n_candidate_centers` and `seed`.
     pos, vel : ndarray, shape (N_carved, 3)
-        Carved halo positions/velocities, as returned by `load_and_carve`.
+        Carved positions and velocities.
+    mvir : ndarray, shape (N_carved,)
+    is_distinct : ndarray, shape (N_carved,), bool
+        Per-halo labels, row-aligned with `pos` / `vel`.
 
     Returns
     -------
-    s_candidates, v_candidates : ndarray, shape (N_candidates, 3)
+    CandidateCenters
 
     Raises
     ------
     RuntimeError
-        If `cfg.n_candidate_centers <= 0` or `pos` is empty, either of which
-        would otherwise surface later as a confusing zero-candidate estimator
-        call.
+        If `cfg.n_candidate_centers <= 0` or the carved population is empty,
+        either of which would otherwise surface later as a confusing
+        zero-candidate estimator call.
     """
-    n_candidates = min(cfg.n_candidate_centers, pos.shape[0])
+    n_carved = pos.shape[0]
+    n_candidates = min(cfg.n_candidate_centers, n_carved)
     if n_candidates <= 0:
         raise RuntimeError(
             f"n_candidate_centers ({cfg.n_candidate_centers}) and the carved "
-            f"population ({pos.shape[0]}) give zero candidates."
+            f"population ({n_carved}) give zero candidates."
         )
     rng = np.random.default_rng(cfg.seed)
-    candidate_idx = rng.choice(pos.shape[0], size=n_candidates, replace=False)
-    return pos[candidate_idx], vel[candidate_idx]
+    draw_index = rng.choice(n_carved, size=n_candidates, replace=False)
+    return CandidateCenters(
+        s=pos[draw_index],
+        v=vel[draw_index],
+        mvir=np.asarray(mvir)[draw_index],
+        is_distinct=np.asarray(is_distinct)[draw_index],
+        draw_index=draw_index,
+    )
+
+
+def draw_candidates(cfg: RunConfig, carved: CarvedHalos) -> CandidateCenters:
+    """Seeded subsample of the carved halos, as candidate velocity centers.
+
+    `velocity_centered_shell_dipole`'s own core cut (`core_center_mask`)
+    decides which of these candidates survive as centers; this stage only
+    performs the subsample. Thin wrapper over
+    `draw_candidates_from_arrays`, which documents the draw itself.
+
+    Parameters
+    ----------
+    cfg : RunConfig
+    carved : CarvedHalos
+        The carved population, as returned by `load_and_carve`.
+
+    Returns
+    -------
+    CandidateCenters
+    """
+    return draw_candidates_from_arrays(
+        cfg, carved.pos, carved.vel, carved.mvir, carved.is_distinct
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -460,6 +696,15 @@ class SharedCenterSet:
         so a caller (or a test) can assert on it directly.
     n_centers : int
         Final surviving count, `s_centers.shape[0]`.
+    mvir_centers : ndarray, shape (N_c,) | None
+        Surviving centers' virial masses, h^-1 M_sun, same row order as
+        `s_centers` -- masked by the identical two cuts, so this is the mass
+        distribution of the halos the estimator actually used. None when the
+        caller supplied no masses (see `select_shared_centers`), which is what
+        keeps the synthetic-array tests free of a catalog.
+    is_distinct_centers : ndarray, shape (N_c,), bool | None
+        Whether each surviving center is a distinct halo. None on the same
+        condition as `mvir_centers`.
     """
 
     s_centers: np.ndarray
@@ -468,6 +713,8 @@ class SharedCenterSet:
     n_core: int
     n_dropped_slow: int
     n_centers: int
+    mvir_centers: np.ndarray | None = None
+    is_distinct_centers: np.ndarray | None = None
 
 
 def select_shared_centers(
@@ -476,6 +723,9 @@ def select_shared_centers(
     v_candidates: np.ndarray,
     observer: np.ndarray,
     core_margin: float | None = None,
+    *,
+    mvir_candidates: np.ndarray | None = None,
+    is_distinct_candidates: np.ndarray | None = None,
 ) -> SharedCenterSet:
     """Apply the core cut, then the speed floor, ONCE, for other stages to share.
 
@@ -518,13 +768,23 @@ def select_shared_centers(
         `dvcorr.pipeline.redshift_space_comparison.RedshiftSpaceRunConfig`)
         works unchanged.
     s_candidates, v_candidates : ndarray, shape (N_cand, 3)
-        Candidate positions/velocities, e.g. from `draw_candidates`.
+        Candidate positions/velocities, e.g. `CandidateCenters.s` / `.v` from
+        `draw_candidates`.
     observer : ndarray, shape (3,)
     core_margin : float, optional
         Minimum clearance to the sub-volume boundary required of a
         surviving center (see `dvcorr.estimators.shell_dipole
         .core_center_mask`). `None` (the default) uses
         `cfg.shells.max_radius`, i.e. r_max.
+    mvir_candidates : ndarray, shape (N_cand,), optional, keyword-only
+    is_distinct_candidates : ndarray, shape (N_cand,), bool, optional, keyword-only
+        Per-candidate labels to carry through both cuts, surfacing on the
+        result as `mvir_centers` / `is_distinct_centers`. Optional because
+        the cuts are purely geometric and kinematic: nothing here reads a
+        mass, so a caller with no catalog (every synthetic-array test) passes
+        neither and gets None back. Supplied by the real pipelines from
+        `CandidateCenters`, which is what feeds
+        `dvcorr.pipeline.mass_diagnostics`.
 
     Returns
     -------
@@ -561,6 +821,16 @@ def select_shared_centers(
     n_centers = s_centers.shape[0]
     n_dropped_slow = n_core - n_centers
 
+    # The optional per-candidate labels ride the IDENTICAL two masks, in the
+    # same order, so `mvir_centers[i]` describes `s_centers[i]` by
+    # construction rather than by a second, independently derived selection
+    # that could drift from this one.
+    def _survivors(labels: np.ndarray | None) -> np.ndarray | None:
+        return None if labels is None else np.asarray(labels)[core_mask][keep]
+
+    mvir_centers = _survivors(mvir_candidates)
+    is_distinct_centers = _survivors(is_distinct_candidates)
+
     print(
         f"n_candidates = {n_candidates} -> core cut (core_margin = {core_margin}) "
         f"-> n_core = {n_core} ({100.0 * n_core / n_candidates:.1f}% survive) -> "
@@ -581,6 +851,8 @@ def select_shared_centers(
         n_core=n_core,
         n_dropped_slow=n_dropped_slow,
         n_centers=n_centers,
+        mvir_centers=mvir_centers,
+        is_distinct_centers=is_distinct_centers,
     )
 
 

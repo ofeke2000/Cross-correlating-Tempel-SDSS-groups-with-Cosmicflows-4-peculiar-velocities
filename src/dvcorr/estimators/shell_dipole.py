@@ -183,6 +183,65 @@ from scipy.spatial import cKDTree
 from dvcorr import conventions
 from dvcorr.geometry import mu_cosine, pair_separation, radial_flow_axis, unit_vector
 
+#: Centers per batched `query_ball_point` call. Batching is what lets SciPy
+#: use its `workers` thread pool at all: a single-point query is serial no
+#: matter what, so the per-center loop this replaces could only ever use one
+#: core. Memory scales as batch size x neighbors-per-ball, and on the full
+#: MDPL2 catalog a ball at r_max = 64 holds ~1.4e5 tracers, so a batch of 32
+#: costs a few million indices -- large enough to saturate the pool, small
+#: enough not to rival the tree itself.
+_NEIGHBOR_BATCH_CENTERS: int = 32
+
+#: `workers` argument for batched neighbor queries; -1 means every core.
+_NEIGHBOR_QUERY_WORKERS: int = -1
+
+
+def _neighbors_by_center(
+    tree: cKDTree | None, centers: np.ndarray, radius: float
+):
+    """Yield `(center_row, neighbor_indices)` for every center, batched.
+
+    A generator so callers keep their per-center loop body unchanged while the
+    underlying queries run in parallel batches. Yields exactly one pair per row
+    of `centers`, in row order, including empty results -- so a caller can rely
+    on the row index rather than tracking its own counter.
+
+    Parameters
+    ----------
+    tree : cKDTree | None
+        Tracer tree. None (no tracers) yields an empty index array per center,
+        so the caller needs no separate None branch.
+    centers : ndarray, shape (N_c, 3)
+        Query points.
+    radius : float
+        Ball radius, h^-1 Mpc -- the outermost shell edge.
+
+    Yields
+    ------
+    center_row : int
+        Row of `centers` the indices belong to.
+    neighbor_indices : ndarray, shape (k,), int
+        Rows of the tree's data within `radius`. Unsorted: callers here bin by
+        separation and sum, and neither depends on neighbor order.
+    """
+    n_centers = centers.shape[0]
+    if tree is None:
+        empty = np.empty(0, dtype=int)
+        for a in range(n_centers):
+            yield a, empty
+        return
+
+    for start in range(0, n_centers, _NEIGHBOR_BATCH_CENTERS):
+        stop = min(start + _NEIGHBOR_BATCH_CENTERS, n_centers)
+        batch = tree.query_ball_point(
+            centers[start:stop],
+            radius,
+            workers=_NEIGHBOR_QUERY_WORKERS,
+            return_sorted=False,
+        )
+        for offset, idx in enumerate(batch):
+            yield start + offset, np.asarray(idx, dtype=int)
+
 
 @dataclass(frozen=True)
 class ShellDipoleResult:
@@ -925,13 +984,10 @@ def velocity_centered_shell_dipole(
 
         tree = cKDTree(s_tracers) if s_tracers.shape[0] > 0 else None
 
-        for a in range(n_centers):
-            if tree is None:
-                continue
-            s_alpha = s_survivors[a]
-            idx = np.asarray(tree.query_ball_point(s_alpha, edges[-1]), dtype=int)
+        for a, idx in _neighbors_by_center(tree, s_survivors, edges[-1]):
             if idx.size == 0:
                 continue
+            s_alpha = s_survivors[a]
             s_near = s_tracers[idx]
 
             # Reversed orientation: the velocity center in the "center" slot

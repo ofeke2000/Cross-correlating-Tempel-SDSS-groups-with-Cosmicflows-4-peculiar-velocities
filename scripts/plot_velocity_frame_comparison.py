@@ -45,7 +45,12 @@ import numpy as np
 
 from dvcorr import conventions
 from dvcorr.config import PathsConfig
-from dvcorr.pipeline.velocity_centered import draw_candidates, global_number_density, load_and_carve
+from dvcorr.pipeline.mass_diagnostics import mass_funnel, print_mass_funnel
+from dvcorr.pipeline.velocity_centered import (
+    draw_candidates,
+    global_number_density,
+    load_and_carve,
+)
 from dvcorr.pipeline.velocity_frame_comparison import (
     ComparisonRunConfig,
     make_angle_diagnostic_figure,
@@ -62,12 +67,31 @@ def main() -> None:
     paths = PathsConfig()
     observer = np.asarray(conventions.OBSERVER_POSITION, dtype=float)
 
-    pos, vel = load_and_carve(cfg, paths)
-    s_candidates, v_candidates = draw_candidates(cfg, pos, vel)
-    centers = select_shared_centers(cfg, s_candidates, v_candidates, observer)
-    results = run_both_frames(cfg, centers, pos, observer)
+    carved = load_and_carve(cfg, paths)
+    candidates = draw_candidates(cfg, carved)
+    centers = select_shared_centers(
+        cfg,
+        candidates.s,
+        candidates.v,
+        observer,
+        mvir_candidates=candidates.mvir,
+        is_distinct_candidates=candidates.is_distinct,
+    )
+    print_mass_funnel(
+        mass_funnel(
+            carved.catalog_mvir,
+            carved.mvir,
+            candidates.mvir,
+            centers.mvir_centers,
+            centers.is_distinct_centers,
+            cfg.catalog.name,
+            cfg.catalog.describe_cuts(),
+        )
+    )
 
-    n_bar = global_number_density(pos.shape[0], cfg.sub_volume_radius)
+    results = run_both_frames(cfg, centers, carved.pos, observer)
+
+    n_bar = global_number_density(carved.n_carved, cfg.sub_volume_radius)
     comparison = normalize_comparison(cfg, results, n_bar)
 
     comparison_fig = make_comparison_figure(cfg, results, comparison)

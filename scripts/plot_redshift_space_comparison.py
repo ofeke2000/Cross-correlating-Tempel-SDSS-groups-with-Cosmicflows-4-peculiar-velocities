@@ -46,7 +46,8 @@ import numpy as np
 
 from dvcorr import conventions
 from dvcorr.config import PathsConfig
-from dvcorr.pipeline.velocity_centered import draw_candidates
+from dvcorr.pipeline.mass_diagnostics import mass_funnel, print_mass_funnel
+from dvcorr.pipeline.velocity_centered import draw_candidates_from_arrays
 from dvcorr.pipeline.redshift_space_comparison import (
     RedshiftSpaceRunConfig,
     build_tracer_spaces,
@@ -68,11 +69,36 @@ def main() -> None:
     buffer = load_and_carve_buffered(cfg, paths)
     tracers = build_tracer_spaces(cfg, buffer, observer)
 
-    s_candidates, v_candidates = draw_candidates(cfg, buffer.pos_core, buffer.vel_core)
+    candidates = draw_candidates_from_arrays(
+        cfg,
+        buffer.pos_core,
+        buffer.vel_core,
+        buffer.mvir_core,
+        buffer.is_distinct_core,
+    )
 
     centers = select_redshift_shared_centers(
-        cfg, s_candidates, v_candidates, observer, buffer.v_margin_kms, buffer.v_margin_mpc
+        cfg,
+        candidates.s,
+        candidates.v,
+        observer,
+        buffer.v_margin_kms,
+        buffer.v_margin_mpc,
+        mvir_candidates=candidates.mvir,
+        is_distinct_candidates=candidates.is_distinct,
     )
+    print_mass_funnel(
+        mass_funnel(
+            buffer.catalog_mvir,
+            buffer.mvir_core,
+            candidates.mvir,
+            centers.mvir_centers,
+            centers.is_distinct_centers,
+            cfg.catalog.name,
+            cfg.catalog.describe_cuts(),
+        )
+    )
+
     results = run_both_spaces(cfg, centers, tracers, observer)
     comparison = normalize_redshift_comparison(cfg, results)
 

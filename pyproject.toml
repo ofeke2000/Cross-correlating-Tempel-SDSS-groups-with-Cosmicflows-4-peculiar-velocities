@@ -15,6 +15,7 @@ dependencies = [
     "astropy",
     "matplotlib",
     "h5py",
+    "pyarrow",
 ]
 
 [project.optional-dependencies]

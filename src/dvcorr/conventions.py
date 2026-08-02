@@ -147,6 +147,26 @@ HUBBLE_PARAM: float = 0.6777
 #: Shell edges must not exceed this. Derived, not tunable.
 MAX_ANALYSIS_RADIUS: float = BOX_SIZE / 2.0
 
+#: MDPL2 dark-matter particle mass, h^-1 M_sun (3840^3 particles in a
+#: 1000 h^-1 Mpc box). Rockstar's `mvir` is EXACTLY quantized in multiples of
+#: this -- every mass in the catalog satisfies mvir = N_particles * PARTICLE_MASS
+#: with integer N -- so `mvir / PARTICLE_MASS` recovers the particle count
+#: exactly rather than approximately. That is what makes the particle-count
+#: axis on the mass-funnel histogram (dvcorr.pipeline.mass_diagnostics) a
+#: relabelling of the mass axis rather than a second, lossy estimate.
+PARTICLE_MASS: float = 1.5054e9
+
+#: Particle count below which a Rockstar halo's mass is not considered
+#: resolved. The conventional completeness floor for this kind of catalog.
+RESOLVED_PARTICLE_COUNT: int = 20
+
+#: Particle count below which a halo's *velocity* is not considered converged.
+#: Higher than RESOLVED_PARTICLE_COUNT because velocity converges more slowly
+#: with particle number than mass does -- a halo can have a usable mass and an
+#: unusable peculiar velocity. Both are drawn on the mass-funnel histogram so
+#: the population entering the estimator can be read against them.
+CONVERGED_PARTICLE_COUNT: int = 100
+
 
 # --------------------------------------------------------------------------
 # Observer

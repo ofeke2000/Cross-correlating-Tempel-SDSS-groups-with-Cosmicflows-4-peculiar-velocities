@@ -35,6 +35,7 @@ These are fixed project-wide in `src/dvcorr/conventions.py` and `src/dvcorr/geom
 | $\Psi_\parallel$, $\Psi_\perp$ | Górski velocity–velocity correlation functions |
 | $L_\ell$ | Legendre polynomials; $P_m(k)$ is reserved for the matter power spectrum |
 | $\mu_k = \hat{k} \cdot \hat{n}$ | Fourier-space line-of-sight cosine (RSD formulae only) |
+| $m_p$ | MDPL2 particle mass, $1.5054\times10^{9}\,h^{-1}M_\odot$ (`conventions.PARTICLE_MASS`); `mvir` is exactly quantized in multiples of it, so $m_{\rm vir}/m_p$ is an exact particle count |
 
 Consequences that follow from these choices and must not be violated:
 
@@ -52,12 +53,14 @@ pyproject.toml    Package metadata, dependencies, pytest config — the single d
 src/dvcorr/       The installable package (editable install: pip install -e .)
   conventions.py    Frozen conventions — sign, pair orientation, observer, box, catalog columns
   config/           Tunable settings, one dataclass per file (paths, cosmology, shell
-                    binning, selection) plus a Settings aggregator
+                    binning, selection, catalog) plus a Settings aggregator
   geometry.py       Pure geometry primitives (unit_vector, pair_separation, mu_cosine)
   estimators/       shell_dipole.py — group-centered (ξ_Tu) and velocity-centered (Nusser ζ)
                     monopole + dipole accumulators per radial shell
   pipeline/         velocity_centered.py — reusable stage functions shared by the driver
                     script and its notebook (load/carve, draw, run, normalize, plot)
+                    catalog_conversion.py — one-time CSV → Parquet conversion
+                    mass_diagnostics.py — mass funnel: which halos a run measured
   selection/        Angular masks, radial selection functions, random catalogs (planned)
   mocks/            MDPL2 halo selection, mock observers, mock covariance (planned)
 scripts/          Runnable, load-bearing drivers (e.g. plot_velocity_centered_dipole.py)
@@ -101,6 +104,7 @@ cd Cross-correlating-Tempel-SDSS-groups-with-Cosmicflows-4-peculiar-velocities
 python -m venv .venv                  # once
 source .venv/bin/activate             # every session
 pip install -e .[dev]                 # once, inside the .venv — editable install, dvcorr + pytest
+python -m scripts.convert_mdpl2_catalog  # once — CSV → Parquet for both halo catalogs
 pytest                                # geometry and sign-convention tests must pass
 ```
 

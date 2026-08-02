@@ -19,8 +19,12 @@ from scipy import integrate
 from dvcorr import conventions
 from dvcorr.estimators.shell_dipole import shell_dipole
 from dvcorr.config import (
+    CATALOG_FULL,
+    CATALOG_MVIR12,
     SPACING_LINEAR,
     SPACING_LOG,
+    VALID_CATALOGS,
+    CatalogConfig,
     CosmologyConfig,
     PathsConfig,
     SelectionConfig,
@@ -44,15 +48,35 @@ class TestPathsConfig:
 
     def test_catalog_filenames(self) -> None:
         paths = PathsConfig()
-        assert paths.mdpl2_catalog.name == "mdpl2_rockstar_125_pid-1_mvir12.csv"
+        assert paths.mdpl2_catalog_full.name == "mdpl2_rockstar_snapnum125.csv"
+        assert paths.mdpl2_catalog_mvir12.name == "mdpl2_rockstar_125_pid-1_mvir12.csv"
         assert paths.cf4_groups_catalog.name == "CF4_Groups.csv"
         assert paths.cf4_velocities_catalog.name == "CF4_Groups_Velocities.csv"
         assert paths.sdss_tempel_catalog.name == "SDSS_Temple.csv"
         # And they sit under data_dir specifically.
-        assert paths.mdpl2_catalog.parent == paths.data_dir
+        assert paths.mdpl2_catalog_full.parent == paths.data_dir
+        assert paths.mdpl2_catalog_mvir12.parent == paths.data_dir
         assert paths.cf4_groups_catalog.parent == paths.data_dir
         assert paths.cf4_velocities_catalog.parent == paths.data_dir
         assert paths.sdss_tempel_catalog.parent == paths.data_dir
+
+    def test_halo_catalog_resolves_names_to_both_catalogs(self) -> None:
+        paths = PathsConfig()
+        for name in VALID_CATALOGS:
+            csv_path = paths.halo_catalog(name, parquet=False)
+            parquet_path = paths.halo_catalog(name)
+            assert csv_path.suffix == ".csv"
+            assert parquet_path.suffix == ".parquet"
+            # Same catalog, two encodings -- not two different catalogs.
+            assert parquet_path.stem == csv_path.stem
+            assert parquet_path.parent == paths.data_dir
+        # The two names must not collide onto one file, which would make a
+        # catalog comparison silently compare a catalog with itself.
+        assert paths.halo_catalog(CATALOG_FULL) != paths.halo_catalog(CATALOG_MVIR12)
+
+    def test_halo_catalog_rejects_unknown_name(self) -> None:
+        with pytest.raises(ValueError):
+            PathsConfig().halo_catalog("ful")
 
     def test_ensure_output_dir_creates_directory(self, tmp_path) -> None:
         # Point output_dir at a tmp directory so the test never touches the
@@ -66,7 +90,7 @@ class TestPathsConfig:
     def test_explicit_overrides_are_respected(self, tmp_path) -> None:
         paths = PathsConfig(project_root=tmp_path)
         assert paths.data_dir == tmp_path / "data"
-        assert paths.mdpl2_catalog == tmp_path / "data" / "mdpl2_rockstar_125_pid-1_mvir12.csv"
+        assert paths.mdpl2_catalog_mvir12 == tmp_path / "data" / "mdpl2_rockstar_125_pid-1_mvir12.csv"
 
 
 # ---------------------------------------------------------------------------
@@ -356,26 +380,20 @@ class TestVolumeWeightedShellRadii:
 class TestSelectionConfig:
     def test_valid_construction(self) -> None:
         selection = SelectionConfig()
-        assert selection.mass_min == 1e12
-        assert selection.mass_max is None
         assert selection.number_of_observers == 1000
         assert selection.observer_selection == "random"
+
+    def test_no_longer_carries_halo_mass_knobs(self) -> None:
+        # mass_min/mass_max moved to CatalogConfig, which is the one that is
+        # actually read. A second, unread copy here is exactly the trap that
+        # made the original pair dead for as long as it existed.
+        fields = {f.name for f in dataclasses.fields(SelectionConfig)}
+        assert "mass_min" not in fields
+        assert "mass_max" not in fields
 
     def test_valid_construction_with_virgo(self) -> None:
         selection = SelectionConfig(observer_selection="virgo")
         assert selection.observer_selection == "virgo"
-
-    def test_non_positive_mass_min_raises(self) -> None:
-        with pytest.raises(ValueError):
-            SelectionConfig(mass_min=0.0)
-        with pytest.raises(ValueError):
-            SelectionConfig(mass_min=-1e12)
-
-    def test_mass_max_not_greater_than_mass_min_raises(self) -> None:
-        with pytest.raises(ValueError):
-            SelectionConfig(mass_min=1e13, mass_max=1e12)
-        with pytest.raises(ValueError):
-            SelectionConfig(mass_min=1e12, mass_max=1e12)
 
     def test_number_of_observers_below_one_raises(self) -> None:
         with pytest.raises(ValueError):
@@ -384,6 +402,56 @@ class TestSelectionConfig:
     def test_invalid_observer_selection_raises(self) -> None:
         with pytest.raises(ValueError):
             SelectionConfig(observer_selection="not_a_real_strategy")
+
+
+# ---------------------------------------------------------------------------
+# CatalogConfig
+# ---------------------------------------------------------------------------
+
+
+class TestCatalogConfig:
+    def test_default_is_the_full_catalog_uncut(self) -> None:
+        catalog = CatalogConfig()
+        assert catalog.name == CATALOG_FULL
+        # None, not 0.0: "no floor" is a distinct state from "a floor at zero",
+        # and only None disables the Parquet row-group filter entirely.
+        assert catalog.mass_min is None
+        assert catalog.mass_max is None
+        assert catalog.include_subhalos is True
+
+    def test_valid_catalogs_are_exactly_the_two_named_constants(self) -> None:
+        assert VALID_CATALOGS == {CATALOG_FULL, CATALOG_MVIR12}
+
+    def test_invalid_name_raises(self) -> None:
+        with pytest.raises(ValueError):
+            CatalogConfig(name="ful")
+
+    def test_non_positive_mass_bounds_raise(self) -> None:
+        with pytest.raises(ValueError):
+            CatalogConfig(mass_min=0.0)
+        with pytest.raises(ValueError):
+            CatalogConfig(mass_min=-1e12)
+        with pytest.raises(ValueError):
+            CatalogConfig(mass_max=0.0)
+
+    def test_mass_max_not_greater_than_mass_min_raises(self) -> None:
+        with pytest.raises(ValueError):
+            CatalogConfig(mass_min=1e13, mass_max=1e12)
+        with pytest.raises(ValueError):
+            CatalogConfig(mass_min=1e12, mass_max=1e12)
+
+    def test_one_sided_bounds_are_allowed(self) -> None:
+        assert CatalogConfig(mass_min=1e12).mass_max is None
+        assert CatalogConfig(mass_max=1e12).mass_min is None
+
+    def test_describe_cuts_reports_the_selection(self) -> None:
+        assert CatalogConfig().describe_cuts() == "full, no mass cut, subhalos included"
+        described = CatalogConfig(
+            name=CATALOG_MVIR12, mass_min=1e12, include_subhalos=False
+        ).describe_cuts()
+        assert CATALOG_MVIR12 in described
+        assert "distinct halos only" in described
+        assert "1e+12" in described
 
 
 # ---------------------------------------------------------------------------

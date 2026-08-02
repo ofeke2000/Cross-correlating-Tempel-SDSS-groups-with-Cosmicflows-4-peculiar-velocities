@@ -279,7 +279,7 @@ from scipy.spatial import cKDTree
 
 from dvcorr import conventions
 from dvcorr.geometry import mu_cosine, pair_separation, radial_flow_axis, unit_vector
-from dvcorr.estimators.shell_dipole import core_center_mask, real_y10
+from dvcorr.estimators.shell_dipole import _neighbors_by_center, core_center_mask, real_y10
 
 #: Ceiling on `per_center_axis_angle`: cos(delta) = |u_alpha| / |v_alpha| is
 #: non-negative by construction, so delta cannot exceed pi/2. Checked, not
@@ -642,13 +642,10 @@ def velocity_frame_shell_dipole(
 
         tree = cKDTree(s_tracers) if s_tracers.shape[0] > 0 else None
 
-        for a in range(n_centers):
-            if tree is None:
-                continue
-            s_alpha = s_survivors[a]
-            idx = np.asarray(tree.query_ball_point(s_alpha, edges[-1]), dtype=int)
+        for a, idx in _neighbors_by_center(tree, s_survivors, edges[-1]):
             if idx.size == 0:
                 continue
+            s_alpha = s_survivors[a]
             s_near = s_tracers[idx]
 
             # Reversed orientation, identical to velocity_centered_shell_dipole:

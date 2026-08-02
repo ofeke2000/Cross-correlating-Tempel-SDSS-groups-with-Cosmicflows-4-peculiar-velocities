@@ -299,6 +299,15 @@ class BufferedCarve:
         and `dvcorr.config.cosmology.CosmologyConfig.h`).
     buffered_radius : float
         `sub_volume_radius + v_margin_mpc`, h^-1 Mpc.
+    mvir_core : ndarray, shape (N_core,)
+    is_distinct_core : ndarray, shape (N_core,), bool
+        Virial masses and distinct-halo flags of the PLAIN carve, row-aligned
+        with `pos_core` / `vel_core`. Carried for the same reason
+        `dvcorr.pipeline.velocity_centered.CarvedHalos` carries them: the mass
+        funnel reports the population a run measured, and the candidate
+        centers are drawn from the core carve, not the buffer.
+    catalog_mvir : ndarray, shape (N_total,)
+        Masses of the full pre-carve population, for the funnel's first stage.
     """
 
     pos_buffer: np.ndarray
@@ -307,6 +316,9 @@ class BufferedCarve:
     vel_core: np.ndarray
     n_core: int
     n_buffer: int
+    mvir_core: np.ndarray
+    is_distinct_core: np.ndarray
+    catalog_mvir: np.ndarray
     v_margin_kms: float
     v_margin_mpc: float
     buffered_radius: float
@@ -322,7 +334,8 @@ def load_and_carve_buffered(cfg: RedshiftSpaceRunConfig, paths: PathsConfig) -> 
     tracer population `build_tracer_spaces` displaces and restricts. Both
     passes filter the SAME in-memory arrays from a single
     `dvcorr.pipeline.velocity_centered._load_all_halos` call, so this two-pass
-    design costs one catalog read, not two.
+    design costs one catalog read, not two. Which catalog, and which halos
+    from it, comes from `cfg.catalog` -- resolved once inside that helper.
 
     Parameters
     ----------
@@ -341,12 +354,13 @@ def load_and_carve_buffered(cfg: RedshiftSpaceRunConfig, paths: PathsConfig) -> 
         printing any percentage, mirroring `load_and_carve`'s guard).
     """
     observer = np.asarray(conventions.OBSERVER_POSITION, dtype=float)
-    pos_all, vel_all = _load_all_halos(paths)
-    d_obs = np.linalg.norm(pos_all - observer, axis=1)
+    halos = _load_all_halos(paths, cfg.catalog)
+    d_obs = np.linalg.norm(halos.pos - observer, axis=1)
 
     in_core = d_obs <= cfg.sub_volume_radius
-    pos_core = pos_all[in_core]
-    vel_core = vel_all[in_core]
+    # float64 from here on, as in `load_and_carve` -- see `HaloArrays`.
+    pos_core = halos.pos[in_core].astype(float)
+    vel_core = halos.vel[in_core].astype(float)
     n_core = pos_core.shape[0]
     if n_core == 0:
         raise RuntimeError(
@@ -362,8 +376,8 @@ def load_and_carve_buffered(cfg: RedshiftSpaceRunConfig, paths: PathsConfig) -> 
 
     buffered_radius = cfg.sub_volume_radius + v_margin_mpc
     in_buffer = d_obs <= buffered_radius
-    pos_buffer = pos_all[in_buffer]
-    vel_buffer = vel_all[in_buffer]
+    pos_buffer = halos.pos[in_buffer].astype(float)
+    vel_buffer = halos.vel[in_buffer].astype(float)
     n_buffer = pos_buffer.shape[0]
 
     print(
@@ -383,6 +397,9 @@ def load_and_carve_buffered(cfg: RedshiftSpaceRunConfig, paths: PathsConfig) -> 
         v_margin_kms=v_margin_kms,
         v_margin_mpc=v_margin_mpc,
         buffered_radius=buffered_radius,
+        mvir_core=halos.mvir[in_core],
+        is_distinct_core=halos.is_distinct[in_core],
+        catalog_mvir=halos.mvir,
     )
 
 
@@ -554,6 +571,8 @@ class RedshiftCenterSet:
     v_margin_kms: float
     v_margin_mpc: float
     n_centers: int
+    mvir_centers: np.ndarray | None = None
+    is_distinct_centers: np.ndarray | None = None
 
 
 def select_redshift_shared_centers(
@@ -563,6 +582,9 @@ def select_redshift_shared_centers(
     observer: np.ndarray,
     v_margin_kms: float,
     v_margin_mpc: float,
+    *,
+    mvir_candidates: np.ndarray | None = None,
+    is_distinct_candidates: np.ndarray | None = None,
 ) -> RedshiftCenterSet:
     """Select centers usable, identically, by both the real- and redshift-space runs.
 
@@ -634,10 +656,23 @@ def select_redshift_shared_centers(
         steps 1, or raised here if zero survive steps 2-3 combined.
     """
     core_margin = cfg.shells.max_radius + v_margin_mpc
-    base = select_shared_centers(cfg, s_candidates, v_candidates, observer, core_margin=core_margin)
+    base = select_shared_centers(
+        cfg,
+        s_candidates,
+        v_candidates,
+        observer,
+        core_margin=core_margin,
+        mvir_candidates=mvir_candidates,
+        is_distinct_candidates=is_distinct_candidates,
+    )
 
     s_real = base.s_centers
     v_centers = base.v_centers
+    # Labels ride every cut below alongside the arrays they describe, exactly
+    # as they rode the two inside `select_shared_centers`. `base` keeps the
+    # pre-cut set for the funnel's earlier stage; these are the FINAL centers'.
+    mvir_centers = base.mvir_centers
+    is_distinct_centers = base.is_distinct_centers
 
     n_dropped_v_r_percentile = 0
     if cfg.v_margin_statistic == "percentile":
@@ -646,6 +681,10 @@ def select_redshift_shared_centers(
         n_dropped_v_r_percentile = int(np.sum(~keep_v_r))
         s_real = s_real[keep_v_r]
         v_centers = v_centers[keep_v_r]
+        if mvir_centers is not None:
+            mvir_centers = mvir_centers[keep_v_r]
+        if is_distinct_centers is not None:
+            is_distinct_centers = is_distinct_centers[keep_v_r]
 
     transform = to_redshift_space(
         s_real, v_centers, observer=observer, flip_guard_floor=cfg.flip_guard_floor
@@ -655,6 +694,10 @@ def select_redshift_shared_centers(
     s_centers_redshift = transform.s_redshift
     n_dropped_flip = transform.n_dropped
     n_centers = s_centers_real.shape[0]
+    if mvir_centers is not None:
+        mvir_centers = mvir_centers[transform.kept_mask]
+    if is_distinct_centers is not None:
+        is_distinct_centers = is_distinct_centers[transform.kept_mask]
 
     print(
         f"redshift-space center selection: base n_centers = {base.n_centers} "
@@ -679,6 +722,8 @@ def select_redshift_shared_centers(
         v_margin_kms=v_margin_kms,
         v_margin_mpc=v_margin_mpc,
         n_centers=n_centers,
+        mvir_centers=mvir_centers,
+        is_distinct_centers=is_distinct_centers,
     )
 
 
@@ -916,7 +961,7 @@ def _ids_by_shell(
     tracer_ids: np.ndarray,
     center: np.ndarray,
     shell_edges: np.ndarray,
-) -> list[set[int]]:
+) -> list[np.ndarray]:
     """Stable tracer ids per shell around ONE center, from ONE tree query.
 
     A single `query_ball_point` at the outermost edge, then binned by radius
@@ -925,13 +970,28 @@ def _ids_by_shell(
     last shell) -- so this diagnostic's shell membership matches the
     estimator's own binning contract precisely.
 
+    Returns SORTED ARRAYS, not Python sets. The set-based version this
+    replaces built its result with a per-element `.add(int(...))` loop, which
+    costs a Python-level iteration per tracer-shell membership. That is
+    tolerable at the ~4e3 neighbors a ball holds in the mvir >= 1e12 catalog
+    and not at the ~1.4e5 it holds in the full one, where the same loop runs
+    ~5e8 times per pipeline invocation. Sorted arrays let `membership_diagnostics`
+    use `np.intersect1d` / `np.setdiff1d` with `assume_unique=True` instead,
+    which is vectorized and returns the identical cardinalities.
+
+    Ids within a shell are unique by construction -- a tracer occupies exactly
+    one shell, and `tracer_ids` is a stable per-row id -- which is what makes
+    `assume_unique=True` safe downstream.
+
     Returns
     -------
-    list of set of int, length B
-        `result[b]` is the set of STABLE `tracer_ids` values in shell b.
+    list of ndarray, length B
+        `result[b]` holds the STABLE `tracer_ids` values in shell b, sorted
+        ascending. Empty arrays for empty shells, so every entry is indexable
+        without a None check.
     """
     n_bins = shell_edges.size - 1
-    empty = [set() for _ in range(n_bins)]
+    empty = [np.empty(0, dtype=np.int64) for _ in range(n_bins)]
     if tree is None or tracer_positions.shape[0] == 0:
         return empty
 
@@ -944,12 +1004,18 @@ def _ids_by_shell(
     bin_index = np.digitize(r_mag, shell_edges) - 1
     bin_index = np.where(bin_index == n_bins, n_bins - 1, bin_index)
 
-    ids_in = tracer_ids[idx[in_range]]
+    ids_in = np.asarray(tracer_ids)[idx[in_range]].astype(np.int64, copy=False)
     bins_in = bin_index[in_range]
-    result = empty
-    for bin_b, tracer_id in zip(bins_in, ids_in):
-        result[int(bin_b)].add(int(tracer_id))
-    return result
+
+    # Group by shell with one sort rather than n_bins boolean scans: sort the
+    # (shell, id) pairs by shell, then split at the shell boundaries. Sorting
+    # by id within each group as well makes every returned array sorted, which
+    # is what the set operations downstream rely on.
+    order = np.lexsort((ids_in, bins_in))
+    bins_sorted = bins_in[order]
+    ids_sorted = ids_in[order]
+    boundaries = np.searchsorted(bins_sorted, np.arange(n_bins + 1))
+    return [ids_sorted[boundaries[b] : boundaries[b + 1]] for b in range(n_bins)]
 
 
 def membership_diagnostics(
@@ -1025,10 +1091,20 @@ def membership_diagnostics(
             ids_real = ids_real_by_shell[b]
             ids_redshift = ids_redshift_by_shell[b]
 
-            per_center_net_change[a, b] = len(ids_redshift) - len(ids_real)
-            per_center_churn_only_real[a, b] = len(ids_real - ids_redshift)
-            per_center_churn_only_redshift[a, b] = len(ids_redshift - ids_real)
-            per_center_churn_intersection[a, b] = len(ids_real & ids_redshift)
+            # Both arrays are sorted and duplicate-free by `_ids_by_shell`'s
+            # contract, so `assume_unique=True` is a statement of that fact,
+            # not an optimistic shortcut. Only the intersection is computed:
+            # the two one-sided churns follow from it by subtraction, which
+            # avoids two more set passes over the same arrays and cannot
+            # disagree with it the way three independent calls could.
+            n_real = ids_real.size
+            n_redshift = ids_redshift.size
+            n_shared = np.intersect1d(ids_real, ids_redshift, assume_unique=True).size
+
+            per_center_net_change[a, b] = n_redshift - n_real
+            per_center_churn_only_real[a, b] = n_real - n_shared
+            per_center_churn_only_redshift[a, b] = n_redshift - n_shared
+            per_center_churn_intersection[a, b] = n_shared
 
     shell_centers = 0.5 * (edges[:-1] + edges[1:])
 

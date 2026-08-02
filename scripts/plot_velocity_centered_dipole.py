@@ -13,8 +13,9 @@ Thin driver only: the actual stage functions (`load_and_carve`,
 consumed by notebooks/05_velocity_centered_dipole.ipynb -- per CLAUDE.md's
 "notebooks are exploration only ... never reimplement" convention, neither
 this script nor that notebook reimplements any of this pipeline. The MDPL2
-catalog load is long (~4M rows); this script is not run as part of task
-verification -- only imported / byte-compiled to check it is well-formed.
+catalog load is long; this script is not run as part of task verification --
+only imported / byte-compiled to check it is well-formed. Which catalog it
+reads comes from `RunConfig().catalog` (`dvcorr.config.catalog.CatalogConfig`).
 
 Matplotlib backend
 ------------------
@@ -40,6 +41,7 @@ import numpy as np
 
 from dvcorr import conventions
 from dvcorr.config import PathsConfig
+from dvcorr.pipeline.mass_diagnostics import mass_funnel, print_mass_funnel
 from dvcorr.pipeline.velocity_centered import (
     RunConfig,
     draw_candidates,
@@ -48,6 +50,7 @@ from dvcorr.pipeline.velocity_centered import (
     make_figure,
     normalize_result,
     run_estimator,
+    select_shared_centers,
 )
 
 
@@ -57,11 +60,34 @@ def main() -> None:
     paths = PathsConfig()
     observer = np.asarray(conventions.OBSERVER_POSITION, dtype=float)
 
-    pos, vel = load_and_carve(cfg, paths)
-    s_candidates, v_candidates = draw_candidates(cfg, pos, vel)
-    result = run_estimator(cfg, s_candidates, v_candidates, pos, observer)
+    carved = load_and_carve(cfg, paths)
+    candidates = draw_candidates(cfg, carved)
+    result = run_estimator(cfg, candidates.s, candidates.v, carved.pos, observer)
 
-    n_bar = global_number_density(pos.shape[0], cfg.sub_volume_radius)
+    # Same two cuts the estimator applies internally (idempotent), re-run here
+    # only to recover WHICH candidates survived, so the funnel can report the
+    # centers by mass. The estimator returns counts, not identities.
+    centers = select_shared_centers(
+        cfg,
+        candidates.s,
+        candidates.v,
+        observer,
+        mvir_candidates=candidates.mvir,
+        is_distinct_candidates=candidates.is_distinct,
+    )
+    print_mass_funnel(
+        mass_funnel(
+            carved.catalog_mvir,
+            carved.mvir,
+            candidates.mvir,
+            centers.mvir_centers,
+            centers.is_distinct_centers,
+            cfg.catalog.name,
+            cfg.catalog.describe_cuts(),
+        )
+    )
+
+    n_bar = global_number_density(carved.n_carved, cfg.sub_volume_radius)
     normalized = normalize_result(result, n_bar, cfg.shuffle_seed)
 
     fig = make_figure(cfg, result, normalized)
