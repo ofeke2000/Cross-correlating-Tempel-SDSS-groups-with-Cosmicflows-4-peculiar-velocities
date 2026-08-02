@@ -35,7 +35,12 @@ from dvcorr.config import (
     PathsConfig,
 )
 from dvcorr.config.catalog import MVIR12_CATALOG_FLOOR, MVIR12_CATALOG_ROWS
-from dvcorr.pipeline.velocity_centered import RunConfig, _load_all_halos, load_and_carve
+from dvcorr.pipeline.velocity_centered import (
+    RunConfig,
+    _load_all_halos,
+    draw_candidates,
+    load_and_carve,
+)
 
 _PATHS = PathsConfig()
 
@@ -193,6 +198,35 @@ def test_the_two_paths_carve_identical_sub_volumes() -> None:
     np.testing.assert_array_equal(
         _sorted_rows(from_full.pos), _sorted_rows(from_mvir12.pos)
     )
+
+
+def test_the_two_paths_draw_the_same_candidate_centers() -> None:
+    """The measurement, not just the population, is catalog-independent.
+
+    This is what `draw_candidates_from_arrays`' canonical ordering exists for.
+    Before it, the seeded draw picked ROW NUMBERS, so the same seed against the
+    two files' different tie orders selected different halos -- measured at the
+    time, 291 of 4000 in common -- and every comparison between the catalogs
+    carried ~1 sigma of sampling scatter on top of whatever was being compared.
+
+    A small candidate count keeps this test cheap; the property is independent
+    of it.
+    """
+    n_candidates = 2000
+    drawn = []
+    for catalog in (CatalogConfig(name=CATALOG_MVIR12), _MVIR12_EQUIVALENT):
+        cfg = RunConfig(catalog=catalog, n_candidate_centers=n_candidates)
+        candidates = draw_candidates(cfg, load_and_carve(cfg, _PATHS))
+        drawn.append(candidates)
+
+    from_mvir12, from_full = drawn
+    assert from_mvir12.s.shape == from_full.s.shape == (n_candidates, 3)
+    np.testing.assert_array_equal(_sorted_rows(from_mvir12.s), _sorted_rows(from_full.s))
+    # Same halos in the same order, not merely the same set: the canonical
+    # ordering fixes the sequence too, which is what makes per-row arrays
+    # (masses, velocities) line up between the two runs.
+    np.testing.assert_array_equal(from_mvir12.s, from_full.s)
+    np.testing.assert_array_equal(from_mvir12.mvir, from_full.mvir)
 
 
 def test_full_catalog_reaches_below_the_resolution_threshold() -> None:

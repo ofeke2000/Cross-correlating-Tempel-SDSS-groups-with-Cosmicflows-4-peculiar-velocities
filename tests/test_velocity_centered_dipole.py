@@ -1368,3 +1368,77 @@ class TestCoreCenterMask:
         s_centers = observer + np.zeros((5, 3))
         mask = core_center_mask(s_centers, sub_volume_radius=100.0, core_margin=10.0)
         assert mask.shape == (5,)
+
+
+# ---------------------------------------------------------------------------
+# Candidate draw: order independence
+# ---------------------------------------------------------------------------
+
+
+class TestDrawIsOrderIndependent:
+    """`draw_candidates_from_arrays` selects HALOS, not file rows.
+
+    Synthetic and catalog-free, so this holds regardless of which files are on
+    disk; `tests/test_catalog_equivalence.py` asserts the same property against
+    the two real catalogs. Both matter: this one pins the mechanism, that one
+    pins that the mechanism actually reconciles the files.
+    """
+
+    @staticmethod
+    def _population(n: int = 4000, seed: int = 11):
+        rng = np.random.default_rng(seed)
+        observer = np.asarray(conventions.OBSERVER_POSITION, dtype=float)
+        pos = observer + rng.uniform(-100.0, 100.0, size=(n, 3))
+        vel = rng.normal(scale=300.0, size=(n, 3))
+        mvir = conventions.PARTICLE_MASS * rng.integers(2, 10_000, size=n).astype(float)
+        is_distinct = rng.random(n) > 0.12
+        return pos, vel, mvir, is_distinct
+
+    def test_shuffled_rows_give_the_same_candidates(self) -> None:
+        from dvcorr.pipeline.velocity_centered import RunConfig, draw_candidates_from_arrays
+
+        pos, vel, mvir, is_distinct = self._population()
+        cfg = RunConfig(n_candidate_centers=200)
+
+        first = draw_candidates_from_arrays(cfg, pos, vel, mvir, is_distinct)
+
+        shuffle = np.random.default_rng(99).permutation(pos.shape[0])
+        second = draw_candidates_from_arrays(
+            cfg, pos[shuffle], vel[shuffle], mvir[shuffle], is_distinct[shuffle]
+        )
+
+        # Identical halos, in identical order -- so every per-row array agrees.
+        np.testing.assert_array_equal(first.s, second.s)
+        np.testing.assert_array_equal(first.v, second.v)
+        np.testing.assert_array_equal(first.mvir, second.mvir)
+        np.testing.assert_array_equal(first.is_distinct, second.is_distinct)
+
+    def test_draw_index_still_indexes_the_callers_arrays(self) -> None:
+        """`draw_index` refers to INPUT rows, not to the canonical ordering --
+        otherwise a caller using it against its own arrays would silently get
+        the wrong halos."""
+        from dvcorr.pipeline.velocity_centered import RunConfig, draw_candidates_from_arrays
+
+        pos, vel, mvir, is_distinct = self._population()
+        cfg = RunConfig(n_candidate_centers=200)
+        drawn = draw_candidates_from_arrays(cfg, pos, vel, mvir, is_distinct)
+
+        np.testing.assert_array_equal(pos[drawn.draw_index], drawn.s)
+        np.testing.assert_array_equal(mvir[drawn.draw_index], drawn.mvir)
+
+    def test_a_box_face_halo_matches_its_periodic_image(self) -> None:
+        """Coordinates at BOX_SIZE and at 0.0 are the same point, so the two
+        representations must sort together -- the case the two real catalogs
+        actually disagree on."""
+        from dvcorr.pipeline.velocity_centered import RunConfig, draw_candidates_from_arrays
+
+        pos, vel, mvir, is_distinct = self._population()
+        pos = pos.copy()
+        pos[0] = [conventions.BOX_SIZE, 10.0, 20.0]
+        wrapped = pos.copy()
+        wrapped[0] = [0.0, 10.0, 20.0]
+
+        cfg = RunConfig(n_candidate_centers=200)
+        a = draw_candidates_from_arrays(cfg, pos, vel, mvir, is_distinct)
+        b = draw_candidates_from_arrays(cfg, wrapped, vel, mvir, is_distinct)
+        np.testing.assert_array_equal(a.mvir, b.mvir)

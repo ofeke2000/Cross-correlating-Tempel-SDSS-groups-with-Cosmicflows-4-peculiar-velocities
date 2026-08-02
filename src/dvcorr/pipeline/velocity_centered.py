@@ -170,7 +170,17 @@ class RunConfig:
     n_candidate_centers : int
         Number of candidate velocity-object centers subsampled from the
         carved halos; `velocity_centered_shell_dipole`'s own core cut then
-        decides how many of them survive as centers.
+        decides how many of them survive as centers (~48%, geometrically).
+        Cost is linear in the survivors -- one neighbor query each -- and
+        measured at ~40 ms per center on the full catalog, where a query ball
+        holds ~1.4e5 tracers. The standard error falls as 1/sqrt(N_centers)
+        over this range, so this is a straight precision-for-runtime trade:
+        16000 candidates give 7745 centers in ~310 s, against 1992 centers in
+        ~87 s at the former default of 4000, for error bars smaller by ~1.97x.
+        The ceiling is not this number but the carved population inside the
+        core margin (~7e6 halos on the full catalog), and beyond it the limit
+        is cosmic variance of the single sub-volume, which no number of
+        centers inside it reduces.
     seed : int
         Seed for the candidate-center subsample.
     shuffle_seed : int
@@ -204,7 +214,7 @@ class RunConfig:
     sub_volume_radius: float = 300.0
     catalog: CatalogConfig = field(default_factory=CatalogConfig)
     shells: ShellConfig = field(default_factory=_default_shells)
-    n_candidate_centers: int = 4000
+    n_candidate_centers: int = 16000
     seed: int = 42
     shuffle_seed: int = 43
     output_name: str = "velocity_centered_dipole.png"
@@ -577,6 +587,27 @@ def draw_candidates_from_arrays(
     of the catalog, not of this function -- the mass funnel
     (`dvcorr.pipeline.mass_diagnostics`) is what makes it visible.
 
+    THE SEED SELECTS HALOS, NOT FILE ROWS. `rng.choice` returns a fixed set of
+    integers for a given seed; if those integers indexed the arrays as handed
+    in, they would select whichever halos happened to occupy those ROWS, and
+    the answer would depend on the order the catalog file stores them in. The
+    two catalogs hold the same halos in different tie orders, so that made a
+    run on one and a run on the equivalent cut of the other draw different
+    samples of the same population -- measured: only 291 of 4000 candidates in
+    common, and multipoles differing by ~1 sigma per shell.
+
+    Sorting the population into a canonical, file-order-independent order
+    before indexing removes that. Identical halos now give identical centers
+    whichever file they were read from, so a comparison between the two
+    catalogs shows the effect of the catalogs and nothing else. The order is
+    lexicographic on position, computed on coordinates folded into
+    [0, BOX_SIZE) -- folding is what makes the four halos the two files store
+    at opposite box faces (`BOX_SIZE` in one, `0.0` in the other, the same
+    object under PBC) sort to the same place. That folding is a canonicalization
+    of IDENTITY, not a geometric minimum-image reduction; it never touches the
+    coordinates handed to the estimators, and so does not intrude on the PBC
+    contract in `docs/architecture.md`.
+
     Parameters
     ----------
     cfg : RunConfig
@@ -590,6 +621,9 @@ def draw_candidates_from_arrays(
     Returns
     -------
     CandidateCenters
+        `draw_index` holds rows of the INPUT arrays, not of the canonical
+        ordering, so it remains directly usable against the caller's own
+        arrays.
 
     Raises
     ------
@@ -605,8 +639,10 @@ def draw_candidates_from_arrays(
             f"n_candidate_centers ({cfg.n_candidate_centers}) and the carved "
             f"population ({n_carved}) give zero candidates."
         )
+    folded = np.mod(pos, conventions.BOX_SIZE)
+    canonical = np.lexsort((folded[:, 2], folded[:, 1], folded[:, 0]))
     rng = np.random.default_rng(cfg.seed)
-    draw_index = rng.choice(n_carved, size=n_candidates, replace=False)
+    draw_index = canonical[rng.choice(n_carved, size=n_candidates, replace=False)]
     return CandidateCenters(
         s=pos[draw_index],
         v=vel[draw_index],

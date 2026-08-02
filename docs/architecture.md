@@ -174,14 +174,18 @@ coordinate of exactly four halos (`BOX_SIZE` in one, `0.0` in the other, same ob
 PBC), so box coordinates are **not** guaranteed to lie in the half-open interval
 [0, `BOX_SIZE`); code that needs that convention must fold first.
 
-**Row order is not a convention.** Candidate centers are drawn by row index
-(`draw_candidates_from_arrays`), so the *sample* a run measures depends on the order rows
-happen to sit in the catalog file — while the *population* does not. The two catalogs
-store the same halos in different tie orders, so a run on one and a run on the equivalent
-cut of the other select the same halos but different centers, and their multipoles differ
-by ordinary center-sampling noise (~1σ per shell, not a bug). Compare catalogs on their
-populations, or at fixed center count with the sampling scatter accounted for; do not
-expect identical numbers.
+**The seeded draw selects halos, not file rows.** `draw_candidates_from_arrays` sorts the
+carved population into a canonical order — lexicographic on box-folded position — before
+indexing it with `rng.choice`. Without that, the seed fixes a set of row *numbers*, and
+the two catalogs' different tie orders make the same seed select different halos from the
+identical population (measured: 291 of 4000 in common, multipoles differing ~1σ per shell).
+With it, the same halos give the same centers whichever file they were read from, so a
+comparison between the two catalogs isolates the catalogs rather than the sampling. The
+folding is a canonicalization of *identity*, not a minimum-image reduction, and never
+reaches the coordinates handed to an estimator — it is what makes the four box-face halos
+above sort together. Asserted synthetically in `test_velocity_centered_dipole.py` and
+against the real files in `test_catalog_equivalence.py`. Two runs over the same halos in
+different array order still differ at ~1e-16 in the dipole, from float addition order.
 
 **Import layering.** `conventions.py` and `geometry.py` are leaf modules: no intra-project
 imports (their docstrings name each other but do not import them). `config/*` imports only
