@@ -50,7 +50,6 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 import matplotlib.pyplot as plt
-import matplotlib.ticker as mticker
 import numpy as np
 import pandas as pd
 
@@ -229,119 +228,6 @@ _BAND_ALPHA = 0.2
 _GRID_ALPHA = 0.3
 _FIGSIZE = (8.0, 8.0)
 _HEIGHT_RATIOS = (3, 1)
-
-# Major-tick decades for a log radial axis, as multiples of each power of ten
-# (hard rule 4): matplotlib's default `LogLocator` over a sub-decade range
-# like [1, 64] only labels 10^0 and 10^1 and fills the rest with an
-# unlabelled minor forest, so the ticks are pinned explicitly here instead.
-_LOG_TICK_BASE = 10.0
-_LOG_TICK_SUBS = (1.0, 2.0, 5.0)
-
-
-def apply_radial_axis_scale(ax: plt.Axes, shells: ShellConfig) -> None:
-    """Put the radial x-axis in log or linear scale, matching `shells.spacing`.
-
-    Takes a `ShellConfig`, not a `RunConfig`, so it works unchanged for all
-    three config types this pipeline and its two comparison pipelines use
-    (`RunConfig`, `dvcorr.pipeline.velocity_frame_comparison.ComparisonRunConfig`,
-    `dvcorr.pipeline.redshift_space_comparison.RedshiftSpaceRunConfig`) -- only
-    `cfg.shells` is ever read.
-
-    `spacing == SPACING_LINEAR` returns immediately, doing nothing: every
-    existing linear figure must come out pixel-for-pixel unchanged by this
-    function's introduction -- that is the backward-compatibility guarantee.
-
-    Under `SPACING_LOG`:
-    - `ax.set_xscale("log")`.
-    - Major ticks via `matplotlib.ticker.LogLocator(base=10.0, subs=_LOG_TICK_SUBS)`
-      with a `ScalarFormatter` so labels read "1, 2, 5, 10, 20, 50" rather than
-      bare powers of ten, and `NullLocator()` on the minor axis so no
-      unlabelled minor forest appears. A LOCATOR, not a hardcoded tick list,
-      so the axis stays correct if `min_radius`/`max_radius` are later swept
-      to a different sub-decade range.
-    - `ax.set_xlim(edges[0], edges[-1])` from `shells.shell_edges`: log
-      autoscale pads MULTIPLICATIVELY, so without this the left edge would
-      drift toward ~0.1 and waste roughly half the visible axis on empty
-      space below `min_radius` -- necessary, not cosmetic.
-
-    Call this on the BOTTOM axis of a shared-x figure (the one carrying
-    `set_xlabel`); `sharex=True` propagates the scale to the panel(s) above.
-
-    Parameters
-    ----------
-    ax : matplotlib.axes.Axes
-    shells : ShellConfig
-
-    Returns
-    -------
-    None
-    """
-    if shells.spacing != SPACING_LOG:
-        return
-
-    ax.set_xscale("log")
-    ax.xaxis.set_major_locator(mticker.LogLocator(base=_LOG_TICK_BASE, subs=_LOG_TICK_SUBS))
-    ax.xaxis.set_major_formatter(mticker.ScalarFormatter())
-    ax.xaxis.set_minor_locator(mticker.NullLocator())
-    edges = shells.shell_edges
-    ax.set_xlim(edges[0], edges[-1])
-
-
-# Symlog y-axis threshold for the dipole/monopole panels under log radial
-# binning (hard rule 4): below this, curves sit at or below their own SEM
-# (measured: ~13 km/s signal at r ~ 8+ h^-1 Mpc, down to a few km/s in the
-# shuffle null), so a LINEAR region there loses no visible structure, while
-# above it the ~2 decades of dynamic range (670 km/s at r ~ 1.2 down to
-# 20 km/s at r ~ 56 on the real run) get real vertical space instead of
-# being compressed into a sliver at the top of a plain-log axis. Symlog
-# rather than plain log: the shuffle null crosses zero and goes negative, and
-# a plain log y-axis would silently drop those points.
-_SYMLOG_LINTHRESH = 10.0  # km/s
-
-
-def apply_dipole_axis_scale(ax: plt.Axes, shells: ShellConfig) -> None:
-    """Put a dipole/monopole y-axis in symlog scale, matching `shells.spacing`.
-
-    Companion to `apply_radial_axis_scale` (x-axis), same backward-
-    compatibility guarantee: `spacing == SPACING_LINEAR` returns
-    immediately, doing nothing, so every existing linear figure is
-    unchanged by this function's introduction.
-
-    Under `SPACING_LOG`: `ax.set_yscale("symlog", linthresh=_SYMLOG_LINTHRESH)`.
-    Symlog, not plain log, because the shuffle null (and the axis-rotation
-    difference in the comparison figures) crosses zero and goes negative --
-    a plain log y-axis would silently drop those points rather than plot
-    them. `linthresh = 10.0` km/s (see that constant's comment) puts the
-    linear region exactly where the curves are within noise of zero, and
-    gives the log-scaled region above it the dynamic range a fixed-width
-    linear axis cannot show for both a ~670 km/s inner point and a ~13 km/s
-    outer signal at once. The `axhline(0.0)` zero reference line used
-    throughout this module's dipole panels renders correctly under symlog
-    (symlog is defined AT zero, unlike plain log).
-
-    Call this on EVERY axis that plots a dipole or monopole curve under log
-    spacing -- both panels of `make_figure`, `make_comparison_figure`'s
-    dipole panel and (both sides of) its twin-axis monopole panel, and both
-    panels of `make_redshift_comparison_figure` / `make_single_center_figure`
-    (`dvcorr.pipeline.velocity_frame_comparison`,
-    `dvcorr.pipeline.redshift_space_comparison`) -- never on
-    `make_angle_diagnostic_figure`'s axes, which are angular (degrees), not
-    radial-dipole y-axes.
-
-    Parameters
-    ----------
-    ax : matplotlib.axes.Axes
-    shells : ShellConfig
-
-    Returns
-    -------
-    None
-    """
-    if shells.spacing != SPACING_LOG:
-        return
-
-    ax.set_yscale("symlog", linthresh=_SYMLOG_LINTHRESH)
-
 
 def _binning_description(shells: ShellConfig) -> str:
     """One-line summary of the shell binning, for a figure title.
@@ -1095,10 +981,6 @@ def make_figure(
     ax_mono.grid(alpha=_GRID_ALPHA)
     ax_mono.spines["top"].set_visible(False)
     ax_mono.spines["right"].set_visible(False)
-
-    apply_radial_axis_scale(ax_mono, cfg.shells)
-    apply_dipole_axis_scale(ax_dipole, cfg.shells)
-    apply_dipole_axis_scale(ax_mono, cfg.shells)
 
     fig.tight_layout()
     return fig

@@ -77,8 +77,6 @@ from dvcorr.pipeline.velocity_centered import (
     RunConfig,
     SharedCenterSet,
     _binning_description,
-    apply_dipole_axis_scale,
-    apply_radial_axis_scale,
     normalize_result,
     normalize_stacked_dipole,
     select_shared_centers,
@@ -667,11 +665,6 @@ def make_comparison_figure(
     ax_mono_vel.set_ylabel(r"$\hat\zeta_0^{vel}$  [km/s]", color=_COLOR_VEL)
     ax_mono_vel.tick_params(axis="y", labelcolor=_COLOR_VEL)
     ax_mono_vel.spines["top"].set_visible(False)
-
-    apply_radial_axis_scale(ax_mono_obs, cfg.shells)
-    apply_dipole_axis_scale(ax_dipole, cfg.shells)
-    apply_dipole_axis_scale(ax_mono_obs, cfg.shells)
-    apply_dipole_axis_scale(ax_mono_vel, cfg.shells)
 
     fig.tight_layout()
     return fig

@@ -63,8 +63,8 @@ extra (`pytest`), and `testpaths = ["tests"]`. `requirements.txt` is `-e .[dev]`
 - `velocity_centered.py` **[done]** — the shared base: load/carve, candidate drawing,
   shared-center selection (`SharedCenterSet`/`select_shared_centers`), running
   `velocity_centered_shell_dipole`, normalization (`NormalizedDipole`,
-  `normalize_stacked_dipole`, `normalize_result`, the velocity-shuffle null), the
-  log/linear axis-scale helpers, and the two-panel figure. Both comparison pipelines
+  `normalize_stacked_dipole`, `normalize_result`, the velocity-shuffle null), and
+  the two-panel figure. Both comparison pipelines
   below build on this module rather than duplicating it.
 - `velocity_frame_comparison.py` **[done]** — observer-frame ζ₁ vs. the observer-free
   velocity-frame dipole, on an identical shared center set; the random-axis null
@@ -155,8 +155,8 @@ redefining them. `pipeline/velocity_centered.py` is the shared base of `pipeline
 imports `config` and `estimators`, and both comparison pipelines
 (`velocity_frame_comparison.py`, `redshift_space_comparison.py`) import their shared
 machinery (`RunConfig`, `SharedCenterSet`, `select_shared_centers`, `_load_all_halos`,
-`NormalizedDipole`, `normalize_stacked_dipole`, `shell_dipole_norm_scale`, the axis-scale
-helpers, `_binning_description`) from it — **neither comparison pipeline imports from the
+`NormalizedDipole`, `normalize_stacked_dipole`, `shell_dipole_norm_scale`,
+`_binning_description`) from it — **neither comparison pipeline imports from the
 other**. `scripts/` and `notebooks/` import from `dvcorr.pipeline`/`dvcorr.config`
 /`dvcorr.conventions`; nothing under `src/dvcorr/` ever imports from `scripts/` or
 `notebooks/` — the dependency runs only one way.

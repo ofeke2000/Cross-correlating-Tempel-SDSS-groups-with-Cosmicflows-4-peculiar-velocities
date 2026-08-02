@@ -1,24 +1,17 @@
 """
 test_plot_wiring.py
 --------------------
-Pins the log/linear radial x-axis wiring `dvcorr.pipeline.velocity_centered
-.apply_radial_axis_scale` adds to `make_figure`: `ShellConfig.spacing ==
-SPACING_LOG` must put the shared x-axis in log scale with its limits pinned
-to the outer shell edges (CLAUDE.md hard rule 3's ceiling and the log-mode
-autoscale trap `apply_radial_axis_scale`'s docstring documents); `spacing ==
-SPACING_LINEAR` must leave the axis exactly as it was before that function
-existed -- the stated backward-compatibility guarantee.
+Pins the figure axes built by `dvcorr.pipeline.velocity_centered.make_figure`
+as CARTESIAN -- linear x and linear y -- for BOTH shell spacings. The binning
+is what may be logarithmic (`ShellConfig.spacing == SPACING_LOG`, radii
+geometrically spaced); the AXES it is drawn on are not. An earlier version of
+this pipeline coupled the two, putting the radial axis in log scale and the
+dipole/monopole axes in symlog whenever the binning was logarithmic; these
+tests exist so that coupling cannot come back silently.
 
-Also pins the companion y-axis wiring, `apply_dipole_axis_scale`: under
-`SPACING_LOG` BOTH panels of `make_figure` (dipole and monopole) must come
-out `symlog` (not plain `log` -- the shuffle null crosses zero and a plain
-log axis would silently drop those points); under `SPACING_LINEAR` both must
-stay `linear`, the same backward-compatibility guarantee as the x-axis case.
-
-This is the only flag path in the log-spacing task otherwise unpinned by any
-test: everything else (edge construction, normalization under non-uniform
-bins) is covered in `test_velocity_centered_dipole.py`, but nothing there
-builds an actual `Figure` and reads its axis back.
+Both spacings are checked because the failure mode is spacing-conditional: a
+reintroduced `set_xscale("log")` / `set_yscale("symlog")` would fire only on
+the `SPACING_LOG` path and leave the `SPACING_LINEAR` figures looking correct.
 
 Backend discipline: this test module calls `matplotlib.use("Agg")` itself,
 before importing `dvcorr.pipeline.velocity_centered` (which imports
@@ -55,9 +48,9 @@ def _tiny_result_and_normalized(
     shells: ShellConfig,
 ) -> tuple[VelocityCenteredShellDipoleResult, NormalizedDipole]:
     """One center, zero tracers -- shape-correct synthetic input; VALUES don't
-    matter here, only that `make_figure` runs end to end and the x-axis comes
-    out wired to `shells.spacing`. Mirrors the empty-shell contract already
-    pinned in `test_velocity_centered_dipole.py::test_zero_tracers_gives_all_zero_shells`.
+    matter here, only that `make_figure` runs end to end and its axes come out
+    cartesian. Mirrors the empty-shell contract already pinned in
+    `test_velocity_centered_dipole.py::test_zero_tracers_gives_all_zero_shells`.
     """
     observer = np.asarray(conventions.OBSERVER_POSITION, dtype=float)
     s_center = (observer + np.array([100.0, 0.0, 0.0]))[None, :]
@@ -76,21 +69,27 @@ def _tiny_result_and_normalized(
     return result, normalized
 
 
-def test_make_figure_log_shells_gives_log_axis_pinned_to_outer_edges():
-    shells = ShellConfig(min_radius=1.0, max_radius=64.0, spacing=SPACING_LOG, n_bins=12)
+def _log_shells() -> ShellConfig:
+    return ShellConfig(min_radius=1.0, max_radius=64.0, spacing=SPACING_LOG, n_bins=12)
+
+
+def _linear_shells() -> ShellConfig:
+    return ShellConfig(min_radius=20.0, max_radius=150.0, radii_step=10.0, spacing=SPACING_LINEAR)
+
+
+def test_make_figure_log_shells_gives_linear_radial_axis():
+    shells = _log_shells()
     cfg = RunConfig(sub_volume_radius=conventions.MAX_ANALYSIS_RADIUS, shells=shells)
     result, normalized = _tiny_result_and_normalized(shells)
 
     fig = make_figure(cfg, result, normalized)
-    ax_mono = fig.axes[-1]  # bottom axis: the one apply_radial_axis_scale is called on
+    ax_mono = fig.axes[-1]  # bottom axis: the shared-x one carrying set_xlabel
 
-    assert ax_mono.get_xscale() == "log"
-    edges = shells.shell_edges
-    np.testing.assert_allclose(ax_mono.get_xlim(), (edges[0], edges[-1]))
+    assert ax_mono.get_xscale() == "linear"
 
 
-def test_make_figure_linear_shells_gives_linear_axis():
-    shells = ShellConfig(min_radius=20.0, max_radius=150.0, radii_step=10.0, spacing=SPACING_LINEAR)
+def test_make_figure_linear_shells_gives_linear_radial_axis():
+    shells = _linear_shells()
     cfg = RunConfig(sub_volume_radius=conventions.MAX_ANALYSIS_RADIUS, shells=shells)
     result, normalized = _tiny_result_and_normalized(shells)
 
@@ -100,20 +99,20 @@ def test_make_figure_linear_shells_gives_linear_axis():
     assert ax_mono.get_xscale() == "linear"
 
 
-def test_make_figure_log_shells_gives_symlog_dipole_and_monopole_yaxes():
-    shells = ShellConfig(min_radius=1.0, max_radius=64.0, spacing=SPACING_LOG, n_bins=12)
+def test_make_figure_log_shells_gives_linear_dipole_and_monopole_yaxes():
+    shells = _log_shells()
     cfg = RunConfig(sub_volume_radius=conventions.MAX_ANALYSIS_RADIUS, shells=shells)
     result, normalized = _tiny_result_and_normalized(shells)
 
     fig = make_figure(cfg, result, normalized)
     ax_dipole, ax_mono = fig.axes
 
-    assert ax_dipole.get_yscale() == "symlog"
-    assert ax_mono.get_yscale() == "symlog"
+    assert ax_dipole.get_yscale() == "linear"
+    assert ax_mono.get_yscale() == "linear"
 
 
 def test_make_figure_linear_shells_gives_linear_dipole_and_monopole_yaxes():
-    shells = ShellConfig(min_radius=20.0, max_radius=150.0, radii_step=10.0, spacing=SPACING_LINEAR)
+    shells = _linear_shells()
     cfg = RunConfig(sub_volume_radius=conventions.MAX_ANALYSIS_RADIUS, shells=shells)
     result, normalized = _tiny_result_and_normalized(shells)
 

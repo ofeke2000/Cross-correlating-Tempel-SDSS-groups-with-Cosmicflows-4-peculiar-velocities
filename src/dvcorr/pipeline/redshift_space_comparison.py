@@ -176,8 +176,6 @@ from dvcorr.pipeline.velocity_centered import (
     SharedCenterSet,
     _binning_description,
     _load_all_halos,
-    apply_dipole_axis_scale,
-    apply_radial_axis_scale,
     global_number_density,
     normalize_result,
     select_shared_centers,
@@ -1163,10 +1161,6 @@ def make_redshift_comparison_figure(
     ax_mono.spines["top"].set_visible(False)
     ax_mono.spines["right"].set_visible(False)
 
-    apply_radial_axis_scale(ax_mono, cfg.shells)
-    apply_dipole_axis_scale(ax_dipole, cfg.shells)
-    apply_dipole_axis_scale(ax_mono, cfg.shells)
-
     fig.tight_layout()
     return fig
 
@@ -1267,10 +1261,6 @@ def make_single_center_figure(
     ax_mono.grid(alpha=_GRID_ALPHA)
     ax_mono.spines["top"].set_visible(False)
     ax_mono.spines["right"].set_visible(False)
-
-    apply_radial_axis_scale(ax_mono, cfg.shells)
-    apply_dipole_axis_scale(ax_dipole, cfg.shells)
-    apply_dipole_axis_scale(ax_mono, cfg.shells)
 
     fig.tight_layout()
     return fig

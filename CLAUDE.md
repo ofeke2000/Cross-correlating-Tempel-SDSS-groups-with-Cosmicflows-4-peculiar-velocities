@@ -29,7 +29,7 @@ Read these for context before non-trivial work:
 Editable-installed package (`pip install -e .`, setuptools src layout, `pyproject.toml`):
 `import dvcorr…` works identically in scripts, notebooks, and tests, no `sys.path` hacks.
 
-```
+```text
 pyproject.toml        package metadata, deps, pytest config — the one dependency source
 src/dvcorr/
   conventions.py       frozen conventions — sign, pair orientation, observer, box, columns
@@ -117,26 +117,26 @@ task needs it, and ask before running anything long.
    no exception, no NaN, just the wrong sign on the growth rate. Treat any positive dipole
    from an infall mock as an orientation bug, not a result.
 
-3. **Periodic boundary conditions everywhere simulation data is used.** The MDPL2 box is 
+3. **Periodic boundary conditions everywhere simulation data is used.** The MDPL2 box is
    1000 h⁻¹ Mpc with PBC.
    Every spatial calculation — separations, KDTree queries, lines of sight, masks — uses the
    minimum-image convention. A plain Euclidean difference on box coordinates is a bug.
    Corollary: no shell may exceed `conventions.MAX_ANALYSIS_RADIUS` = BOX_SIZE/2.
-   however, none of this is relevant to the real data from CF4 or Temple_SDSS
+   however, none of this is relevant to the real data from CF4 or Tempel_SDSS
 
 4. **No bare numbers.** Any numeric literal in analysis code belongs in `conventions.py` or in a
    class attribute — never inline. For each new number, ask where it belongs before writing
    the code. (Pure-mathematics constants inside a formula, like the 1/3 from ⟨µ²⟩ over a
    uniform shell, are part of the derivation and stay in the expression, with a comment.)
 
-5. **Missing velocity is missing data.** An object without a peculiar-velocity 
+5. **Missing velocity is missing data.** An object without a peculiar-velocity
    measurement is dropped from the pair count. It is never entered as u = 0 — that would bias the mean toward zero and dilute the dipole.
 
 6. **Monopole and dipole are reported together.** The monopole is the geometry diagnostic
    that says whether the dipole is trustworthy (finite-distance leakage, incomplete shells,
    residual bulk motion). Never return or plot a dipole alone.
 
-7. **Cache-and-skip for derived columns.** Derived quantities computed once, written 
+7. **Cache-and-skip for derived columns.** Derived quantities computed once, written
    back to
    the catalog, existence-checked before recomputation: check column → skip if present →
    compute → save.
@@ -153,7 +153,7 @@ task needs it, and ask before running anything long.
    and [docs/research_notes.md](docs/research_notes.md) exist to complete the doc structure
    but are **not actively maintained yet** — leave them until explicitly asked.
 
-9.  **Check every name for typos before writing it — even one you were given.** Any new name
+9. **Check every name for typos before writing it — even one you were given.** Any new name
    — a file, function, variable, column, class, or dict key — is spell-checked before it
    lands, *including when I asked for that exact name*. If a requested or proposed name looks
    like a typo (e.g. `veloctiy`, `seperation`, `analyis`, `dipoel`), do not silently adopt
