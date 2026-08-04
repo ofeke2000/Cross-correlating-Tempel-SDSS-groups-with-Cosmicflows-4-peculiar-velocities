@@ -14,7 +14,7 @@ Thin driver only: the actual stage functions (`load_and_carve_buffered`,
 `normalize_redshift_comparison`, `make_redshift_comparison_figure`,
 `make_single_center_figure`) live in
 `dvcorr.pipeline.redshift_space_comparison`, the single source of truth;
-`draw_candidates` and `global_number_density` are reused unchanged from
+`draw_candidates` and `box_number_density` are reused unchanged from
 `dvcorr.pipeline.velocity_centered` -- per CLAUDE.md's "one library, two thin
 consumers" model, this script reimplements none of the pipeline. The MDPL2
 catalog load is long (~4M rows); this script is not run as part of task
@@ -49,7 +49,7 @@ import numpy as np
 from dvcorr import conventions
 from dvcorr.config import PathsConfig, add_catalog_arguments, catalog_from_args
 from dvcorr.pipeline.mass_diagnostics import mass_funnel, print_mass_funnel
-from dvcorr.pipeline.velocity_centered import draw_candidates_from_arrays
+from dvcorr.pipeline.velocity_centered import box_number_density, draw_candidates_from_arrays
 from dvcorr.pipeline.redshift_space_comparison import (
     RedshiftSpaceRunConfig,
     build_tracer_spaces,
@@ -103,7 +103,9 @@ def main() -> None:
     )
 
     results = run_both_spaces(cfg, centers, tracers, observer)
-    comparison = normalize_redshift_comparison(cfg, results)
+
+    n_bar = box_number_density(buffer.n_total)
+    comparison = normalize_redshift_comparison(cfg, results, n_bar)
 
     comparison_fig = make_redshift_comparison_figure(cfg, results, comparison)
     single_center_fig = make_single_center_figure(cfg, results, comparison.n_bar)

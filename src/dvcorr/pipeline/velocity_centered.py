@@ -4,7 +4,8 @@ velocity_centered.py
 Reusable pipeline stage functions for measuring the velocity-centered zeta_1
 dipole (`dvcorr.estimators.shell_dipole.velocity_centered_shell_dipole`) on
 real MDPL2 halos: load-and-carve, candidate drawing, running the estimator,
-normalizing the raw result (including a velocity-shuffle null), and building
+normalizing the raw result (including two nulls -- a velocity shuffle and a
+matched-Gaussian draw, `normalize_result`), and building
 the two-panel figure (the dipole alongside its monopole companion, CLAUDE.md
 hard rule 6).
 
@@ -21,7 +22,7 @@ without reimplementing any of them:
 
 This module's scope now also supports the velocity-frame comparison built on
 top of it in `dvcorr.pipeline.velocity_frame_comparison`, which reuses
-`RunConfig`, `load_and_carve`, `draw_candidates`, `global_number_density`,
+`RunConfig`, `load_and_carve`, `draw_candidates`, `box_number_density`,
 `NormalizedDipole`, and `normalize_stacked_dipole` rather than duplicating
 any of them (CLAUDE.md's "one library, two thin consumers" model, applied a
 second time within the library itself: the comparison pipeline is additive
@@ -71,46 +72,86 @@ from dvcorr.estimators.shell_dipole import (
 )
 
 # Default radial binning for this run: log spacing, min_radius = 1.0,
-# max_radius = 64.0, n_bins = 12 -- edges 1, sqrt2, 2, 2sqrt2, 4, ... 64 (a
-# ratio of exactly sqrt(2) between consecutive edges: exact powers of two and
-# their halves). Five of the twelve bins sit below 5.66 h^-1 Mpc, which is the
+# max_radius = 64.0, n_bins = 12, plus the [0, 1) inner bin -- edges
+# 0, 1, sqrt2, 2, 2sqrt2, 4, ... 64 (a ratio of exactly sqrt(2) between
+# consecutive LOG edges: exact powers of two and their halves), so B = 13
+# shells. Five of the twelve log bins sit below 5.66 h^-1 Mpc, which is the
 # whole point of the change: the r ~ 5 regime, previously discarded by the
 # old radii_step=5.0 linear default, is now resolved into several bins rather
 # than folded into one.
 #
-# The r = 0 self-pair -- with candidates subsampled from the tracer array,
-# every candidate is its own tracer at r = 0, so an (unguarded) min_radius = 0
-# bin would collect a pure self-correlation into pair_count[0]/monopole[0],
-# polluting exactly the hard-rule-6 monopole diagnostic panel -- is now
-# excluded STRUCTURALLY, not by convention: `ShellConfig.__post_init__`
-# hard-raises on `min_radius <= 0` under `SPACING_LOG`, so nobody can
-# re-admit it by, say, defaulting `min_radius` to 0.0 here.
+# Why the [0, 1) inner bin (`include_zero_bin`), given that min_radius = 1.0
+# is justified below as a floor: the floor says where the estimator is
+# TRUSTWORTHY, not where it should be blind. A log ladder cannot reach zero,
+# so without this bin the r < 1 region -- the one-halo regime -- is not
+# merely noisy, it is unmeasured, and the innermost log bin has nothing to be
+# read against. One linear bin covers it, and the monopole panel (hard rule
+# 6) is where it earns its place: measured on the default catalog, that bin's
+# realized occupancy is ~9x the uniform expectation, the top of the 1 + xi(r)
+# rise. It is the only non-geometric shell in the array and its point on a
+# figure is the only one whose horizontal extent does not scale with r --
+# read it as a bracket over [0, 1), not as a measurement at r_eff = 0.75.
 #
-# Why min_radius = 1.0 (statistical floor, then the binding physical floor):
-# requiring >= 50 expected uniform-field pairs across the stack
-# (n_bar * V_b * N_c with n_bar ~= 4e-3 (h^-1 Mpc)^-3 and N_c = 1933, measured
-# on the real run, see below) gives r1 >= 0.94; the innermost bin has ~60
-# expected pairs, boosted
-# to a few hundred realized by the clustering factor 1 + xi(r). That floor is
-# not the binding one, though: the catalog is pid = -1 (distinct halos only,
-# no subhalos), so every center carries a hard exclusion hole of
-# R_vir(host) -- 0.20 h^-1 Mpc at 1e12 Msun/h, 0.94 at 1e14, 2.0 at 1e15 --
-# and the massive centers, which dominate the |u|-weighted stack, have the
-# LARGEST holes. MDPL2's force softening (5 h^-1 kpc) and mass resolution sit
-# ~100x below this and are NOT the limit; the exclusion radius is what
-# min_radius = 1.0 is set against, not simulation resolution. The innermost
-# one or two bins are therefore the exclusion / one-halo regime, deliberately
-# SHOWN (alongside their monopole companion, hard rule 6) rather than hidden
-# behind a single wide bin.
+# The r = 0 self-pair. Candidates are subsampled from the tracer array
+# (`draw_candidates`), so every center is its own tracer at exactly zero
+# separation: exactly N_c self-pairs, all of them in [0, 1). Their weight
+# depends entirely on the catalog, and on BOTH supported catalogs it is too
+# large to admit:
+#   full  (n_bar = 0.127 (h^-1 Mpc)^-3, the default) -- 4126 expected uniform
+#         pairs at N_c = 7726, ~9x that realized, so N_c self-pairs would be
+#         ~20% of the innermost bin: a 20% inflation of pair_count[0] and of
+#         monopole[0].
+#   mvir12 (n_bar ~ 4e-3) -- ~0.017 * N_c expected uniform pairs, so the
+#         self-pairs would OUTNUMBER the real ones by more than an order of
+#         magnitude and the innermost monopole would be essentially pure
+#         self-correlation.
+# The dipole is untouched either way (a directionless separation carries
+# cos_theta = 0), which is precisely why this is worth a comment: the damage
+# is confined to the monopole -- the diagnostic hard rule 6 has us judge the
+# dipole BY -- and to the zeta_1/zeta_0 ratio, where it would pass unnoticed
+# as a suppression rather than surfacing as a NaN. Until this binning they
+# were excluded only INCIDENTALLY, by min_radius > 0 putting them below the
+# innermost edge; with edges[0] = 0 that protection is gone, so the
+# estimators now exclude them EXPLICITLY, on `r_mag > 0` in the in-range mask
+# (all four r-binning sites; see `velocity_centered_shell_dipole`'s Notes).
+# That is the stronger guarantee: it holds for any binning rather than only
+# for binnings that happen to start above zero, and no config change can undo
+# it.
+#
+# Why min_radius = 1.0. Statistically it is not binding on the default
+# catalog: at n_bar = 0.127 (h^-1 Mpc)^-3 even [0, 1) holds ~4126 expected
+# uniform pairs over the stack. It binds on `mvir12` (n_bar ~ 4e-3), where
+# requiring >= 50 expected pairs gives r1 >= 0.94 -- which is where the 1.0
+# came from and why it stays a sensible floor for the LOG ladder across both
+# catalogs.
+#
+# Physically, what min_radius = 1.0 marks depends on the catalog, and the
+# default changed underneath this number:
+#   mvir12 is pid = -1 (distinct halos only), so every center carries a hard
+#     exclusion hole of R_vir(host) -- 0.20 h^-1 Mpc at 1e12 Msun/h, 0.94 at
+#     1e14, 2.0 at 1e15 -- and the massive centers, which dominate the
+#     |u|-weighted stack, have the LARGEST holes. There, r < 1 is genuinely
+#     an exclusion hole.
+#   full (the default) INCLUDES subhalos, which sit inside their hosts'
+#     virial radii, so there is no exclusion hole: the [0, 1) bin is
+#     populated, and populated by host-subhalo pairs whose velocities are
+#     virial rather than infall. Its steep monopole is the one-halo term, not
+#     a cosmological signal.
+# In neither case is MDPL2's force softening (5 h^-1 kpc) or mass resolution
+# the limit; both sit ~100x below. The [0, 1) bin and the one or two log bins
+# above it are the one-halo regime, deliberately SHOWN (alongside their
+# monopole companion, hard rule 6) rather than hidden behind a single wide
+# bin -- and on the default catalog they need reading as virial physics.
 #
 # Why max_radius = 64.0, not 60.0 (cost, paid deliberately): r_max 60 -> 64
 # grows every `query_ball_point(s_alpha, edges[-1])` ball by (64/60)**3 ~=
 # 1.21, and `core_margin` defaults to `cfg.shells.max_radius`
 # (`select_shared_centers`, near line 469), tightening the core ball
-# 240 -> 236 h^-1 Mpc so surviving centers go from ~2048 to ~1933 out of 4000
-# candidates (-5.6%), measured on the real run (48.3% of 4000 candidates
-# survive; the carve itself keeps 464764 of 4093751 halos within
-# R_sub = 300). Worth stating explicitly because it moves the N_c printed
+# 240 -> 236 h^-1 Mpc so the core-cut survival rate falls from ~51.2% to
+# 48.3% (-5.6%). That rate is geometric -- (236/300)**3 -- so it is the same
+# for either catalog; measured on the default run it gives N_c = 7726 of
+# 16000 candidates, the carve itself keeping 14418601 of 127388160 halos
+# within R_sub = 300. Worth stating explicitly because it moves the N_c printed
 # in every figure title. Runtime is independent of bin COUNT
 # (`np.bincount` is O(pairs)), so 12 log bins cost the same as the old 11
 # linear ones -- the cost above is entirely from r_max, not from n_bins.
@@ -118,10 +159,15 @@ _DEFAULT_SPACING = SPACING_LOG
 _DEFAULT_MIN_RADIUS = 1.0
 _DEFAULT_MAX_RADIUS = 64.0
 _DEFAULT_N_BINS = 12
+_DEFAULT_INCLUDE_ZERO_BIN = True
 
 
 def _default_shells() -> ShellConfig:
-    """`RunConfig.shells`'s default_factory: log spacing, 1 to 64 h^-1 Mpc, 12 bins.
+    """`RunConfig.shells`'s default_factory: log, 1 to 64 h^-1 Mpc, 12 bins + [0, 1).
+
+    Thirteen shells, not twelve: `include_zero_bin` prepends `[0, min_radius)`
+    to the geometric ladder, so `shell_edges` starts at 0.0 exactly. See the
+    module-level comment block above `_DEFAULT_SPACING` for why.
 
     `radii_step` is left at `ShellConfig`'s own class default (10.0) -- it is
     inert under `spacing=SPACING_LOG` (only read for `SPACING_LINEAR`,
@@ -132,6 +178,7 @@ def _default_shells() -> ShellConfig:
         max_radius=_DEFAULT_MAX_RADIUS,
         spacing=_DEFAULT_SPACING,
         n_bins=_DEFAULT_N_BINS,
+        include_zero_bin=_DEFAULT_INCLUDE_ZERO_BIN,
     )
 
 
@@ -163,10 +210,10 @@ class RunConfig:
     shells : ShellConfig
         Radial shell binning; see `_default_shells` (and its module-level
         comment block above `_DEFAULT_SPACING`) for why the default
-        `min_radius` is `1.0`, not 0 -- the structural exclusion of the r = 0
-        self-pair under `SPACING_LOG`, then the exclusion-radius floor that
-        actually binds `min_radius = 1.0`. `radii_step` (the old linear
-        default's rationale) is inert under `SPACING_LOG` and not read here.
+        `min_radius` is `1.0` -- the exclusion-radius floor -- and why the
+        `[0, min_radius)` bin is nonetheless measured and shown rather than
+        dropped. `radii_step` (the old linear default's rationale) is inert
+        under `SPACING_LOG` and not read here.
     n_candidate_centers : int
         Number of candidate velocity-object centers subsampled from the
         carved halos; `velocity_centered_shell_dipole`'s own core cut then
@@ -186,6 +233,15 @@ class RunConfig:
     shuffle_seed : int
         Seed for the velocity-shuffle null, kept distinct from `seed` so the
         null's randomness never silently reuses the center-selection stream.
+    gaussian_null_seed : int
+        Seed for the matched-Gaussian null (`matched_gaussian_sample`,
+        built into `normalize_result` alongside the shuffle null). Distinct
+        from every other seed in the ladder -- `seed` = 42 (center draw),
+        `shuffle_seed` = 43, `ComparisonRunConfig.axis_null_seed` = 44,
+        `RedshiftSpaceRunConfig.redshift_shuffle_seed` = 45, this = 46,
+        `ComparisonRunConfig.velocity_gaussian_null_seed` = 47,
+        `RedshiftSpaceRunConfig.redshift_gaussian_null_seed` = 48 -- so no
+        two nulls anywhere in the three pipelines share a random stream.
     output_name : str
         Output figure filename, written under `PathsConfig().output_dir`.
     dpi : int
@@ -217,6 +273,7 @@ class RunConfig:
     n_candidate_centers: int = 16000
     seed: int = 42
     shuffle_seed: int = 43
+    gaussian_null_seed: int = 46
     output_name: str = "velocity_centered_dipole.png"
     dpi: int = 150
     min_center_speed: float = 1.0
@@ -246,6 +303,7 @@ class RunConfig:
 # Plot styling -- named here rather than inline (hard rule 4).
 _COLOR_SIGNAL = "#2a78d6"
 _COLOR_NULL = "#eb6834"
+_COLOR_GAUSSIAN_NULL = "#7a4fa3"
 _COLOR_ZERO_LINE = "0.5"
 _COLOR_MONOPOLE = "0.3"
 _LABEL_COLOR = "#111111"
@@ -258,7 +316,10 @@ _HEIGHT_RATIOS = (3, 1)
 def _binning_description(shells: ShellConfig) -> str:
     """One-line summary of the shell binning, for a figure title.
 
-    `SPACING_LOG` -> "r in [r_min, r_max] h^-1 Mpc, n_bins log bins";
+    `SPACING_LOG` -> "r in [r_min, r_max] h^-1 Mpc, n_bins log bins", with
+    " + [0, r_min) bin" appended under `ShellConfig.include_zero_bin` -- the
+    bracketed range then reads from 0, so without that suffix the title would
+    claim n_bins log bins spanning [0, r_max], which is not what was measured.
     `SPACING_LINEAR` -> "r in [r_min, r_max] h^-1 Mpc, step h^-1 Mpc" -- so a
     saved PNG states its own binning rather than only `r_max` (the titles'
     previous behavior), and a reader never has to cross-reference the
@@ -285,7 +346,10 @@ def _binning_description(shells: ShellConfig) -> str:
     # 500 h^-1 Mpc) while still trimming trailing zeros for a value like 20.
     r_range = f"r in [{edges[0]:.4g}, {edges[-1]:.4g}] h$^{{-1}}$Mpc"
     if shells.spacing == SPACING_LOG:
-        return f"{r_range}, {shells.n_bins} log bins"
+        zero_bin = (
+            f" + [0, {shells.min_radius:.4g}) bin" if shells.include_zero_bin else ""
+        )
+        return f"{r_range}, {shells.n_bins} log bins{zero_bin}"
     return f"{r_range}, step={shells.radii_step:.4g} h$^{{-1}}$Mpc"
 
 
@@ -687,7 +751,7 @@ def draw_candidates(cfg: RunConfig, carved: CarvedHalos) -> CandidateCenters:
 # than generalized in place, because the redshift-space comparison
 # (`dvcorr.pipeline.redshift_space_comparison`) needs it too and this module
 # is already the shared base BOTH comparison pipelines import `RunConfig`,
-# `load_and_carve`, `draw_candidates`, and `global_number_density` from --
+# `load_and_carve`, `draw_candidates`, and `box_number_density` from --
 # leaving it in `velocity_frame_comparison.py` would have made the
 # redshift-space pipeline depend on the velocity-frame one, which it has
 # nothing else to do with. `velocity_frame_comparison.py` now imports both
@@ -951,28 +1015,69 @@ def run_estimator(
 # ---------------------------------------------------------------------------
 
 
-def global_number_density(n_tracers: int, sub_volume_radius: float) -> float:
-    """Global tracer number density n_bar over a spherical sub-volume.
+def box_number_density(n_halos: int) -> float:
+    """Mean halo number density n_bar over the WHOLE simulation box.
 
-    n_bar = n_tracers / ((4*pi/3) * sub_volume_radius**3) -- the Nusser
-    (2017) eq. 24 normalization's n_bar, from the GLOBAL tracer count over
-    the sub-volume (never estimated inside the estimator; see
+    n_bar = n_halos / BOX_SIZE**3 -- the Nusser (2017) eq. 24 normalization's
+    n_bar, taken as the cosmic mean of the tracer population rather than as
+    its density inside the analysis sub-volume (never estimated inside the
+    estimator; see
     `dvcorr.estimators.shell_dipole.expected_shell_occupancy`).
+
+    Why the box, not the sub-volume
+    -----------------------------------
+    This replaces the earlier `global_number_density(n_tracers,
+    sub_volume_radius)`, which divided the CARVED count by the sub-volume's
+    own volume. That made n_bar a property of one particular carve: the
+    sphere of radius R_sub around the observer is a single realization of the
+    density field, so its density is n_bar_cosmic * (1 + delta_sub) with
+    delta_sub an unknown of order the rms fluctuation on the scale R_sub, and
+    every normalized zeta_hat_1 inherited that unknown factor. Dividing by
+    the box mean instead makes the denominator the true cosmic mean of the
+    simulation -- exact, since the box IS the universe here -- so
+    zeta_hat_1's amplitude no longer depends on where the observer sits or
+    how large a sphere was carved around them.
+
+    Two consequences worth knowing before comparing to older figures:
+
+      - The change is a single multiplicative rescaling by
+        (1 + delta_sub), FLAT in r: every shell moves by the same factor and
+        no shape changes. On the default configuration (`full` catalog,
+        R_sub = 300, observer at the box center) it is tiny -- the carve
+        holds 14418601 halos, n_bar_sub = 0.12749, against
+        n_bar_box = 0.12739, a 0.08% shift. It is small because a 300 h^-1
+        Mpc sphere is already close to a fair sample of this box; it is NOT
+        small by construction, and shrinking R_sub or moving the observer
+        would grow it.
+      - n_bar no longer depends on which population survived the CARVE, only
+        on the population the catalog supplied (`CarvedHalos.n_total`,
+        `BufferedCarve.n_total`). That deletes a whole class of denominator
+        bug -- the buffered-carve inflation
+        `dvcorr.pipeline.redshift_space_comparison` documents, where using
+        the buffered count with the plain radius silently suppressed
+        zeta_hat by ~32%: with a box-wide n_bar there is no radius to
+        mismatch a count against.
+
+    The count must still be the population that actually enters the shells:
+    pass the catalog total AFTER `cfg.catalog`'s mass / subhalo cuts and
+    BEFORE the spatial carve. Mixing populations here -- e.g. the raw file
+    row count against mass-cut tracers -- rescales every curve by the ratio
+    of the two abundances.
 
     Parameters
     ----------
-    n_tracers : int
-        Total tracer count over the sub-volume (e.g. all carved halos).
-    sub_volume_radius : float
-        Radius of the spherical sub-volume, h^-1 Mpc.
+    n_halos : int
+        Number of halos of the tracer population in the whole box, i.e. the
+        post-cut / pre-carve catalog count (`CarvedHalos.n_total`,
+        `BufferedCarve.n_total`).
 
     Returns
     -------
     float
-        n_bar, tracers per (h^-1 Mpc)^3.
+        n_bar, halos per (h^-1 Mpc)^3.
     """
-    sub_volume = (4.0 / 3.0) * np.pi * sub_volume_radius**3  # 4pi/3: sphere volume, pure math
-    return n_tracers / sub_volume
+    box_volume = conventions.BOX_SIZE**3
+    return n_halos / box_volume
 
 
 @dataclass(frozen=True)
@@ -993,6 +1098,26 @@ class NormalizedDipole:
         The velocity-shuffle null, same normalization.
     sem_shuffle : ndarray, shape (B,)
         Standard error of `zeta_hat_shuffle`.
+    zeta_hat_gaussian : ndarray, shape (B,)
+        The matched-Gaussian null, same normalization: the same statistic with
+        the per-center velocities REPLACED by a Gaussian draw matched to the
+        sample's own mean and variance (`matched_gaussian_sample`). Read
+        against `zeta_hat_shuffle`, which matches those first two moments
+        exactly by construction -- the two curves therefore differ only in the
+        higher moments of the velocity distribution, so a gap between them is
+        the non-Gaussianity of that distribution and nothing else.
+
+        Which construction sits here depends on the frame, exactly as for
+        `zeta_hat_shuffle`: the observer frame draws a matched (N_c,) u
+        (`normalize_result`, no estimator pass -- recombined against the
+        fixed-axis amplitude), the velocity frame draws a matched (N_c, 3) v
+        and RE-RUNS the estimator
+        (`dvcorr.pipeline.velocity_frame_comparison.run_gaussian_velocity_null`),
+        because there its axis and its weight both come from the drawn vector.
+        NaN throughout if the caller passed no Gaussian null to
+        `normalize_stacked_dipole` (see that function's Parameters).
+    sem_gaussian : ndarray, shape (B,)
+        Standard error of `zeta_hat_gaussian`.
     monopole_norm : ndarray, shape (B,)
         Normalised ell=0 companion (CLAUDE.md hard rule 6), km/s. Since the
         per-center weight is the SPEED |u_alpha|
@@ -1008,6 +1133,8 @@ class NormalizedDipole:
     sem: np.ndarray
     zeta_hat_shuffle: np.ndarray
     sem_shuffle: np.ndarray
+    zeta_hat_gaussian: np.ndarray
+    sem_gaussian: np.ndarray
     monopole_norm: np.ndarray
 
 
@@ -1037,8 +1164,8 @@ def shell_dipole_norm_scale(shell_edges: np.ndarray, n_bar: float) -> np.ndarray
     shell_edges : ndarray, shape (B + 1,)
         Radial shell boundaries, h^-1 Mpc.
     n_bar : float
-        Global tracer number density over the sub-volume, e.g. from
-        `global_number_density`.
+        Mean halo number density over the whole box, e.g. from
+        `box_number_density`.
 
     Returns
     -------
@@ -1052,6 +1179,90 @@ def shell_dipole_norm_scale(shell_edges: np.ndarray, n_bar: float) -> np.ndarray
     return 3.0 / (y10_norm * nbar_v_b)  # per-shell scale, (B,)
 
 
+def matched_gaussian_sample(sample: np.ndarray, seed: int) -> np.ndarray:
+    """Draw a Gaussian sample matched, column-wise, to `sample`'s mean and variance.
+
+    ONE home for the matched-Gaussian null's distributional convention, shared
+    by both frames: the observer frame matches the (N_c,) signed radial
+    velocities u_alpha (`normalize_result`), the velocity frame matches the
+    (N_c, 3) velocity vectors v_alpha
+    (`dvcorr.pipeline.velocity_frame_comparison.run_gaussian_velocity_null`).
+    Keeping the convention here means the two frames cannot drift apart on
+    what "matched to the halos" means.
+
+        mu    = sample.mean(axis=0)
+        sigma = sample.std(axis=0, ddof=1)
+        draw  ~ N(mu, sigma^2), independently per column
+
+    WHY THE MEAN IS MATCHED AND NOT SET TO ZERO
+    --------------------------------------------
+    A zero-mean draw would be a "no signal at all" floor, but it would also
+    delete the center sample's residual BULK MOTION -- and that bulk motion is
+    exactly what the shuffle null retains (a permutation conserves Sigma_alpha
+    u_alpha exactly, so E_pi[D_b^null] = N_c * <u> * <A_bar>_b, the
+    finite-distance / incomplete-shell leakage floor that
+    `dvcorr.estimators.shell_dipole.core_center_mask` documents as the ~+13
+    km/s offset). Matching the mean here means the Gaussian and the shuffle
+    null agree on their first TWO moments and differ ONLY in the higher ones,
+    so the gap between the two curves isolates a single thing: the
+    NON-GAUSSIANITY of the velocity distribution. A zero-mean draw would
+    confound that with the bulk flow and the comparison would measure two
+    effects at once.
+
+    WHY ddof=1 AND WHY COLUMN-WISE
+    -------------------------------
+    `ddof=1` is the unbiased estimate of the population sigma being modeled,
+    and matches `center_standard_error`'s convention so the two never disagree
+    about what "the sample's spread" means. Column-wise (rather than a single
+    pooled sigma) so the (N_c, 3) case reproduces the sample's own per-axis
+    dispersion and mean -- i.e. its bulk-flow VECTOR -- instead of imposing an
+    isotropy the halo sample does not have. The resulting 3-D null is
+    therefore mildly anisotropic BY CONSTRUCTION, which is the point: it is
+    what makes it a different question from
+    `dvcorr.pipeline.velocity_frame_comparison.run_random_axis_null`'s
+    strictly isotropic axis.
+
+    Parameters
+    ----------
+    sample : ndarray, shape (N,) or (N, D)
+        The empirical sample to match.
+    seed : int
+        Seed for `np.random.default_rng`. Callers pass a seed distinct from
+        every other null's -- see `RunConfig.gaussian_null_seed` for the
+        ladder.
+
+    Returns
+    -------
+    ndarray
+        Same shape as `sample`: (N,) in, (N,) out; (N, D) in, (N, D) out.
+        All-NaN when N < 2, since a ddof=1 spread is undefined there. That
+        mirrors `dvcorr.estimators.shell_dipole.center_standard_error`'s own
+        N_c < 2 -> NaN convention rather than raising: a single-center run is
+        a supported (if uninformative) configuration everywhere else in this
+        pipeline, and it should degrade to a missing null curve, not to an
+        exception thrown from inside `normalize_result`.
+
+    Raises
+    ------
+    ValueError
+        If `sample` is neither 1-D nor 2-D -- a shape misuse, not a
+        degenerate sample.
+    """
+    values = np.asarray(sample, dtype=float)
+    if values.ndim not in (1, 2):
+        raise ValueError(
+            f"matched_gaussian_sample: sample must be 1-D (N,) or 2-D (N, D), "
+            f"got ndim={values.ndim} (shape {values.shape})."
+        )
+    if values.shape[0] < 2:
+        return np.full(values.shape, np.nan)
+
+    rng = np.random.default_rng(seed)
+    mu = values.mean(axis=0)
+    sigma = values.std(axis=0, ddof=1)
+    return rng.normal(loc=mu, scale=sigma, size=values.shape)
+
+
 def normalize_stacked_dipole(
     shell_edges: np.ndarray,
     dipole: np.ndarray,
@@ -1061,6 +1272,8 @@ def normalize_stacked_dipole(
     null_per_center_dipole: np.ndarray,
     n_centers: int,
     n_bar: float,
+    gaussian_null_dipole: np.ndarray | None = None,
+    gaussian_null_per_center_dipole: np.ndarray | None = None,
 ) -> NormalizedDipole:
     """The normalization arithmetic, factored out to ONE home.
 
@@ -1068,12 +1281,13 @@ def normalize_stacked_dipole(
     `normalize_result` (see that function, which now delegates here). It is
     pulled out to a stand-alone function because
     `dvcorr.pipeline.velocity_frame_comparison` needs the identical
-    normalization for the velocity-frame result, and that frame's NULL is a
-    different construction (a random-axis re-run, not a scalar permutation --
+    normalization for the velocity-frame result, and that frame's NULLS are
+    different constructions (a random-axis re-run, not a scalar permutation --
     see `dvcorr.pipeline.velocity_frame_comparison.run_random_axis_null` for
-    why) -- so the one piece that legitimately differs between the two
-    call sites, the null, is a parameter here rather than built inside this
-    function.
+    why; and a re-run on drawn velocities rather than a recombination, see
+    `.run_gaussian_velocity_null`) -- so the pieces that legitimately differ
+    between the two call sites, BOTH nulls, are parameters here rather than
+    built inside this function.
 
         zeta_hat_1(r_b) = 3 * (dipole_b / n_centers) / (sqrt(3/4pi) * nbar*V_b)
           3            = 2*ell + 1, picks up <mu^2> = 1/3 over a full shell
@@ -1114,13 +1328,44 @@ def normalize_stacked_dipole(
         Number of surviving centers, e.g. `result.n_centers`. Shared by the
         signal and the null: both are stacks over the SAME center set.
     n_bar : float
-        Global tracer number density over the sub-volume, e.g. from
-        `global_number_density`.
+        Mean halo number density over the whole box, e.g. from
+        `box_number_density`.
+    gaussian_null_dipole : ndarray, shape (B,), optional
+        Raw stacked dipole of the SECOND null, the matched-Gaussian one --
+        again already built by the caller, and again differently per frame
+        (`normalize_result` recombines a drawn u; `dvcorr.pipeline
+        .velocity_frame_comparison.run_gaussian_velocity_null` re-runs the
+        estimator on a drawn v). Both frames' production paths always supply
+        it. It is optional ONLY so that a unit test exercising the
+        normalization ARITHMETIC does not have to fabricate a second null it
+        is not testing; omitting it fills `NormalizedDipole.zeta_hat_gaussian`
+        and `.sem_gaussian` with NaN, which propagates to a visibly missing
+        curve rather than to a wrong number.
+    gaussian_null_per_center_dipole : ndarray, shape (N_c, B), optional
+        Per-center breakdown of the same null, for its own standard error.
+        Must be given together with `gaussian_null_dipole`.
 
     Returns
     -------
     NormalizedDipole
+
+    Raises
+    ------
+    ValueError
+        If exactly one of `gaussian_null_dipole` /
+        `gaussian_null_per_center_dipole` is given: half a null would
+        silently produce a curve with no error band, or a band with no curve.
     """
+    if (gaussian_null_dipole is None) != (gaussian_null_per_center_dipole is None):
+        raise ValueError(
+            "normalize_stacked_dipole: gaussian_null_dipole and "
+            "gaussian_null_per_center_dipole must be given together or not at "
+            "all; got "
+            f"gaussian_null_dipole={'None' if gaussian_null_dipole is None else 'array'}, "
+            f"gaussian_null_per_center_dipole="
+            f"{'None' if gaussian_null_per_center_dipole is None else 'array'}."
+        )
+
     nbar_v_b = expected_shell_occupancy(n_bar, shell_edges)
     norm_scale = shell_dipole_norm_scale(shell_edges, n_bar)
 
@@ -1129,6 +1374,13 @@ def normalize_stacked_dipole(
 
     zeta_hat_shuffle = (null_dipole / n_centers) * norm_scale
     sem_shuffle = center_standard_error(null_per_center_dipole) * norm_scale
+
+    if gaussian_null_dipole is None:
+        zeta_hat_gaussian = np.full_like(zeta_hat, np.nan)
+        sem_gaussian = np.full_like(zeta_hat, np.nan)
+    else:
+        zeta_hat_gaussian = (gaussian_null_dipole / n_centers) * norm_scale
+        sem_gaussian = center_standard_error(gaussian_null_per_center_dipole) * norm_scale
 
     # ell=0 companion, same normalization convention minus the 3/Y10 factors
     # (hard rule 6: never plot the dipole without it).
@@ -1139,6 +1391,8 @@ def normalize_stacked_dipole(
         sem=sem,
         zeta_hat_shuffle=zeta_hat_shuffle,
         sem_shuffle=sem_shuffle,
+        zeta_hat_gaussian=zeta_hat_gaussian,
+        sem_gaussian=sem_gaussian,
         monopole_norm=monopole_norm,
     )
 
@@ -1147,12 +1401,14 @@ def normalize_result(
     result: VelocityCenteredShellDipoleResult,
     n_bar: float,
     shuffle_seed: int,
+    gaussian_null_seed: int,
 ) -> NormalizedDipole:
     """Turn a raw estimator result + n_bar into the plotted, normalized curves.
 
-    Builds the velocity-shuffle null and delegates the actual normalization
-    arithmetic to `normalize_stacked_dipole`, which is the single home for it
-    (see that function's docstring for the formula).
+    Builds BOTH of the observer frame's nulls -- the velocity shuffle and the
+    matched-Gaussian draw -- and delegates the actual normalization arithmetic
+    to `normalize_stacked_dipole`, which is the single home for it (see that
+    function's docstring for the formula).
 
     The null, and why it undoes the axis flip first
     ---------------------------------------------------
@@ -1182,14 +1438,46 @@ def normalize_result(
     construction is spelled out because the OBVIOUS one-line version,
     permuting `per_center_speed`, is now silently wrong.)
 
+    The second null: a matched Gaussian draw instead of a permutation
+    ------------------------------------------------------------------
+    Both nulls recombine a scalar against the SAME fixed-axis amplitude
+    A_bar_alpha,b; they differ only in where the scalar comes from:
+
+        shuffle  :  D_b = Sum_alpha u_{pi(alpha)}  * A_bar_alpha,b
+        gaussian :  D_b = Sum_alpha u_gauss,alpha  * A_bar_alpha,b
+
+    with u_gauss ~ N(<u>, sigma_u^2) from `matched_gaussian_sample` -- the
+    sample's own mean and (ddof=1) variance, not a model fitted elsewhere.
+    Because a permutation preserves the multiset {u_alpha} exactly, the
+    shuffle null already has mean <u> and variance sigma_u^2, so the two nulls
+    agree on the first two moments BY CONSTRUCTION and differ only in the
+    higher ones. That is the whole point of carrying both: the gap between
+    them is the non-Gaussianity of the halo radial-velocity distribution --
+    the heavy tail contributed by satellites in clusters, and whatever
+    `min_center_speed` and the core cut do to the shape -- and nothing else.
+    The shuffle stays the primary null (it assumes no distribution at all, and
+    gives an exact finite-sample test of the u <-> local-density pairing); the
+    Gaussian is the parametric comparison, and is also the natural place to
+    hang an error model later.
+
+    Neither null costs an estimator pass: both are recombinations of arrays
+    the result already carries. (The velocity frame gets no such discount for
+    either of its nulls -- see
+    `dvcorr.pipeline.velocity_frame_comparison.run_random_axis_null` and
+    `.run_gaussian_velocity_null`.)
+
     Parameters
     ----------
     result : VelocityCenteredShellDipoleResult
     n_bar : float
-        Global tracer number density over the sub-volume, e.g. from
-        `global_number_density`.
+        Mean halo number density over the whole box, e.g. from
+        `box_number_density`.
     shuffle_seed : int
         Seed for the velocity-shuffle null (see above).
+    gaussian_null_seed : int
+        Seed for the matched-Gaussian null, distinct from `shuffle_seed` so
+        the two nulls are independent draws rather than two views of one
+        random stream. See `RunConfig.gaussian_null_seed` for the full ladder.
 
     Returns
     -------
@@ -1204,6 +1492,12 @@ def normalize_result(
     shuffled_per_center_dipole = result.per_center_u[perm][:, None] * fixed_axis_amplitude
     null_dipole = shuffled_per_center_dipole.sum(axis=0)
 
+    # Second null: the same recombination, against a matched Gaussian draw of
+    # the signed u rather than a permutation of it.
+    u_gaussian = matched_gaussian_sample(result.per_center_u, gaussian_null_seed)
+    gaussian_per_center_dipole = u_gaussian[:, None] * fixed_axis_amplitude
+    gaussian_null_dipole = gaussian_per_center_dipole.sum(axis=0)
+
     return normalize_stacked_dipole(
         shell_edges=result.shell_edges,
         dipole=result.dipole,
@@ -1213,6 +1507,8 @@ def normalize_result(
         null_per_center_dipole=shuffled_per_center_dipole,
         n_centers=result.n_centers,
         n_bar=n_bar,
+        gaussian_null_dipole=gaussian_null_dipole,
+        gaussian_null_per_center_dipole=gaussian_per_center_dipole,
     )
 
 
@@ -1233,8 +1529,11 @@ def make_figure(
 
     Two panels sharing the x-axis (CLAUDE.md hard rule 6 -- the dipole is
     never plotted alone): the normalized zeta_hat_1(r) with its SEM band and
-    the shuffle null with its own band on top; the normalized monopole
-    companion below.
+    BOTH nulls, each with its own band, on top; the normalized monopole
+    companion below. The two nulls (`normalize_result`: the u-shuffle, dashed,
+    and the matched Gaussian, dotted) share their first two moments by
+    construction, so the gap between the two dashed/dotted curves -- not
+    either one's distance from zero -- is what carries information.
 
     Parameters
     ----------
@@ -1268,6 +1567,21 @@ def make_figure(
         color=_COLOR_NULL, alpha=_BAND_ALPHA,
     )
     ax_dipole.plot(r, normalized.zeta_hat_shuffle, "s--", color=_COLOR_NULL, label="shuffle null")
+    # Second null, matched to the same first two moments as the shuffle
+    # (`normalize_result`), so the two dashed curves are read against EACH
+    # OTHER: their separation is the non-Gaussianity of the u distribution.
+    # All-NaN when the caller normalized without one -- matplotlib then draws
+    # nothing, and the legend entry is the only trace, which is the intended
+    # visible-absence behavior (`normalize_stacked_dipole`).
+    ax_dipole.fill_between(
+        r, normalized.zeta_hat_gaussian - normalized.sem_gaussian,
+        normalized.zeta_hat_gaussian + normalized.sem_gaussian,
+        color=_COLOR_GAUSSIAN_NULL, alpha=_BAND_ALPHA,
+    )
+    ax_dipole.plot(
+        r, normalized.zeta_hat_gaussian, "^:", color=_COLOR_GAUSSIAN_NULL,
+        label="gaussian null",
+    )
     ax_dipole.axhline(0.0, color=_COLOR_ZERO_LINE, lw=_ZERO_LINE_WIDTH)
     ax_dipole.set_ylabel(r"$\hat\zeta_1$  [km/s]", color=_LABEL_COLOR)
     ax_dipole.legend()

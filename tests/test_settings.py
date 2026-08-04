@@ -306,6 +306,56 @@ class TestShellConfig:
         assert np.all(centers > geometric_mean)
         assert np.all(centers < shells.shell_effective_radii)
 
+    def test_zero_bin_is_prepended_without_disturbing_the_log_ladder(self) -> None:
+        """`include_zero_bin` is purely ADDITIVE.
+
+        `min_radius` keeps meaning "innermost LOG edge", so the geometric
+        ladder above it must come out bit-for-bit identical to the same
+        config with the flag off -- the new bin is one extra entry at the
+        front, not a re-spacing of the existing ones.
+        """
+        kwargs = dict(spacing=SPACING_LOG, n_bins=_LOG_N_BINS)
+        plain = ShellConfig(_LOG_MIN_RADIUS, _LOG_MAX_RADIUS, **kwargs)
+        with_zero = ShellConfig(
+            _LOG_MIN_RADIUS, _LOG_MAX_RADIUS, include_zero_bin=True, **kwargs
+        )
+        edges = with_zero.shell_edges
+
+        assert edges.size == plain.shell_edges.size + 1
+        assert edges[0] == 0.0
+        assert edges[1] == _LOG_MIN_RADIUS
+        np.testing.assert_array_equal(edges[1:], plain.shell_edges)
+        assert np.all(np.diff(edges) > 0.0)
+
+    def test_zero_bin_defaults_off_and_is_inert_under_linear_spacing(self) -> None:
+        """The flag defaults off (so no existing config's binning moves), and
+        under `SPACING_LINEAR` it is inert -- a linear binning already reaches
+        zero by setting `min_radius = 0.0`, so there is nothing to add."""
+        assert ShellConfig().include_zero_bin is False
+
+        linear = ShellConfig(20.0, 150.0, 10.0, include_zero_bin=True)
+        np.testing.assert_array_equal(
+            linear.shell_edges, ShellConfig(20.0, 150.0, 10.0).shell_edges
+        )
+
+    def test_zero_bin_effective_radius_is_the_full_sphere_closed_form(self) -> None:
+        """The [0, min_radius) shell's abscissa is 0.75 * min_radius, not
+        min_radius/2: it is volume-weighted like every other shell, and for a
+        full sphere `volume_weighted_shell_radii` reduces to 3R/4."""
+        shells = ShellConfig(
+            _LOG_MIN_RADIUS,
+            _LOG_MAX_RADIUS,
+            spacing=SPACING_LOG,
+            n_bins=_LOG_N_BINS,
+            include_zero_bin=True,
+        )
+        assert shells.shell_effective_radii[0] == pytest.approx(0.75 * _LOG_MIN_RADIUS)
+        assert shells.shell_centers[0] == pytest.approx(0.5 * _LOG_MIN_RADIUS)
+
+    def test_include_zero_bin_must_be_a_bool(self) -> None:
+        with pytest.raises(ValueError):
+            ShellConfig(spacing=SPACING_LINEAR, include_zero_bin="yes")
+
 
 # ---------------------------------------------------------------------------
 # volume_weighted_shell_radii

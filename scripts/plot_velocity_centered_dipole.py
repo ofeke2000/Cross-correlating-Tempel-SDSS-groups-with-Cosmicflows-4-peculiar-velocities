@@ -7,7 +7,7 @@ MDPL2 halos and plot it, alongside its monopole companion (CLAUDE.md hard
 rule 6) and a velocity-shuffle null.
 
 Thin driver only: the actual stage functions (`load_and_carve`,
-`draw_candidates`, `run_estimator`, `global_number_density`,
+`draw_candidates`, `run_estimator`, `box_number_density`,
 `normalize_result`, `make_figure`) live in
 `dvcorr.pipeline.velocity_centered`, the single source of truth also
 consumed by notebooks/05_velocity_centered_dipole.ipynb -- per CLAUDE.md's
@@ -47,7 +47,7 @@ from dvcorr.pipeline.mass_diagnostics import mass_funnel, print_mass_funnel
 from dvcorr.pipeline.velocity_centered import (
     RunConfig,
     draw_candidates,
-    global_number_density,
+    box_number_density,
     load_and_carve,
     make_figure,
     normalize_result,
@@ -90,8 +90,8 @@ def main() -> None:
         )
     )
 
-    n_bar = global_number_density(carved.n_carved, cfg.sub_volume_radius)
-    normalized = normalize_result(result, n_bar, cfg.shuffle_seed)
+    n_bar = box_number_density(carved.n_total)
+    normalized = normalize_result(result, n_bar, cfg.shuffle_seed, cfg.gaussian_null_seed)
 
     fig = make_figure(cfg, result, normalized)
 

@@ -13,7 +13,7 @@ Thin driver only: the actual stage functions (`select_shared_centers`,
 `run_both_frames`, `normalize_comparison`, `make_comparison_figure`,
 `make_angle_diagnostic_figure`) live in
 `dvcorr.pipeline.velocity_frame_comparison`, the single source of truth;
-`load_and_carve`, `draw_candidates`, and `global_number_density` are reused
+`load_and_carve`, `draw_candidates`, and `box_number_density` are reused
 unchanged from `dvcorr.pipeline.velocity_centered` -- per CLAUDE.md's "one
 library, two thin consumers" model, this script reimplements none of the
 pipeline. The MDPL2 catalog load is long (~4M rows); this script is not run
@@ -50,7 +50,7 @@ from dvcorr.config import PathsConfig, add_catalog_arguments, catalog_from_args
 from dvcorr.pipeline.mass_diagnostics import mass_funnel, print_mass_funnel
 from dvcorr.pipeline.velocity_centered import (
     draw_candidates,
-    global_number_density,
+    box_number_density,
     load_and_carve,
 )
 from dvcorr.pipeline.velocity_frame_comparison import (
@@ -94,7 +94,7 @@ def main() -> None:
 
     results = run_both_frames(cfg, centers, carved.pos, observer)
 
-    n_bar = global_number_density(carved.n_carved, cfg.sub_volume_radius)
+    n_bar = box_number_density(carved.n_total)
     comparison = normalize_comparison(cfg, results, n_bar)
 
     comparison_fig = make_comparison_figure(cfg, results, comparison)

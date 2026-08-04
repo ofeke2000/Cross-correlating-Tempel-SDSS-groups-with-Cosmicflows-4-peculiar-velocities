@@ -40,7 +40,11 @@ from scipy.special import sph_harm_y
 from dvcorr import conventions
 from dvcorr.config import log_shell_edges
 from dvcorr.geometry import mu_cosine, pair_separation, unit_vector
-from dvcorr.pipeline.velocity_centered import normalize_stacked_dipole
+from dvcorr.pipeline.velocity_centered import (
+    box_number_density,
+    matched_gaussian_sample,
+    normalize_stacked_dipole,
+)
 from dvcorr.redshift_space import to_redshift_space
 from dvcorr.estimators.shell_dipole import (
     center_standard_error,
@@ -726,6 +730,31 @@ def test_geometric_edges_bin_tracers_correctly():
     np.testing.assert_array_equal(result.shell_edges, _GEOM_SHELL_EDGES)
 
 
+def test_box_number_density_is_the_box_mean_not_a_carved_density():
+    """n_bar = n_halos / BOX_SIZE**3, and nothing else.
+
+    Pins the normalization's denominator to the COSMIC MEAN of the box. The
+    definition it replaced divided a carved count by the carve's own volume,
+    which made every normalized zeta_hat_1 carry that one sphere's
+    (1 + delta_sub) as an unknown flat factor. Two properties are asserted
+    because both were false before:
+
+      - the value is exactly the analytic box mean, and
+      - it does not depend on `sub_volume_radius` in any way -- there is no
+        radius argument left to mismatch a count against (the ~32% buffered
+        -carve suppression `dvcorr.pipeline.redshift_space_comparison`
+        documents was exactly that mismatch).
+    """
+    n_halos = 127_388_160  # the `full` MDPL2 catalog's row count
+
+    n_bar = box_number_density(n_halos)
+
+    assert n_bar == pytest.approx(n_halos / conventions.BOX_SIZE**3)
+    # Linear in the count, and free of every other input.
+    assert box_number_density(2 * n_halos) == pytest.approx(2.0 * n_bar)
+    assert box_number_density(0) == 0.0
+
+
 def test_expected_shell_occupancy_matches_analytic_volume_for_geometric_edges():
     """expected_shell_occupancy(n_bar, geom_edges) == n_bar * (4pi/3) * (r2**3 - r1**3)
     bin by bin -- pins that the denominator carries no hidden uniform-dr
@@ -787,6 +816,78 @@ def test_empty_shell_under_geometric_edges_normalizes_to_zero_not_nan():
     assert normalized.zeta_hat[0] == 0.0
     assert np.isfinite(normalized.sem[0])
     assert np.isfinite(normalized.monopole_norm[0])
+
+
+# ---------------------------------------------------------------------------
+# The r = 0 self-pair, under a zero innermost edge
+# ---------------------------------------------------------------------------
+# `ShellConfig.include_zero_bin` prepends [0, min_radius) to the log ladder,
+# so `shell_edges[0] == 0` and the innermost edge no longer excludes the
+# coincident pair. The pipeline subsamples its centers FROM the tracer array,
+# so that pair is not hypothetical: it is exactly one per center, and in the
+# production binning it would outnumber the real pairs in [0, 1) by ~60x.
+# These two tests pin the explicit `r_mag > 0` term that replaces the
+# incidental protection the positive innermost edge used to provide.
+
+_ZERO_BIN_EDGES = log_shell_edges(
+    _GEOM_R_MIN, _GEOM_R_MAX, _GEOM_N_BINS, include_zero_bin=True
+)
+
+
+def test_self_pair_is_excluded_under_a_zero_innermost_edge():
+    """A center that is ALSO one of its own tracers contributes nothing to the
+    [0, min_radius) bin, while a genuine tracer at a small non-zero radius in
+    the same bin is still counted.
+
+    Both halves matter. Without the first, `pair_count[0]` and `monopole[0]`
+    carry a pure self-correlation. Without the second, an over-broad guard
+    (say `r_mag >= min_radius`) would pass the first while quietly emptying
+    the bin the zero-bin option exists to fill.
+    """
+    s_center, v_center = _single_vc_center()
+    genuine_radius = 0.5 * _GEOM_R_MIN  # inside [0, 1), comfortably clear of 0
+    tracers = np.vstack(
+        [
+            s_center[0],  # the center itself: r = 0 exactly
+            s_center[0] + np.array([0.0, genuine_radius, 0.0]),
+        ]
+    )
+
+    result = velocity_centered_shell_dipole(
+        s_centers=s_center,
+        v_centers=v_center,
+        s_tracers=tracers,
+        shell_edges=_ZERO_BIN_EDGES,
+        sub_volume_radius=conventions.MAX_ANALYSIS_RADIUS,
+    )
+
+    assert result.shell_edges[0] == 0.0
+    assert result.pair_count[0] == 1.0        # the genuine tracer only
+    assert result.pair_count.sum() == 1.0     # and nothing leaked elsewhere
+
+
+def test_self_pair_exclusion_is_a_no_op_when_the_innermost_edge_is_positive():
+    """The `r_mag > 0` term changes NOTHING for a binning that starts above
+    zero -- there, the self-pair was already below the innermost edge. This is
+    what makes the term safe to apply unconditionally at every binning site
+    rather than conditionally on `shell_edges[0] == 0`.
+    """
+    s_center, v_center = _single_vc_center()
+    radii = np.array([1.2, 3.0, 50.0])
+    offsets = np.column_stack((np.zeros_like(radii), radii, np.zeros_like(radii)))
+    without_self = s_center[0] + offsets
+    with_self = np.vstack([s_center[0], without_self])
+
+    def _pair_count(tracers: np.ndarray) -> np.ndarray:
+        return velocity_centered_shell_dipole(
+            s_centers=s_center,
+            v_centers=v_center,
+            s_tracers=tracers,
+            shell_edges=_GEOM_SHELL_EDGES,  # starts at 1.0, not 0.0
+            sub_volume_radius=conventions.MAX_ANALYSIS_RADIUS,
+        ).pair_count
+
+    np.testing.assert_array_equal(_pair_count(with_self), _pair_count(without_self))
 
 
 # Edge sets for the binning-invariance gate below: _GATE_GEOM_EDGES tiles the
@@ -1239,6 +1340,184 @@ def test_permuting_the_speed_alone_is_not_a_null():
     retained_fraction = 0.5
     assert abs(fake_null[0]) > retained_fraction * abs(result.dipole[0])
     assert np.sign(fake_null[0]) == np.sign(result.dipole[0])
+
+
+# ---------------------------------------------------------------------------
+# Matched-Gaussian null
+# ---------------------------------------------------------------------------
+
+
+def test_matched_gaussian_sample_matches_mean_and_spread():
+    """The distributional contract `matched_gaussian_sample` exists to hold:
+    the draw reproduces the sample's mean and its ddof=1 spread, per column.
+
+    This is what makes the Gaussian null comparable to the shuffle null at
+    all -- a permutation preserves those two moments EXACTLY, so if the draw
+    did not match them the gap between the two null curves would be a
+    first/second-moment difference rather than the distribution-SHAPE
+    difference it is advertised to isolate. Tolerances are loose because a
+    finite draw scatters around its parameters; they are tight enough to
+    catch a wrong convention (a zeroed mean, or ddof=0 vs ddof=1 at small N).
+    """
+    rng = np.random.default_rng(20260804)
+    n_centers = 4000
+    # Deliberately NOT Gaussian and NOT zero-mean: an exponential tail plus an
+    # offset, i.e. the shape the real u distribution has and the draw must
+    # nonetheless match in its first two moments.
+    sample = rng.exponential(scale=180.0, size=n_centers) - 60.0
+
+    drawn = matched_gaussian_sample(sample, seed=11)
+
+    assert drawn.shape == sample.shape
+    mean_tolerance = 0.05 * sample.std(ddof=1)  # 5% of a sigma
+    spread_tolerance = 0.05  # fractional
+    assert abs(drawn.mean() - sample.mean()) < mean_tolerance
+    assert abs(drawn.std(ddof=1) / sample.std(ddof=1) - 1.0) < spread_tolerance
+
+
+def test_matched_gaussian_sample_matches_each_column_of_a_vector_sample():
+    """The (N, 3) path -- the velocity frame's
+    (`dvcorr.pipeline.velocity_frame_comparison.run_gaussian_velocity_null`)
+    -- matches per COMPONENT, so the sample's bulk-flow VECTOR survives.
+
+    A pooled single sigma, or a zeroed mean, would make the null isotropic
+    and delete that bulk motion; this pins the documented choice, since an
+    isotropic null already exists (`run_random_axis_null`) and the whole
+    point of this one is to be the non-isotropic counterpart.
+    """
+    rng = np.random.default_rng(20260804)
+    n_centers = 4000
+    bulk_flow = np.array([250.0, -80.0, 0.0])
+    per_component_sigma = np.array([300.0, 450.0, 200.0])
+    sample = bulk_flow + per_component_sigma * rng.normal(size=(n_centers, 3))
+
+    drawn = matched_gaussian_sample(sample, seed=12)
+
+    assert drawn.shape == sample.shape
+    mean_tolerance = 0.05 * sample.std(axis=0, ddof=1)
+    spread_tolerance = 0.05
+    assert np.all(np.abs(drawn.mean(axis=0) - sample.mean(axis=0)) < mean_tolerance)
+    assert np.all(
+        np.abs(drawn.std(axis=0, ddof=1) / sample.std(axis=0, ddof=1) - 1.0) < spread_tolerance
+    )
+
+
+def test_matched_gaussian_sample_is_seed_deterministic_and_seed_sensitive():
+    """Same seed -> same draw (a run is reproducible); different seed ->
+    different draw (the seed ladder in `RunConfig.gaussian_null_seed` buys
+    genuinely independent nulls, not one stream viewed twice).
+    """
+    sample = np.random.default_rng(20260804).normal(size=500)
+
+    assert np.array_equal(
+        matched_gaussian_sample(sample, seed=46), matched_gaussian_sample(sample, seed=46)
+    )
+    assert not np.array_equal(
+        matched_gaussian_sample(sample, seed=46), matched_gaussian_sample(sample, seed=47)
+    )
+
+
+def test_matched_gaussian_sample_degenerates_to_nan_below_two_rows():
+    """N < 2 -> all-NaN, mirroring `center_standard_error`'s own convention
+    rather than raising: a single-center run is supported everywhere else in
+    this pipeline and must degrade to a missing null curve, not to an
+    exception thrown from inside `normalize_result`.
+    """
+    assert np.all(np.isnan(matched_gaussian_sample(np.array([3.0]), seed=1)))
+    assert np.all(np.isnan(matched_gaussian_sample(np.zeros((1, 3)), seed=1)))
+
+
+def test_gaussian_null_collapses_the_stacked_dipole():
+    """The Gaussian null is a NULL: recombining a matched draw against the
+    fixed-axis amplitude collapses the stack, exactly as the shuffle does.
+
+    Same toy and same threshold as
+    `test_shuffle_null_collapses_the_stacked_dipole`, deliberately -- the two
+    nulls are meant to be interchangeable as floors and only to differ in
+    the distribution they assume, so a failure here means the draw has
+    stopped decoupling the velocity from the geometry.
+    """
+    vc_centers, vc_velocities, vc_tracers = _joint_gate_toy()
+    shell_edges = np.array([0.5 * R_SHELL, 1.5 * R_SHELL])
+
+    result = velocity_centered_shell_dipole(
+        s_centers=vc_centers,
+        v_centers=vc_velocities,
+        s_tracers=vc_tracers,
+        shell_edges=shell_edges,
+        sub_volume_radius=_VC_SUB_VOLUME_RADIUS,
+    )
+
+    fixed_axis_amplitude = np.sign(result.per_center_u)[:, None] * result.per_center_amplitude
+    u_gaussian = matched_gaussian_sample(result.per_center_u, seed=20260804)
+    gaussian_dipole = (u_gaussian[:, None] * fixed_axis_amplitude).sum(axis=0)
+
+    gaussian_null_fraction = 0.2  # same bar as the shuffle null's
+    assert abs(gaussian_dipole[0]) < gaussian_null_fraction * abs(result.dipole[0])
+
+
+def test_every_null_in_the_three_pipelines_gets_its_own_seed():
+    """The seed ladder documented on `RunConfig.gaussian_null_seed` is
+    actually distinct, end to end.
+
+    Six random streams now exist across the three pipelines -- the center
+    draw plus five nulls -- and every docstring that mentions one of them
+    claims it never silently reuses another. That claim is one careless
+    default away from being false, and a collision would not raise: it would
+    quietly make two "independent" null curves correlated, which is exactly
+    the kind of thing a reader would take at face value on a figure.
+    """
+    # Imported here rather than at module scope: this is the only test in
+    # this file that needs the two downstream pipelines, and importing them
+    # at the top would make this module's import graph misrepresent what it
+    # is a test of.
+    from dvcorr.pipeline.redshift_space_comparison import RedshiftSpaceRunConfig
+    from dvcorr.pipeline.velocity_frame_comparison import ComparisonRunConfig
+
+    comparison_cfg = ComparisonRunConfig()
+    redshift_cfg = RedshiftSpaceRunConfig()
+
+    seeds = [
+        comparison_cfg.seed,                              # candidate centers
+        comparison_cfg.shuffle_seed,                      # obs frame, u-shuffle
+        comparison_cfg.axis_null_seed,                    # vel frame, random-axis
+        comparison_cfg.gaussian_null_seed,                # obs frame, gaussian
+        comparison_cfg.velocity_gaussian_null_seed,       # vel frame, gaussian
+        redshift_cfg.redshift_shuffle_seed,               # redshift run, u-shuffle
+        redshift_cfg.redshift_gaussian_null_seed,         # redshift run, gaussian
+    ]
+
+    assert len(set(seeds)) == len(seeds), f"seed collision in the null ladder: {seeds}"
+
+
+def test_normalize_stacked_dipole_rejects_half_a_gaussian_null():
+    """Passing one of the two Gaussian-null arrays without the other raises,
+    rather than producing a curve with no band (or a band with no curve).
+    """
+    shell_edges = np.array([0.0, 10.0])
+    zeros_b = np.zeros(1)
+    zeros_cb = np.zeros((2, 1))
+    common = dict(
+        shell_edges=shell_edges,
+        dipole=zeros_b,
+        monopole=zeros_b,
+        per_center_dipole=zeros_cb,
+        null_dipole=zeros_b,
+        null_per_center_dipole=zeros_cb,
+        n_centers=2,
+        n_bar=1.0,
+    )
+
+    with pytest.raises(ValueError):
+        normalize_stacked_dipole(**common, gaussian_null_dipole=zeros_b)
+    with pytest.raises(ValueError):
+        normalize_stacked_dipole(**common, gaussian_null_per_center_dipole=zeros_cb)
+
+    # Neither given: NaN curve, not an exception -- the documented
+    # arithmetic-only call pattern.
+    normalized = normalize_stacked_dipole(**common)
+    assert np.all(np.isnan(normalized.zeta_hat_gaussian))
+    assert np.all(np.isnan(normalized.sem_gaussian))
 
 
 # ---------------------------------------------------------------------------

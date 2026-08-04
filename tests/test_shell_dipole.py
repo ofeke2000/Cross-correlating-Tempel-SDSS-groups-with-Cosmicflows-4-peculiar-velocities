@@ -256,8 +256,25 @@ def test_uniform_weights_make_monopole_equal_count():
     np.testing.assert_array_equal(result.pair_count, [1.0, 2.0])
 
 
-def test_coincident_neighbor_contributes_to_count_but_not_dipole():
-    """r = 0 has no direction: mu = 0, so it counts but adds nothing to Q."""
+def test_coincident_neighbor_is_excluded_entirely():
+    """r = 0 has no direction, so it is dropped from the pair count outright.
+
+    This INVERTS an earlier pin (`..._contributes_to_count_but_not_dipole`).
+    The old contract let a coincident neighbor into `pair_count` and
+    `monopole` on the grounds that `unit_vector` gives it mu = 0, so it could
+    not corrupt the dipole. That reasoning holds for the dipole and fails for
+    the monopole, which hard rule 6 makes the diagnostic the dipole is judged
+    against: a zero-separation "pair" is a self-correlation, not a
+    correlation, and counting it inflates exactly the occupancy the
+    normalization compares to `expected_shell_occupancy`.
+
+    Harmless while every binning started above zero -- the case was
+    unreachable in practice. `dvcorr.config.ShellConfig.include_zero_bin`
+    makes `shell_edges[0] == 0` a production binning, and in it the centers
+    are subsampled from the tracer array, so the coincident pair arrives once
+    per center. The estimators therefore exclude it explicitly, on
+    `r_mag > 0`, at every binning.
+    """
     _, s_center = _line_of_sight_center()
     # One neighbor on top of the center (r = 0), one at r = 5 with mu != 0.
     s_offset = unit_vector(s_center - np.asarray(conventions.OBSERVER_POSITION, float))
@@ -267,10 +284,10 @@ def test_coincident_neighbor_contributes_to_count_but_not_dipole():
 
     result = shell_dipole(s_center, s_neighbors, shell_edges, weights=weights)
 
-    assert result.pair_count[0] == 2.0                    # both are in the shell
-    assert result.monopole[0] == pytest.approx(200.0)
-    # The coincident one carries mu = 0; only the r = 5 neighbor (mu = +1,
-    # directly behind the center) contributes to the dipole.
+    assert result.pair_count[0] == 1.0                    # the r = 5 neighbor only
+    assert result.monopole[0] == pytest.approx(100.0)
+    # Unchanged by the exclusion: the r = 5 neighbor (mu = +1, directly behind
+    # the center) was always the only dipole contributor.
     assert result.dipole[0] == pytest.approx(100.0)
 
 

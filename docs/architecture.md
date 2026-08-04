@@ -161,6 +161,37 @@ across the box. The only obligation the primitives themselves enforce is that no
 may exceed `conventions.MAX_ANALYSIS_RADIUS = BOX_SIZE / 2`, beyond which the nearest
 image is not unique and the carving itself is ill-defined.
 
+**The r = 0 coincident pair is excluded, at every binning.** All four sites that bin a
+separation into shells — `shell_dipole` and `velocity_centered_shell_dipole` in
+`estimators/shell_dipole.py`, `velocity_frame_shell_dipole` in
+`estimators/velocity_frame_dipole.py`, and `_ids_by_shell` in
+`pipeline/redshift_space_comparison.py` — carry an `r_mag > 0` term in their in-range
+mask. A zero-length separation has no direction, so `geometry.unit_vector` returns a zero
+row and its µ comes out 0: an ordinary-looking cosine that never disturbs the dipole but
+does enter `pair_count` and the monopole as a **self-correlation rather than a
+correlation**, inflating exactly the occupancy hard rule 6 has the monopole diagnose. This
+was incidental protection while every binning began above zero;
+`ShellConfig.include_zero_bin` makes `shell_edges[0] == 0` a production binning, and since
+centers are subsampled *from* the tracer array there is then exactly one such pair per
+center. The term is unconditional, not gated on `shell_edges[0] == 0`, so the guarantee
+holds for any binning and cannot be undone by a config change. A new binning site inherits
+this obligation.
+
+**n̄ is the box mean, not the carve's density.** The eq. 24 denominator
+`expected_shell_occupancy(n_bar, edges)` = n̄·V_b is fed one n̄ throughout:
+`pipeline/velocity_centered.box_number_density(n_total)` — the catalog's post-cut halo
+count over `BOX_SIZE**3`. Every call site builds it that way
+(`CarvedHalos.n_total`, `BufferedCarve.n_total`), and no stage function derives it
+internally: the three normalize stages (`normalize_result`, `normalize_comparison`,
+`normalize_redshift_comparison`) all take n̄ as an argument, so the choice stays visible at
+the call site. It is deliberately *not* the carved count over the carve's volume: the
+sub-volume is one realization of the density field, n̄·(1+δ_sub), and that unknown factor
+would multiply every shell of ζ̂₁ flat in r. The box mean is exact here because the box is
+the whole universe of the simulation, and being carve-blind it also removes the
+count/radius mismatch the buffered carve in `redshift_space_comparison.py` used to expose.
+The one remaining obligation: the count must be the *same population* that enters the
+shells — post mass/subhalo cut, pre-carve.
+
 **Catalog contract.** Two MDPL2 catalogs are supported and neither supersedes the other:
 `CATALOG_FULL` (~127M halos, down to 2 particles, subhalos included) and `CATALOG_MVIR12`
 (4,093,751 distinct halos at m_vir ≥ 1e12). A run names one in its `CatalogConfig`, and
@@ -202,11 +233,27 @@ redefining them. `pipeline/velocity_centered.py` is the shared base of `pipeline
 imports `config` and `estimators`, and both comparison pipelines
 (`velocity_frame_comparison.py`, `redshift_space_comparison.py`) import their shared
 machinery (`RunConfig`, `SharedCenterSet`, `select_shared_centers`, `_load_all_halos`,
-`NormalizedDipole`, `normalize_stacked_dipole`, `shell_dipole_norm_scale`,
-`_binning_description`) from it — **neither comparison pipeline imports from the
-other**. `scripts/` and `notebooks/` import from `dvcorr.pipeline`/`dvcorr.config`
+`NormalizedDipole`, `normalize_stacked_dipole`, `matched_gaussian_sample`,
+`shell_dipole_norm_scale`, `_binning_description`) from it — **neither comparison
+pipeline imports from the other**. `scripts/` and `notebooks/` import from `dvcorr.pipeline`/`dvcorr.config`
 /`dvcorr.conventions`; nothing under `src/dvcorr/` ever imports from `scripts/` or
 `notebooks/` — the dependency runs only one way.
+
+**Every null gets its own random stream.** Seeds are allocated once, across all three
+pipelines, and no two collide: `seed` = 42 (candidate centers), `shuffle_seed` = 43,
+`ComparisonRunConfig.axis_null_seed` = 44, `RedshiftSpaceRunConfig.redshift_shuffle_seed`
+= 45, `RunConfig.gaussian_null_seed` = 46,
+`ComparisonRunConfig.velocity_gaussian_null_seed` = 47,
+`RedshiftSpaceRunConfig.redshift_gaussian_null_seed` = 48. This is a contract rather than
+a per-file detail because the configs inherit across modules and a collision would not
+raise — it would quietly correlate two curves the figures present as independent nulls.
+Pinned by `tests/test_velocity_centered_dipole.py::test_every_null_in_the_three_pipelines_gets_its_own_seed`;
+a new null adds the next integer and extends that test.
+
+Which construction each of those seeds drives is the owning module's business, not this
+file's — but the one fact that spans them: every frame carries **two** nulls, its own
+primary one plus a matched-Gaussian draw (`matched_gaussian_sample`) built at the
+sample's own mean and ddof=1 spread, so the pair differs only in distribution shape.
 
 **Matplotlib backend discipline.** Only the three `scripts/*.py` entry points call
 `matplotlib.use("Agg")`, and each does so before importing its pipeline module. No module

@@ -337,11 +337,16 @@ def shell_dipole(
 
     Notes
     -----
-    A neighbor coincident with the center (r_mag ~ 0) has no direction:
-    `unit_vector` returns a zero row, so its mu is 0 and it contributes its
-    weight to `count` and `monopole` but nothing to `dipole`. It is only
-    reached at all when shell_edges[0] == 0; otherwise it falls below the
-    innermost edge and is excluded. Either way it never injects a NaN.
+    A neighbor coincident with the center (r_mag == 0) is EXCLUDED, at every
+    binning, by an explicit `r_mag > 0` term in the in-range mask -- not by
+    the innermost edge happening to be positive. It has no direction
+    (`unit_vector` returns a zero row, giving mu = 0, a perfectly
+    ordinary-looking cosine), so admitting it would add a pure
+    self-correlation to `count` and `monopole` while contributing nothing to
+    `dipole`. The distinction matters only when shell_edges[0] == 0
+    (`dvcorr.config.ShellConfig.include_zero_bin`), where the innermost edge
+    can no longer do the excluding; below that it was already excluded and
+    the term is a no-op.
 
     Fully vectorized: the binning is a single `np.digitize` plus weighted
     `np.bincount` calls, with no Python-level loop over neighbors.
@@ -392,7 +397,16 @@ def shell_dipole(
     # Bin by separation. Left-closed/right-open interior boundaries; the
     # outermost edge is folded into the last shell so a neighbor sitting
     # exactly on it is not silently dropped.
-    in_range = (r_mag >= edges[0]) & (r_mag <= edges[-1])
+    #
+    # r_mag > 0 drops the COINCIDENT pair: a zero-length separation has no
+    # direction, so `unit_vector` returns a zero row and mu comes out 0 --
+    # an ordinary-looking cosine that would enter `count`/`monopole` as a
+    # pure self-correlation (`dvcorr.geometry.unit_vector`'s Notes make
+    # excluding it the caller's job, and this is the caller). A no-op
+    # whenever edges[0] > 0, and the only thing standing between a
+    # zero-innermost-edge binning (`ShellConfig.include_zero_bin`) and a
+    # polluted innermost monopole.
+    in_range = (r_mag > 0.0) & (r_mag >= edges[0]) & (r_mag <= edges[-1])
     bin_index = np.digitize(r_mag, edges) - 1
     bin_index = np.where(bin_index == n_bins, n_bins - 1, bin_index)
 
@@ -539,18 +553,22 @@ def expected_shell_occupancy(
     """Expected tracer occupancy per shell from a uniform global number density.
 
     n_bar * V_b -- the Nusser (2017) eq. 24 normalization denominator: the
-    EXPECTED occupancy from a uniform tracer field over the sub-volume, not
-    the realized pair count (`VelocityCenteredShellDipoleResult.pair_count`).
-    Dividing the raw stacked dipole by this, rather than by the realized
-    count, is what the eq. 24 normalization calls for.
+    EXPECTED occupancy of a shell if the tracer field were uniform at the
+    COSMIC MEAN density, not the realized pair count
+    (`VelocityCenteredShellDipoleResult.pair_count`). Dividing the raw
+    stacked dipole by this, rather than by the realized count, is what the
+    eq. 24 normalization calls for.
 
     Parameters
     ----------
     number_density : float
-        Global tracer number density n_bar over the sub-volume, tracers per
-        (h^-1 Mpc)^3. Computed by the CALLER (e.g.
-        N_carved / ((4*pi/3) * R_sub**3)); never estimated inside this
-        function.
+        Mean tracer number density n_bar, tracers per (h^-1 Mpc)^3. Computed
+        by the CALLER (`dvcorr.pipeline.velocity_centered
+        .box_number_density`: the catalog's halo count over the whole
+        periodic box, N_total / BOX_SIZE**3); never estimated inside this
+        function, and deliberately NOT the density of the carved sub-volume,
+        which is one realization of the field rather than its mean -- see
+        that function's docstring.
     shell_edges : ndarray, shape (B + 1,)
         Radial shell boundaries, h^-1 Mpc, matching the binning used by
         `velocity_centered_shell_dipole`.
@@ -890,14 +908,19 @@ def velocity_centered_shell_dipole(
 
     Notes
     -----
-    A tracer coincident with its center (r_mag ~ 0 -- e.g. the center itself,
-    when centers are drawn from the same catalog as the tracers) has no
-    direction: `unit_vector` returns a zero row, so cos_theta = 0 and it
-    contributes to `per_center_count` (occupancy) but nothing to
-    `per_center_amplitude` (A). Identical documented contract to
-    `shell_dipole`'s coincident-neighbor case. It is only reached when
-    shell_edges[0] == 0; otherwise r_mag = 0 falls below the innermost edge
-    and is excluded.
+    A tracer coincident with its center (r_mag == 0) is EXCLUDED by an
+    explicit `r_mag > 0` term in the in-range mask, identical to
+    `shell_dipole`'s. This is not a hypothetical case here: the pipeline
+    subsamples its centers FROM the tracer array
+    (`dvcorr.pipeline.velocity_centered.draw_candidates`), so EVERY center is
+    its own tracer at exactly zero separation, one self-pair per center. With
+    a zero innermost edge (`dvcorr.config.ShellConfig.include_zero_bin`) that
+    is N_c self-pairs landing in a shell whose entire expected uniform
+    occupancy is a few tens of pairs -- it would dominate the innermost
+    monopole, the hard-rule-6 diagnostic panel, with a quantity that is not a
+    correlation at all. Excluding it costs nothing: cos_theta = 0 for a
+    directionless separation, so it never contributed to
+    `per_center_amplitude` (A) in the first place.
 
     A center whose velocity is exactly TRANSVERSE (u_alpha == 0) has an
     undefined flow axis: `radial_flow_axis` returns a zero row, so every
@@ -996,7 +1019,9 @@ def velocity_centered_shell_dipole(
             r_vec, r_mag = pair_separation(s_alpha, s_near)
             cos_theta = mu_cosine(unit_vector(r_vec), z_hat[a])
 
-            in_range = (r_mag >= edges[0]) & (r_mag <= edges[-1])
+            # r_mag > 0 drops the center's own self-pair -- see this
+            # function's Notes; a no-op unless edges[0] == 0.
+            in_range = (r_mag > 0.0) & (r_mag >= edges[0]) & (r_mag <= edges[-1])
             bin_index = np.digitize(r_mag, edges) - 1
             bin_index = np.where(bin_index == n_bins, n_bins - 1, bin_index)
 

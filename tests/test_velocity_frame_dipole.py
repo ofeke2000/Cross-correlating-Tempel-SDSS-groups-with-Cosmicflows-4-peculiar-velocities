@@ -35,9 +35,11 @@ from dvcorr.estimators.shell_dipole import (
     velocity_centered_shell_dipole,
 )
 from dvcorr.estimators.velocity_frame_dipole import velocity_frame_shell_dipole
+from dvcorr.pipeline.velocity_centered import matched_gaussian_sample
 from dvcorr.pipeline.velocity_frame_comparison import (
     ComparisonRunConfig,
     run_both_frames,
+    run_gaussian_velocity_null,
     run_random_axis_null,
     select_shared_centers,
 )
@@ -712,6 +714,116 @@ def test_run_random_axis_null_preserves_speed_and_position():
         observer=observer,
     )
     np.testing.assert_array_equal(null_result.per_center_count, reference_result.per_center_count)
+
+
+def test_gaussian_velocity_null_collapses_the_velocity_frame_dipole():
+    """`run_gaussian_velocity_null` is a NULL on the same clustered signal
+    the random-axis null is checked against, and to the same bar.
+
+    Both of this frame's nulls have to clear this: whatever else they differ
+    on (`run_gaussian_velocity_null`'s docstring lays out exactly what each
+    preserves), a construction that did not decouple the axis from the
+    density field would not be a null at all and would have no business on
+    the figure.
+    """
+    rng = np.random.default_rng(20260804)
+    observer = np.asarray(conventions.OBSERVER_POSITION, dtype=float)
+    cfg = ComparisonRunConfig(
+        sub_volume_radius=_CLUSTER_SUB_VOLUME_RADIUS,
+        shells=ShellConfig(
+            min_radius=_CLUSTER_SHELL_MIN,
+            max_radius=_CLUSTER_SHELL_MAX,
+            radii_step=_CLUSTER_SHELL_MAX - _CLUSTER_SHELL_MIN,  # a single shell
+        ),
+    )
+
+    s_centers, v_centers, s_tracers = _clustered_signal_centers_and_tracers(rng)
+    centers = select_shared_centers(cfg, s_centers, v_centers, observer)
+
+    signal_result = velocity_frame_shell_dipole(
+        s_centers=centers.s_centers,
+        v_centers=centers.v_centers,
+        s_tracers=s_tracers,
+        shell_edges=cfg.shells.shell_edges,
+        sub_volume_radius=cfg.sub_volume_radius,
+        observer=observer,
+    )
+    gaussian_null_result = run_gaussian_velocity_null(cfg, centers, s_tracers, observer)
+
+    assert gaussian_null_result.n_centers == centers.n_centers
+
+    y10_norm = np.sqrt(3.0 / (4.0 * np.pi))
+    signal_normalized = 3.0 * signal_result.dipole / (y10_norm * signal_result.pair_count)
+    null_normalized = 3.0 * gaussian_null_result.dipole / (
+        y10_norm * gaussian_null_result.pair_count
+    )
+
+    assert abs(signal_normalized[0]) > 0.0
+    assert abs(null_normalized[0]) < _CLUSTER_COLLAPSE_FRACTION * abs(signal_normalized[0])
+
+
+def test_gaussian_velocity_null_replaces_speed_but_keeps_position():
+    """The two velocity-frame nulls differ in EXACTLY the documented way, and
+    this pins both halves of that difference.
+
+    Speed: `run_random_axis_null` keeps each center's own |v_alpha| attached
+    to that center (asserted in
+    `test_run_random_axis_null_preserves_speed_and_position`); this one does
+    NOT -- it draws a fresh vector, so the per-center speeds must differ
+    center-by-center while the population's per-component mean and spread are
+    matched. If this ever starts preserving the speeds, the two nulls have
+    silently become the same test and the figure's dotted curve stops
+    carrying information.
+
+    Position: unchanged, same as the random-axis null -- confirmed through
+    `per_center_count`, pure geometry that cannot depend on velocity.
+    """
+    rng = np.random.default_rng(20260804)
+    observer = np.asarray(conventions.OBSERVER_POSITION, dtype=float)
+    cfg = ComparisonRunConfig(
+        sub_volume_radius=_CLUSTER_SUB_VOLUME_RADIUS,
+        shells=ShellConfig(
+            min_radius=_CLUSTER_SHELL_MIN,
+            max_radius=_CLUSTER_SHELL_MAX,
+            radii_step=_CLUSTER_SHELL_MAX - _CLUSTER_SHELL_MIN,
+        ),
+    )
+
+    s_centers, v_centers, s_tracers = _clustered_signal_centers_and_tracers(rng)
+    centers = select_shared_centers(cfg, s_centers, v_centers, observer)
+
+    gaussian_null_result = run_gaussian_velocity_null(cfg, centers, s_tracers, observer)
+
+    # Speed detached from its center: the per-center speeds are NOT the
+    # originals (contrast the random-axis null, which preserves them exactly).
+    original_speed = np.linalg.norm(centers.v_centers, axis=1)
+    assert not np.allclose(gaussian_null_result.per_center_speed, original_speed, atol=1e-8)
+
+    # ... and the speeds the estimator saw are exactly those of the matched
+    # draw for this config's seed -- i.e. the null really is
+    # `matched_gaussian_sample`'s output and not some other vector. The
+    # moment-MATCHING contract of that draw is not re-checked here: this toy
+    # has ~12 centers, where a matched draw's mean scatters by sigma/sqrt(12),
+    # so it is pinned at large N in
+    # `tests/test_velocity_centered_dipole.py::test_matched_gaussian_sample_matches_each_column_of_a_vector_sample`
+    # instead. This test's job is the speed/position half.
+    drawn_v = matched_gaussian_sample(centers.v_centers, cfg.velocity_gaussian_null_seed)
+    np.testing.assert_allclose(
+        np.linalg.norm(drawn_v, axis=1), gaussian_null_result.per_center_speed, atol=1e-8
+    )
+
+    # Position untouched: identical occupancy against the ORIGINAL velocities.
+    reference_result = velocity_frame_shell_dipole(
+        s_centers=centers.s_centers,
+        v_centers=centers.v_centers,
+        s_tracers=s_tracers,
+        shell_edges=cfg.shells.shell_edges,
+        sub_volume_radius=cfg.sub_volume_radius,
+        observer=observer,
+    )
+    np.testing.assert_array_equal(
+        gaussian_null_result.per_center_count, reference_result.per_center_count
+    )
 
 
 # ---------------------------------------------------------------------------

@@ -21,7 +21,7 @@ This is the single source of truth consumed by
 `notebooks/07_redshift_space_comparison.ipynb` (CLAUDE.md's "one library, two
 thin consumers" model), mirroring `dvcorr.pipeline.velocity_frame_comparison`'s
 structure closely. It reuses `RunConfig` (subclassed below), `draw_candidates`,
-`global_number_density`, `NormalizedDipole`, `normalize_result`,
+`box_number_density`, `NormalizedDipole`, `normalize_result`,
 `shell_dipole_norm_scale`, `SharedCenterSet`, and `select_shared_centers` from
 `dvcorr.pipeline.velocity_centered` rather than duplicating any of them; it
 does NOT reuse `load_and_carve` (see `load_and_carve_buffered` below for why
@@ -111,33 +111,44 @@ the real-space run relative to the currently published single-frame result
 That is the correct price of a like-for-like comparison, paid deliberately,
 not a regression to "fix" by loosening the redshift-space margin back down.
 
-n_bar normalization -- read this before touching `global_number_density`'s call site
+n_bar normalization -- read this before touching the `n_bar` argument
 ------------------------------------------------------------------------------------------
-`scripts/plot_velocity_centered_dipole.py`'s single-frame script computes
-`n_bar` from `load_and_carve`'s plain-radius output, where the tracer count
-and the radius agree (both R_sub). This pipeline's tracer array
-(`build_tracer_spaces`'s `s_tracers_real`/`s_tracers_redshift`) is instead
-built from a BUFFERED carve (`load_and_carve_buffered`) then restricted back
-to R_sub -- so `n_bar` MUST be computed from the POST-RESTRICTION count
-(`TracerSpaces.n_real_inside`), never from the buffered count, or n_bar
-inflates by ~(R_sub + v_margin)**3 / R_sub**3 (~32% at v_margin's "max"
-default) and the normalized zeta_hat is silently suppressed by the same
-~32% in BOTH runs, with no shape change to reveal it -- a flat, invisible,
-32% bug.
+`n_bar` is the mean halo density of the WHOLE BOX,
+`dvcorr.pipeline.velocity_centered.box_number_density(carve.n_total)` --
+the catalog's post-cut halo count over BOX_SIZE**3. It is supplied by the
+CALLER (`normalize_redshift_comparison`'s `n_bar` parameter), exactly as
+`dvcorr.pipeline.velocity_frame_comparison.normalize_comparison` takes it,
+so the normalization stays a visible call-site choice rather than something
+a stage function derives on its own.
 
-DECISION (already made, implemented as stated): both runs use the SAME,
-REAL-space n_bar (`normalize_redshift_comparison`). The tracer population is
-identical between runs -- only its placement differs -- and the analysis
-volume (R_sub) is unchanged; a PER-RUN n_bar would fold the small
-real-vs-redshift boundary-flux difference into the amplitude ratio, which is
-the headline quantity this whole comparison exists to measure. Both realized
-counts (`n_real_inside_r_sub`, `n_redshift_inside_r_sub`) are logged and
-returned on `RedshiftSpaceComparison` so the flux is visible rather than
-hidden inside a ratio: with the buffer capturing inflow and outflow both,
-the two counts are EXPECTED to agree to well under a percent (see
-`build_tracer_spaces`'s docstring); a larger gap means the buffer radius
-(`v_margin`) is misconfigured, not that RSD moved a meaningfully large
-fraction of the tracer mass.
+That definition is deliberately blind to the carve, which is what makes it
+safe HERE in particular. This pipeline's tracer array
+(`build_tracer_spaces`'s `s_tracers_real`/`s_tracers_redshift`) is built
+from a BUFFERED carve (`load_and_carve_buffered`) and then restricted back
+to R_sub, so under the OLD sub-volume normalization (carved count / carve
+volume) the count and the radius could disagree: feeding the buffered count
+against the plain radius inflated n_bar by ~(R_sub + v_margin)**3 /
+R_sub**3 (~32% at v_margin's "max" default) and suppressed the normalized
+zeta_hat by the same ~32% in BOTH runs, flat in r, with no shape change to
+reveal it. A box-wide n_bar has no radius to mismatch a count against, so
+that failure mode is gone by construction -- the only thing that can still
+be wrong is passing a count from a DIFFERENT tracer population (a different
+catalog or mass cut) than the one in the shells.
+
+DECISION (unchanged): both runs use the SAME n_bar. The tracer population is
+identical between runs -- only its placement differs -- so a PER-RUN n_bar
+would fold the small real-vs-redshift boundary-flux difference into the
+amplitude ratio, which is the headline quantity this whole comparison exists
+to measure. Under the box-wide definition this is now automatic (both runs
+read the same catalog, so both would compute the same number anyway), but
+the single shared argument keeps it explicit. Both realized counts
+(`n_real_inside_r_sub`, `n_redshift_inside_r_sub`) are still logged and
+returned on `RedshiftSpaceComparison` so the flux stays visible -- they are
+a DIAGNOSTIC now, no longer an input to the normalization: with the buffer
+capturing inflow and outflow both, the two counts are EXPECTED to agree to
+well under a percent (see `build_tracer_spaces`'s docstring); a larger gap
+means the buffer radius (`v_margin`) is misconfigured, not that RSD moved a
+meaningfully large fraction of the tracer mass.
 """
 
 from __future__ import annotations
@@ -176,16 +187,20 @@ from dvcorr.pipeline.velocity_centered import (
     SharedCenterSet,
     _binning_description,
     _load_all_halos,
-    global_number_density,
     normalize_result,
     select_shared_centers,
     shell_dipole_norm_scale,
 )
 from dvcorr.pipeline.velocity_centered import _COLOR_SIGNAL as _COLOR_REAL
 
-_COLOR_REAL_NULL = "#a9c9ee"       # lighter tint of _COLOR_REAL: the real-space run's own null
+_COLOR_REAL_NULL = "#a9c9ee"       # lighter tint of _COLOR_REAL: the real-space run's u-shuffle null
 _COLOR_REDSHIFT = "#1b9e77"        # distinct hue for the redshift-space run's curves
-_COLOR_REDSHIFT_NULL = "#a8ddc9"   # lighter tint of _COLOR_REDSHIFT: the redshift-space run's null
+_COLOR_REDSHIFT_NULL = "#a8ddc9"   # lighter tint of _COLOR_REDSHIFT: the redshift run's u-shuffle null
+# Each run's SECOND null, the matched-Gaussian one: a darker, desaturated
+# companion to that run's null tint, so it groups with its own run first and
+# reads against that run's u-shuffle null second.
+_COLOR_REAL_GAUSSIAN = "#5b7fa6"       # real space, matched-Gaussian null
+_COLOR_REDSHIFT_GAUSSIAN = "#4f8f77"   # redshift space, matched-Gaussian null
 
 
 @dataclass
@@ -221,6 +236,15 @@ class RedshiftSpaceRunConfig(RunConfig):
         (`dvcorr.pipeline.velocity_centered.normalize_result`), kept DISTINCT
         from `shuffle_seed` (the real-space run's null) so the two nulls
         never silently share a permutation stream.
+    redshift_gaussian_null_seed : int
+        Seed for the redshift-space run's own matched-Gaussian null, the
+        second null `dvcorr.pipeline.velocity_centered.normalize_result`
+        builds. Stands to the inherited `gaussian_null_seed` (the real-space
+        run's) exactly as `redshift_shuffle_seed` stands to `shuffle_seed`:
+        four nulls reach the figure here, two per run, and no two of them
+        share a stream. See
+        `dvcorr.pipeline.velocity_centered.RunConfig.gaussian_null_seed` for
+        the full ladder.
     comparison_output_name : str
         Output filename for `make_redshift_comparison_figure`'s PNG, written
         under `PathsConfig().output_dir`.
@@ -237,6 +261,7 @@ class RedshiftSpaceRunConfig(RunConfig):
     v_margin_percentile: float = 99.9
     flip_guard_floor: float = FLIP_GUARD_FLOOR
     redshift_shuffle_seed: int = 45
+    redshift_gaussian_null_seed: int = 48
     comparison_output_name: str = "redshift_space_comparison.png"
     single_center_output_name: str = "redshift_space_single_center.png"
     example_center_index: int = 0
@@ -291,6 +316,14 @@ class BufferedCarve:
         `pos_core.shape[0]`.
     n_buffer : int
         `pos_buffer.shape[0]`.
+    n_total : int
+        Halos the catalog supplied over the WHOLE box, before either carve --
+        the same quantity `dvcorr.pipeline.velocity_centered.CarvedHalos
+        .n_total` holds, and the count `box_number_density` must be given to
+        build this pipeline's `n_bar` (`normalize_redshift_comparison`).
+        Carried as its own field rather than left to `catalog_mvir.size` so
+        the normalization's input is a named number, not a shape read off an
+        array kept for a different purpose.
     v_margin_kms : float
         The `v_margin` statistic actually used, km/s.
     v_margin_mpc : float
@@ -316,6 +349,7 @@ class BufferedCarve:
     vel_core: np.ndarray
     n_core: int
     n_buffer: int
+    n_total: int
     mvir_core: np.ndarray
     is_distinct_core: np.ndarray
     catalog_mvir: np.ndarray
@@ -394,6 +428,7 @@ def load_and_carve_buffered(cfg: RedshiftSpaceRunConfig, paths: PathsConfig) -> 
         vel_core=vel_core,
         n_core=n_core,
         n_buffer=n_buffer,
+        n_total=halos.n_total,
         v_margin_kms=v_margin_kms,
         v_margin_mpc=v_margin_mpc,
         buffered_radius=buffered_radius,
@@ -436,7 +471,7 @@ class TracerSpaces:
         the R_sub restriction.
     n_real_inside : int
         `s_tracers_real.shape[0]` -- the count `normalize_redshift_comparison`
-        uses for the SHARED, real-space n_bar (see this module's docstring).
+        uses for the boundary-flux diagnostic (see this module's docstring).
     n_redshift_inside : int
         `s_tracers_redshift.shape[0]` -- logged alongside `n_real_inside` as
         the boundary-flux diagnostic; NOT used for n_bar.
@@ -825,7 +860,7 @@ def run_both_spaces(
 
 
 # ---------------------------------------------------------------------------
-# Stage 5: normalize (shared, real-space n_bar)
+# Stage 5: normalize (shared, box-wide n_bar)
 # ---------------------------------------------------------------------------
 
 
@@ -836,15 +871,16 @@ class RedshiftSpaceComparison:
     Attributes
     ----------
     real : NormalizedDipole
-        Real-space normalized dipole/monopole/null, from `normalize_result`
-        with `cfg.shuffle_seed`.
+        Real-space normalized dipole/monopole/nulls, from `normalize_result`
+        with `cfg.shuffle_seed` and `cfg.gaussian_null_seed`.
     redshift : NormalizedDipole
-        Redshift-space normalized dipole/monopole/null, from
-        `normalize_result` with `cfg.redshift_shuffle_seed`.
+        Redshift-space normalized dipole/monopole/nulls, from
+        `normalize_result` with `cfg.redshift_shuffle_seed` and
+        `cfg.redshift_gaussian_null_seed`.
     shell_centers : ndarray, shape (B,)
         Shared by both spaces (identical `shell_edges`).
     n_bar : float
-        The SHARED, real-space n_bar both curves were normalized with (see
+        The SHARED, box-wide n_bar both curves were normalized with (see
         this module's docstring, "n_bar normalization").
     n_real_inside_r_sub : int
     n_redshift_inside_r_sub : int
@@ -863,30 +899,40 @@ class RedshiftSpaceComparison:
 def normalize_redshift_comparison(
     cfg: RedshiftSpaceRunConfig,
     results: RedshiftSpaceFrameResults,
+    n_bar: float,
 ) -> RedshiftSpaceComparison:
-    """Normalize both runs with the SAME, real-space n_bar.
+    """Normalize both runs with the SAME, box-wide n_bar.
 
-    n_bar = `dvcorr.pipeline.velocity_centered.global_number_density(
-    results.tracers.n_real_inside, cfg.sub_volume_radius)` -- the
-    POST-RESTRICTION real-space count, never the buffered count (see this
-    module's docstring's n_bar section for the ~32% silent error that
-    substitution would cause). Both runs use this SAME n_bar (the decision
-    documented at the top of this module) -- a per-run n_bar would fold the
-    boundary-flux difference into the headline amplitude ratio.
+    Both runs use the ONE `n_bar` handed in (the decision documented at the
+    top of this module) -- a per-run n_bar would fold the boundary-flux
+    difference into the headline amplitude ratio. The caller builds it with
+    `dvcorr.pipeline.velocity_centered.box_number_density(carve.n_total)`,
+    the catalog's halo count over the whole box; see this module's n_bar
+    section for why that definition, unlike the carved-count-over-carve-volume
+    one it replaced, cannot be silently mismatched against this pipeline's
+    buffered carve.
 
     Parameters
     ----------
     cfg : RedshiftSpaceRunConfig
     results : RedshiftSpaceFrameResults
+    n_bar : float
+        Mean halo number density over the whole box, e.g. from
+        `dvcorr.pipeline.velocity_centered.box_number_density`.
 
     Returns
     -------
     RedshiftSpaceComparison
     """
-    n_bar = global_number_density(results.tracers.n_real_inside, cfg.sub_volume_radius)
-
-    real = normalize_result(results.real_result, n_bar, cfg.shuffle_seed)
-    redshift = normalize_result(results.redshift_result, n_bar, cfg.redshift_shuffle_seed)
+    real = normalize_result(
+        results.real_result, n_bar, cfg.shuffle_seed, cfg.gaussian_null_seed
+    )
+    redshift = normalize_result(
+        results.redshift_result,
+        n_bar,
+        cfg.redshift_shuffle_seed,
+        cfg.redshift_gaussian_null_seed,
+    )
 
     return RedshiftSpaceComparison(
         real=real,
@@ -967,8 +1013,9 @@ def _ids_by_shell(
     A single `query_ball_point` at the outermost edge, then binned by radius
     exactly as `dvcorr.estimators.shell_dipole.velocity_centered_shell_dipole`
     bins its own tracers (left-closed/right-open, outer edge folded into the
-    last shell) -- so this diagnostic's shell membership matches the
-    estimator's own binning contract precisely.
+    last shell, the r = 0 self-pair excluded on `r_mag > 0`) -- so this
+    diagnostic's shell membership matches the estimator's own binning
+    contract precisely.
 
     Returns SORTED ARRAYS, not Python sets. The set-based version this
     replaces built its result with a per-element `.add(int(...))` loop, which
@@ -1000,7 +1047,12 @@ def _ids_by_shell(
         return empty
 
     r_mag = np.linalg.norm(tracer_positions[idx] - center, axis=1)
-    in_range = (r_mag >= shell_edges[0]) & (r_mag <= shell_edges[-1])
+    # r_mag > 0 drops the center's own self-pair, matching the estimator term
+    # for term -- without it this diagnostic would report a shell membership
+    # the estimator does not count, and the "net change" of a bin whose only
+    # occupant is the self-pair would be pure artefact. A no-op unless
+    # shell_edges[0] == 0 (`dvcorr.config.ShellConfig.include_zero_bin`).
+    in_range = (r_mag > 0.0) & (r_mag >= shell_edges[0]) & (r_mag <= shell_edges[-1])
     bin_index = np.digitize(r_mag, shell_edges) - 1
     bin_index = np.where(bin_index == n_bins, n_bins - 1, bin_index)
 
@@ -1147,10 +1199,18 @@ def make_redshift_comparison_figure(
     scale gap to hide behind a twin axis.
 
     TOP panel: `zeta_hat` for both spaces, each with its own across-center
-    SEM band and its own velocity-shuffle null (dashed, lighter tint) --
-    `real`'s null uses `cfg.shuffle_seed`, `redshift`'s uses
-    `cfg.redshift_shuffle_seed` (distinct streams,
-    `normalize_redshift_comparison`). The SEM-band independence caveat is the
+    SEM band and its own TWO nulls -- the velocity shuffle dashed in a
+    lighter tint, the matched-Gaussian null dotted in a darker one, grouped
+    by space rather than by null type. `real`'s pair uses `cfg.shuffle_seed`
+    / `cfg.gaussian_null_seed`, `redshift`'s uses
+    `cfg.redshift_shuffle_seed` / `cfg.redshift_gaussian_null_seed` (four
+    distinct streams, `normalize_redshift_comparison`). Within a space the
+    two nulls are matched on their first two moments by construction
+    (`dvcorr.pipeline.velocity_centered.matched_gaussian_sample`), so their
+    separation isolates the non-Gaussianity of the u distribution -- and
+    since u_alpha is IDENTICAL between the two spaces (n_hat invariance, see
+    the bottom panel), any difference between the two spaces' Gaussian-vs-
+    shuffle gaps is occupancy, not velocities. The SEM-band independence caveat is the
     same as every other stacked estimate in this project
     (`dvcorr.estimators.shell_dipole.center_standard_error`'s docstring):
     centers sharing tracers or large-scale velocity coherence are not
@@ -1196,6 +1256,10 @@ def make_redshift_comparison_figure(
         r, comparison.real.zeta_hat_shuffle, "o--", color=_COLOR_REAL_NULL,
         label="real null (u-shuffle)",
     )
+    ax_dipole.plot(
+        r, comparison.real.zeta_hat_gaussian, "o:", color=_COLOR_REAL_GAUSSIAN,
+        label="real null (gaussian)",
+    )
 
     ax_dipole.fill_between(
         r, comparison.redshift.zeta_hat - comparison.redshift.sem,
@@ -1209,6 +1273,10 @@ def make_redshift_comparison_figure(
     ax_dipole.plot(
         r, comparison.redshift.zeta_hat_shuffle, "s--", color=_COLOR_REDSHIFT_NULL,
         label="redshift null (u-shuffle)",
+    )
+    ax_dipole.plot(
+        r, comparison.redshift.zeta_hat_gaussian, "s:", color=_COLOR_REDSHIFT_GAUSSIAN,
+        label="redshift null (gaussian)",
     )
 
     ax_dipole.axhline(0.0, color=_COLOR_ZERO_LINE, lw=_ZERO_LINE_WIDTH)
@@ -1276,7 +1344,7 @@ def make_single_center_figure(
     cfg : RedshiftSpaceRunConfig
     results : RedshiftSpaceFrameResults
     n_bar : float
-        The SAME shared, real-space n_bar used for the center-averaged
+        The SAME shared, box-wide n_bar used for the center-averaged
         figure (e.g. `RedshiftSpaceComparison.n_bar`) -- kept identical so
         the two figures' dipole y-axes are on the same normalization.
 

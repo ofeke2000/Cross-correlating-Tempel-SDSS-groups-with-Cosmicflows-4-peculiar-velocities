@@ -28,6 +28,7 @@ import matplotlib
 matplotlib.use("Agg")
 
 import numpy as np
+import pytest
 
 from dvcorr import conventions
 from dvcorr.config import SPACING_LINEAR, SPACING_LOG, ShellConfig
@@ -36,7 +37,7 @@ from dvcorr.pipeline.velocity_centered import (
     NormalizedDipole,
     RunConfig,
     VelocityCenteredShellDipoleResult,
-    global_number_density,
+    box_number_density,
     make_figure,
     normalize_result,
 )
@@ -64,8 +65,8 @@ def _tiny_result_and_normalized(
         shell_edges=shells.shell_edges,
         sub_volume_radius=conventions.MAX_ANALYSIS_RADIUS,
     )
-    n_bar = global_number_density(1, conventions.MAX_ANALYSIS_RADIUS)
-    normalized = normalize_result(result, n_bar, shuffle_seed=1)
+    n_bar = box_number_density(1)
+    normalized = normalize_result(result, n_bar, shuffle_seed=1, gaussian_null_seed=2)
     return result, normalized
 
 
@@ -75,6 +76,17 @@ def _log_shells() -> ShellConfig:
 
 def _linear_shells() -> ShellConfig:
     return ShellConfig(min_radius=20.0, max_radius=150.0, radii_step=10.0, spacing=SPACING_LINEAR)
+
+
+def _zero_bin_shells() -> ShellConfig:
+    """The production default: the log ladder plus the [0, 1) inner bin."""
+    return ShellConfig(
+        min_radius=1.0,
+        max_radius=64.0,
+        spacing=SPACING_LOG,
+        n_bins=12,
+        include_zero_bin=True,
+    )
 
 
 def test_make_figure_log_shells_gives_linear_radial_axis():
@@ -121,3 +133,29 @@ def test_make_figure_linear_shells_gives_linear_dipole_and_monopole_yaxes():
 
     assert ax_dipole.get_yscale() == "linear"
     assert ax_mono.get_yscale() == "linear"
+
+
+def test_make_figure_plots_every_shell_including_the_zero_bin():
+    """A zero innermost edge must be plottable.
+
+    `shell_edges[0] == 0` is the one thing a log AXIS could not have
+    accommodated; on the cartesian axes this pipeline actually uses it is
+    ordinary, and the [0, 1) bin's abscissa is the finite, strictly positive
+    `volume_weighted_shell_radii` value 0.75. This test pins that the figure
+    carries a point for it -- i.e. that B = n_bins + 1 shells reach the plot,
+    not the n_bins the config's `n_bins` field names.
+    """
+    shells = _zero_bin_shells()
+    cfg = RunConfig(sub_volume_radius=conventions.MAX_ANALYSIS_RADIUS, shells=shells)
+    result, normalized = _tiny_result_and_normalized(shells)
+
+    assert result.shell_edges[0] == 0.0
+    assert result.shell_edges.size == shells.n_bins + 2
+
+    fig = make_figure(cfg, result, normalized)
+    ax_dipole, ax_mono = fig.axes
+
+    assert ax_dipole.get_xscale() == "linear"
+    x_plotted = ax_dipole.lines[0].get_xdata()
+    assert len(x_plotted) == shells.n_bins + 1
+    assert x_plotted[0] == pytest.approx(0.75 * shells.min_radius)

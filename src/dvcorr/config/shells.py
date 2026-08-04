@@ -53,7 +53,12 @@ def linear_shell_edges(min_radius: float, max_radius: float, radii_step: float) 
     return np.minimum(edges, conventions.MAX_ANALYSIS_RADIUS)
 
 
-def log_shell_edges(min_radius: float, max_radius: float, n_bins: int) -> np.ndarray:
+def log_shell_edges(
+    min_radius: float,
+    max_radius: float,
+    n_bins: int,
+    include_zero_bin: bool = False,
+) -> np.ndarray:
     """Strictly increasing radial shell edges, log spacing, shape (B + 1,).
 
     `n_bins` shells geometrically spaced between `min_radius` and
@@ -66,8 +71,44 @@ def log_shell_edges(min_radius: float, max_radius: float, n_bins: int) -> np.nda
 
     Caller obligation: `min_radius` must be strictly positive -- `geomspace`
     is undefined at zero. Enforced at `ShellConfig.__post_init__`, not here.
+
+    Parameters
+    ----------
+    min_radius, max_radius : float
+        Innermost and outermost LOG edge, h^-1 Mpc. `min_radius > 0`.
+    n_bins : int
+        Number of geometrically spaced shells between them.
+    include_zero_bin : bool, default False
+        Prepend a single linear inner bin `[0, min_radius)`, giving
+        `n_bins + 2` edges (`B = n_bins + 1` shells) with `edges[0] == 0.0`
+        exactly. `min_radius` keeps its meaning -- the innermost LOG edge --
+        so the geometric ladder above it is bit-for-bit unchanged and the
+        zero bin is purely additive.
+
+        A log ladder cannot reach zero (that is the whole content of the
+        `min_radius > 0` requirement above), so the r < `min_radius` region
+        is otherwise not measured at all. This one bin covers it, at the
+        price of being the only non-geometric shell in the array: it is
+        `min_radius` wide where its neighbor is `min_radius * (q - 1)` wide,
+        and on a shared plot it is the one point whose horizontal extent does
+        not scale with r. Nothing downstream cares -- every consumer takes
+        the edge ARRAY, never a ratio or a width (see `ShellConfig`) -- but a
+        reader of the figure should know.
+
+        Caller obligation, and the reason this is opt-in rather than always
+        on: `edges[0] == 0` re-admits the r = 0 COINCIDENT PAIR, which the
+        estimators exclude explicitly on `r_mag > 0` (see
+        `dvcorr.geometry.unit_vector`'s Notes -- a zero-length separation has
+        no direction and would otherwise enter the monopole as a pure
+        self-correlation). That filter lives in the estimators, not here.
+
+    Returns
+    -------
+    ndarray, shape (n_bins + 1,), or (n_bins + 2,) with `include_zero_bin`
     """
     edges = np.geomspace(min_radius, max_radius, n_bins + 1)
+    if include_zero_bin:
+        edges = np.concatenate(([0.0], edges))
     return np.minimum(edges, conventions.MAX_ANALYSIS_RADIUS)
 
 
@@ -169,6 +210,22 @@ class ShellConfig:
         Number of shells for `SPACING_LOG`. Only read when
         `spacing == SPACING_LOG`; inert (but still validated as well-formed)
         under `SPACING_LINEAR`.
+    include_zero_bin : bool
+        Prepend the inner bin `[0, min_radius)` to the log ladder, so
+        `shell_edges` has `n_bins + 2` entries and `B = n_bins + 1` shells;
+        see `log_shell_edges`. Only read when `spacing == SPACING_LOG`, and
+        inert under `SPACING_LINEAR` for the same reason `n_bins` is: a
+        linear binning can already start at zero by setting
+        `min_radius = 0.0`, so there is nothing for the flag to add there.
+
+        Note that `min_radius` then no longer means "innermost edge" -- it
+        means "innermost LOG edge", and `shell_edges[0]` is 0.0. Anything
+        reading `shell_edges[0]` as the analysis floor (figure titles, the
+        estimators' `in_range` masks) sees zero and must be able to cope
+        with it; `volume_weighted_shell_radii` already can (it gives the
+        full-sphere `0.75 * min_radius` for that bin), and the estimators
+        exclude the r = 0 coincident pair explicitly rather than relying on
+        a positive innermost edge to do it for them.
     """
 
     min_radius: float = 20.0
@@ -177,6 +234,7 @@ class ShellConfig:
     sigma_star: float = 250.0
     spacing: str = SPACING_LINEAR
     n_bins: int = 12
+    include_zero_bin: bool = False
 
     def __post_init__(self) -> None:
         if self.min_radius < 0.0:
@@ -205,6 +263,11 @@ class ShellConfig:
             raise ValueError(
                 f"ShellConfig: n_bins must be a positive integer, got {self.n_bins!r}."
             )
+        if not isinstance(self.include_zero_bin, bool):
+            raise ValueError(
+                f"ShellConfig: include_zero_bin must be a bool, got "
+                f"{self.include_zero_bin!r}."
+            )
         if self.spacing == SPACING_LOG and self.min_radius <= 0.0:
             raise ValueError(
                 f"ShellConfig: min_radius must be > 0 for spacing={SPACING_LOG!r}, "
@@ -220,9 +283,17 @@ class ShellConfig:
         `shell_edges` argument. Dispatches on `spacing` to
         `linear_shell_edges` or `log_shell_edges`; see those docstrings for
         the construction details.
+
+        B is `n_bins` under `SPACING_LOG`, or `n_bins + 1` when
+        `include_zero_bin` adds the `[0, min_radius)` inner shell.
         """
         if self.spacing == SPACING_LOG:
-            return log_shell_edges(self.min_radius, self.max_radius, self.n_bins)
+            return log_shell_edges(
+                self.min_radius,
+                self.max_radius,
+                self.n_bins,
+                include_zero_bin=self.include_zero_bin,
+            )
         return linear_shell_edges(self.min_radius, self.max_radius, self.radii_step)
 
     @property

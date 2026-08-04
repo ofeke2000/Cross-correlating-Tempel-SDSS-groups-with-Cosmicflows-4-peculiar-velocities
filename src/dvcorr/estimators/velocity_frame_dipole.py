@@ -443,8 +443,9 @@ def velocity_frame_shell_dipole(
     Structure: this function copies `velocity_centered_shell_dipole`'s
     validation block, KDTree loop, and binning semantics EXACTLY (left-
     closed/right-open shells, the outermost edge folded into the last shell,
-    below-innermost-edge tracers excluded, `np.digitize` + `np.bincount`, one
-    `cKDTree` built on `s_tracers` and reused across all surviving centers).
+    below-innermost-edge tracers excluded, the r = 0 self-pair excluded
+    explicitly on `r_mag > 0`, `np.digitize` + `np.bincount`, one `cKDTree`
+    built on `s_tracers` and reused across all surviving centers).
     The ONLY differences are the axis (`z_hat_alpha` instead of
     `n_hat_V,alpha`), the scalar (`|v_alpha|` instead of `u_alpha`), and the
     additional `per_center_axis_angle` diagnostic -- everything else,
@@ -654,7 +655,14 @@ def velocity_frame_shell_dipole(
             r_vec, r_mag = pair_separation(s_alpha, s_near)
             cos_theta = mu_cosine(unit_vector(r_vec), z_hat[a])
 
-            in_range = (r_mag >= edges[0]) & (r_mag <= edges[-1])
+            # r_mag > 0 drops the center's own self-pair (centers are
+            # subsampled from the tracer array, so there is exactly one per
+            # center at zero separation, with no direction and hence a
+            # spurious cos_theta = 0). Identical term and identical rationale
+            # to `dvcorr.estimators.shell_dipole.velocity_centered_shell_dipole`;
+            # a no-op unless edges[0] == 0
+            # (`dvcorr.config.ShellConfig.include_zero_bin`).
+            in_range = (r_mag > 0.0) & (r_mag >= edges[0]) & (r_mag <= edges[-1])
             bin_index = np.digitize(r_mag, edges) - 1
             bin_index = np.where(bin_index == n_bins, n_bins - 1, bin_index)
 
