@@ -54,7 +54,7 @@ extra (`pytest`), and `testpaths = ["tests"]`. `requirements.txt` is `-e .[dev]`
   simulation-validation cross-check) **and** the velocity-centered estimator
   `velocity_centered_shell_dipole` (ζ, Nusser 2017 eq. 23–24, the production target),
   plus shared helpers (`real_y10`, `core_center_mask`, `expected_shell_occupancy`,
-  `center_standard_error`).
+  `center_standard_error`, `per_center_shell_counts`).
 - `velocity_frame_dipole.py` **[done]** — `velocity_frame_shell_dipole`: an observer-free
   variant of the velocity-centered estimator (axis = full 3-D flow direction instead of
   its radial projection). Reuses `core_center_mask`/`real_y10` from `shell_dipole.py`.
@@ -75,11 +75,16 @@ extra (`pytest`), and `testpaths = ["tests"]`. `requirements.txt` is `-e .[dev]`
   below build on this module rather than duplicating it.
 - `velocity_frame_comparison.py` **[done]** — observer-frame ζ₁ vs. the observer-free
   velocity-frame dipole, on an identical shared center set; the random-axis null
-  (`run_random_axis_null`) and the two comparison figures.
+  (`random_axis_null_dipoles`) and the two comparison figures.
 - `redshift_space_comparison.py` **[done]** — the unchanged `velocity_centered_shell_dipole`
   run twice (real vs. redshift-space positions, `dvcorr.redshift_space`), on a shared
   center set built with a widened real-position margin; the buffered tracer carve,
   membership diagnostics, and the two comparison figures.
+- `halo_class_comparison.py` **[done]** — both comparisons above re-run with the centers
+  restricted by halo class (subhalo vs. parent): the class definitions
+  (`center_class_mask`), the per-class orchestration, the two class-contrast figures, and
+  the sub-h⁻¹-Mpc occupancy histogram (`class_shell_occupancy`).
+  Requires `catalog_conversion`'s `num_of_subhalos` column, so it runs on `full` only.
 
 ### `src/dvcorr/selection/` **[empty]**
 
@@ -96,6 +101,8 @@ repo's `overdensity.py` (periodic KDTree overdensity), `data_loader.py`.
 - `plot_velocity_centered_dipole.py` **[done]** — drives `pipeline.velocity_centered`, saves one PNG.
 - `plot_velocity_frame_comparison.py` **[done]** — drives `pipeline.velocity_frame_comparison`, saves two PNGs.
 - `plot_redshift_space_comparison.py` **[done]** — drives `pipeline.redshift_space_comparison`, saves two PNGs.
+- `plot_halo_class_comparison.py` **[done]** — drives `pipeline.halo_class_comparison`; one
+  catalog load, four runs (two comparisons × two center classes), saves seven PNGs.
 - `convert_mdpl2_catalog.py` **[done]** — drives `pipeline.catalog_conversion`; run once per
   catalog before any pipeline run.
 
@@ -120,6 +127,8 @@ none contain algorithmic content (see Cross-cutting contracts below).
   on tiny synthetic CSVs.
 - `test_catalog_equivalence.py` **[done]** — the superset relation between the two
   catalogs, against the real files; skipped when they are absent.
+- `test_halo_class_comparison.py` **[done]** — class disjointness, the unknown-count
+  sentinel guard, and both class-contrast figures, on synthetic arrays.
 - `test_mass_diagnostics.py` **[done]** — mass-funnel construction guards and figure build.
 - `test_plot_wiring.py` **[done]** — pins the log/linear axis-scale wiring.
 - `__init__.py` — present so `from tests.test_geometry import …` resolves.
@@ -135,6 +144,9 @@ none contain algorithmic content (see Cross-cutting contracts below).
   `scripts/plot_velocity_frame_comparison.py`; executed, outputs kept.
 - `07_redshift_space_comparison.ipynb` **[done]** — exploratory twin of
   `scripts/plot_redshift_space_comparison.py`; not executed, outputs cleared.
+- `08_halo_class_comparison.ipynb` **[done]** — exploratory twin of
+  `scripts/plot_halo_class_comparison.py`; both comparisons for both center classes,
+  seven figures; executed on the full catalog, outputs kept.
 
 ### `Imports from old repo/` — reference dump, read only
 
@@ -177,6 +189,18 @@ center. The term is unconditional, not gated on `shell_edges[0] == 0`, so the gu
 holds for any binning and cannot be undone by a config change. A new binning site inherits
 this obligation.
 
+**A null is R realizations, never one.** Every null in the package is reported as an
+across-realization *mean* with the across-realization *standard deviation* as its band
+(`NormalizedDipole.zeta_hat_shuffle` / `.null_spread_shuffle`), built from
+`RunConfig.n_null_realizations` child seeds spawned off the config's null seed by
+`null_realization_seeds`. `normalize_stacked_dipole` takes `(R, B)` stacks and rejects a
+single `(B,)` realization outright. This is affordable only because no null costs an
+estimator pass: the observer frame recombines `per_center_amplitude`, and the velocity
+frame recombines `VelocityFrameShellDipoleResult.per_center_direction_sum` — the per-shell
+vector sum Σ n̂_i, which projects exactly onto any axis because Y₁₀ is linear in the
+direction cosine. A new null construction inherits both halves: build it as a
+recombination, and hand up R of them.
+
 **n̄ is the box mean, not the carve's density.** The eq. 24 denominator
 `expected_shell_occupancy(n_bar, edges)` = n̄·V_b is fed one n̄ throughout:
 `pipeline/velocity_centered.box_number_density(n_total)` — the catalog's post-cut halo
@@ -201,6 +225,18 @@ from them, and both catalogs are written with one identical schema so the loader
 single code path. `CATALOG_FULL` filtered at `mvir ≥ 1e12` with subhalos excluded
 reproduces `CATALOG_MVIR12` exactly — asserted by `tests/test_catalog_equivalence.py`,
 which is what keeps the two interchangeable.
+
+One column is derivable from only one of them. `num_of_subhalos` (how many halos name this
+one as their `pid`) cannot be read off the row it describes — the answer lives in every
+*other* row — so conversion tallies the whole `pid` column in a separate first pass. A
+catalog pre-cut to `pid == -1` has no subhalos left to tally, so `CATALOG_MVIR12` carries the
+`NUM_OF_SUBHALOS_UNKNOWN` sentinel rather than a `0` that would falsely assert its halos host
+none. The shared-schema claim above still holds — both files have the column, at the same
+dtype — but its *contents* are meaningful in `CATALOG_FULL` alone, and
+`pipeline/halo_class_comparison.py` is the only consumer, refusing the other catalog by name.
+Because the sentinel is the one place the two files disagree where both could otherwise
+answer, adding any further derived column must resolve the same question: is it a fact about
+the row, or about the catalog the row came from?
 
 **Box coordinates are half-open: [0, `BOX_SIZE`).** Rockstar emits a small number of halos
 with a coordinate at exactly `BOX_SIZE` (196 rows in the raw full catalog, 0 in the pre-cut

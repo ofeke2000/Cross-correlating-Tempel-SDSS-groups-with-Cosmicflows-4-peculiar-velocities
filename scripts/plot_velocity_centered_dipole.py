@@ -91,7 +91,13 @@ def main() -> None:
     )
 
     n_bar = box_number_density(carved.n_total)
-    normalized = normalize_result(result, n_bar, cfg.shuffle_seed, cfg.gaussian_null_seed)
+    normalized = normalize_result(
+        result,
+        n_bar,
+        cfg.shuffle_seed,
+        cfg.gaussian_null_seed,
+        cfg.n_null_realizations,
+    )
 
     fig = make_figure(cfg, result, normalized)
 

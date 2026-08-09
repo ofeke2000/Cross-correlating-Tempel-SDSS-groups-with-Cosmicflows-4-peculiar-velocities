@@ -78,6 +78,7 @@ from dvcorr.pipeline.velocity_centered import (
     SharedCenterSet,
     _binning_description,
     matched_gaussian_sample,
+    null_realization_seeds,
     normalize_result,
     normalize_stacked_dipole,
     select_shared_centers,
@@ -123,12 +124,12 @@ class ComparisonRunConfig(RunConfig):
     angle_diagnostic_output_name : str
         Output filename for `make_angle_diagnostic_figure`'s PNG.
     axis_null_seed : int
-        Seed for `run_random_axis_null`'s isotropic random directions, kept
+        Base seed for `random_axis_null_dipoles`' isotropic directions, kept
         DISTINCT from both `seed` (candidate subsampling) and `shuffle_seed`
         (the observer frame's velocity-shuffle null) so the random-axis
         null's randomness never silently reuses either of those streams.
     velocity_gaussian_null_seed : int
-        Seed for `run_gaussian_velocity_null`'s matched-Gaussian velocity
+        Base seed for `gaussian_velocity_null_dipoles`' matched-Gaussian velocity
         draw -- the velocity frame's SECOND null. Distinct from
         `axis_null_seed` (this frame's other null) and from the inherited
         `gaussian_null_seed` (the OBSERVER frame's matched-Gaussian null,
@@ -161,7 +162,7 @@ def run_both_frames(
     s_tracers: np.ndarray,
     observer: np.ndarray,
 ) -> FrameRunResults:
-    """Run both estimators, plus the velocity frame's random-axis null.
+    """Run both estimators, plus the velocity frame's two nulls.
 
     Calls `velocity_centered_shell_dipole` and `velocity_frame_shell_dipole`
     on the IDENTICAL `centers.s_centers` / `centers.v_centers` arrays, with
@@ -175,14 +176,14 @@ def run_both_frames(
     results ROW-ALIGNED per center. This is asserted explicitly below rather
     than assumed.
 
-    Also runs BOTH of the velocity frame's nulls on the same `centers` --
-    `run_random_axis_null` and `run_gaussian_velocity_null` -- so a single
-    call to this function returns everything `normalize_comparison` needs.
-    That is four estimator passes in total, not two: each of this frame's
-    nulls needs its own, for the reason `run_random_axis_null` gives (the
-    axis is the velocity, so nothing can be recombined after the fact). The
-    observer frame's two nulls are free by comparison, built inside
-    `normalize_result` from arrays `obs_result` already carries.
+    Also builds BOTH of the velocity frame's nulls on the same `centers` --
+    `random_axis_null_dipoles` and `gaussian_velocity_null_dipoles` -- so a
+    single call to this function returns everything `normalize_comparison`
+    needs. TWO estimator passes in total, one per frame: every null in either
+    frame is a recombination of arrays its estimator already returned, which
+    is what makes `cfg.n_null_realizations` realizations of each affordable
+    (the observer frame recombines `per_center_amplitude`, the velocity frame
+    the cached `per_center_direction_sum`).
 
     Parameters
     ----------
@@ -234,48 +235,78 @@ def run_both_frames(
             "longer be compared row-for-row."
         )
 
-    vel_null_result = run_random_axis_null(cfg, centers, s_tracers, observer)
-    vel_gaussian_null_result = run_gaussian_velocity_null(cfg, centers, s_tracers, observer)
-
     return FrameRunResults(
         obs_result=obs_result,
         vel_result=vel_result,
-        vel_null_result=vel_null_result,
-        vel_gaussian_null_result=vel_gaussian_null_result,
+        vel_null_dipoles=random_axis_null_dipoles(cfg, centers, vel_result),
+        vel_gaussian_null_dipoles=gaussian_velocity_null_dipoles(cfg, centers, vel_result),
         centers=centers,
     )
 
 
-def run_random_axis_null(
+def _null_dipoles_from_velocities(
+    result: VelocityFrameShellDipoleResult,
+    v_null: np.ndarray,
+) -> np.ndarray:
+    """One null realization: restack the velocity-frame dipole on replacement v.
+
+    The recombination both of this frame's nulls are built from. Because
+    Y_10 is linear in the direction cosine, a center's shell amplitude for
+    ANY axis is a projection of the cached direction sum
+    (`VelocityFrameShellDipoleResult.per_center_direction_sum`),
+
+        |v| * A_alpha,b(v_hat) = sqrt(3/4pi) * (v_alpha . S_alpha,b)
+
+    -- the speed and the unit vector recombine into the raw replacement
+    vector, so the whole realization is one einsum over arrays the estimator
+    already returned. No KDTree query, no second estimator pass.
+
+    Parameters
+    ----------
+    result : VelocityFrameShellDipoleResult
+        The SIGNAL run, only for its geometry: `per_center_direction_sum`.
+        Nothing velocity-derived from it is used.
+    v_null : ndarray, shape (N_c, 3)
+        Replacement velocities, row-aligned with `result`'s centers.
+
+    Returns
+    -------
+    ndarray, shape (B,)
+        Raw stacked dipole for this realization, same units and convention as
+        `result.dipole`.
+    """
+    return np.sqrt(3.0 / (4.0 * np.pi)) * np.einsum(  # sqrt(3/4pi): Y_10 normalization
+        "ac,abc->b", v_null, result.per_center_direction_sum
+    )
+
+
+def random_axis_null_dipoles(
     cfg: ComparisonRunConfig,
     centers: SharedCenterSet,
-    s_tracers: np.ndarray,
-    observer: np.ndarray,
-) -> VelocityFrameShellDipoleResult:
+    result: VelocityFrameShellDipoleResult,
+) -> np.ndarray:
     """The velocity frame's null: randomize the AXIS, keep the speed and position.
 
-    v_null_alpha = |v_alpha| * random_unit_direction_alpha, with the random
-    directions drawn isotropically via
-    `unit_vector(rng.normal(size=(N_c, 3)))` and
-    `rng = np.random.default_rng(cfg.axis_null_seed)`. Reruns
-    `velocity_frame_shell_dipole` on `centers.s_centers` with this replacement
-    velocity array -- a second estimator pass, unlike the observer frame's
-    shuffle null, deliberately (see below).
+    Per realization, v_null_alpha = |v_alpha| * random_unit_direction_alpha,
+    with the directions drawn isotropically via
+    `unit_vector(rng.normal(size=(N_c, 3)))`. `cfg.axis_null_seed` names the
+    STREAM: it is spawned into `cfg.n_null_realizations` child seeds
+    (`dvcorr.pipeline.velocity_centered.null_realization_seeds`), one
+    realization each, and the stack of them is what gets normalized into a
+    mean and a band.
 
     WHY THIS NULL, AND NOT A SCALAR SHUFFLE -- important, read before
     "simplifying" this to match `normalize_result`'s pattern
     --------------------------------------------------------------------------
     `normalize_result`'s velocity-shuffle null undoes the observer frame's
-    axis flip (recovering the amplitude against the fixed +n_hat_V,alpha,
-    `np.sign(per_center_u) * per_center_amplitude`) and then permutes the
-    SIGNED `per_center_u` against it -- no second estimator pass needed. That
-    works because the observer frame's axis is only PARTIALLY velocity-
-    derived: it takes a sign from u_alpha and its line from the center's
-    POSITION, so once the sign is divided back out, what remains
-    (n_hat_V,alpha and hence the fixed-axis amplitude) is a pure function of
-    position and can be held fixed while the velocity is permuted. And the
-    permuted quantity is SIGNED, so it averages to ~0 across an isotropic
-    sample of centers and the recombined stack collapses.
+    axis flip (recovering the amplitude against the fixed +n_hat_V,alpha) and
+    then permutes the SIGNED `per_center_u` against it. That works because the
+    observer frame's axis is only PARTIALLY velocity-derived: it takes a sign
+    from u_alpha and its line from the center's POSITION, so once the sign is
+    divided back out, what remains is a pure function of position and can be
+    held fixed while the velocity is permuted. And the permuted quantity is
+    SIGNED, so it averages to ~0 across an isotropic sample of centers and the
+    recombined stack collapses.
 
     The velocity frame has NO such separation available. Its axis
     z_hat_alpha = v_hat_alpha is built ENTIRELY from the velocity vector that
@@ -285,72 +316,74 @@ def run_random_axis_null(
     A_alpha,b) exactly as it was; the recombined sum would be Sigma_alpha
     |v_permuted,alpha| * A_alpha,b, which is essentially the SAME quantity as
     the real signal, because |v_alpha| is positive-definite and cannot cancel
-    the way a signed scalar does -- permuting a set of positive numbers among
-    a set of amplitudes that never changed does not scramble the alignment
-    that produced the signal in the first place. A scalar permutation is
-    therefore not a null here at all; it would retain N_c * <|v|> * <A>,
-    essentially the signal itself. (This is also precisely why the observer
-    frame's null must NOT be written as a permutation of its
+    the way a signed scalar does. A scalar permutation is therefore not a null
+    here at all; it would retain N_c * <|v|> * <A>. (This is also precisely
+    why the observer frame's null must NOT be written as a permutation of its
     `per_center_speed`: that version would fall into the same trap.)
 
     Randomizing the AXIS instead is the correct guard against
-    align-then-measure bias: it breaks the one thing that makes the
-    statistic self-aligned (the axis's dependence on the SAME vector as the
-    scalar) while leaving the speed and the tracer geometry untouched, and it
+    align-then-measure bias: it breaks the one thing that makes the statistic
+    self-aligned (the axis's dependence on the SAME vector as the scalar)
+    while leaving the speed and the tracer geometry untouched, and it
     genuinely does collapse to zero for an uncorrelated axis (see
     tests/test_velocity_frame_dipole.py, item 5's clustered-configuration
-    assertion). It costs one extra estimator pass; that cost is deliberate,
-    not an oversight -- there is no cheaper construction that is still a
-    valid null for this frame.
+    assertion).
+
+    What it no longer costs
+    -------------------------
+    This used to re-run `velocity_frame_shell_dipole` per null, which capped
+    the pipeline at one realization per curve -- and one realization of a null
+    is a sample of size one, which on the inner shells is O(100 km/s) from
+    zero with a seed-determined sign (`RunConfig.n_null_realizations`).
+    Caching the per-shell DIRECTION SUMS turned every axis draw into an
+    einsum, so realizations are now essentially free and the null is reported
+    as a mean with a band. The expensive half -- the neighbor query and the
+    per-tracer unit vectors -- depends only on positions, which no null
+    touches, so nothing about the construction changed; only its cost did.
 
     Parameters
     ----------
     cfg : ComparisonRunConfig
     centers : SharedCenterSet
         From `select_shared_centers` (or, within `run_both_frames`, already
-        confirmed row-aligned).
-    s_tracers : ndarray, shape (N_t, 3)
-    observer : ndarray, shape (3,)
+        confirmed row-aligned with `result`).
+    result : VelocityFrameShellDipoleResult
+        The signal run, for its cached geometry (`per_center_direction_sum`).
 
     Returns
     -------
-    VelocityFrameShellDipoleResult
+    ndarray, shape (R, B)
+        R = `cfg.n_null_realizations` raw stacked dipoles, one row per
+        realization, ready for `normalize_stacked_dipole`.
     """
-    rng = np.random.default_rng(cfg.axis_null_seed)
     speeds = np.linalg.norm(centers.v_centers, axis=1)
-    random_directions = unit_vector(rng.normal(size=centers.v_centers.shape))
-    v_null = speeds[:, None] * random_directions
 
-    return velocity_frame_shell_dipole(
-        s_centers=centers.s_centers,
-        v_centers=v_null,
-        s_tracers=s_tracers,
-        shell_edges=cfg.shells.shell_edges,
-        sub_volume_radius=cfg.sub_volume_radius,
-        observer=observer,
-    )
+    return np.array([
+        _null_dipoles_from_velocities(
+            result,
+            speeds[:, None] * unit_vector(
+                np.random.default_rng(child).normal(size=centers.v_centers.shape)
+            ),
+        )
+        for child in null_realization_seeds(cfg.axis_null_seed, cfg.n_null_realizations)
+    ])
 
 
-def run_gaussian_velocity_null(
+def gaussian_velocity_null_dipoles(
     cfg: ComparisonRunConfig,
     centers: SharedCenterSet,
-    s_tracers: np.ndarray,
-    observer: np.ndarray,
-) -> VelocityFrameShellDipoleResult:
+    result: VelocityFrameShellDipoleResult,
+) -> np.ndarray:
     """The velocity frame's SECOND null: replace v with a matched Gaussian draw.
 
-    v_null_alpha ~ N(<v>, sigma_v^2) column-wise, from
+    Per realization, v_null_alpha ~ N(<v>, sigma_v^2) column-wise, from
     `dvcorr.pipeline.velocity_centered.matched_gaussian_sample` on
-    `centers.v_centers` with `cfg.velocity_gaussian_null_seed`. Like
-    `run_random_axis_null` this reruns `velocity_frame_shell_dipole` on
-    `centers.s_centers` -- a second estimator pass, unavoidable for the same
-    reason: this frame's axis IS its velocity vector, so no recombination of
-    retained per-center arrays can express it (contrast the observer frame,
-    where BOTH nulls are recombinations and neither costs a pass -- see
-    `dvcorr.pipeline.velocity_centered.normalize_result`).
+    `centers.v_centers`. `cfg.velocity_gaussian_null_seed` names the stream
+    and is spawned into `cfg.n_null_realizations` children, exactly as
+    `random_axis_null_dipoles` does with its own seed.
 
-    HOW THIS DIFFERS FROM `run_random_axis_null`, WHICH IS THE POINT
-    -----------------------------------------------------------------
+    HOW THIS DIFFERS FROM `random_axis_null_dipoles`, WHICH IS THE POINT
+    -----------------------------------------------------------------------
     The two nulls are NOT redundant, and the difference is narrow enough to
     be worth stating exactly. Both produce a replacement velocity vector;
     they differ in what they preserve:
@@ -362,23 +395,22 @@ def run_gaussian_velocity_null(
     center, so the speed <-> environment correlation survives -- a center in
     a dense region keeps both its large |v| and its large shell occupancy
     N_alpha,b, and since Var(D_b^null) ~ Sum_alpha |v_alpha|^2 Var(A_alpha,b)
-    with those two factors positively correlated, its SEM band is the noise
-    floor OF THIS SAMPLE. It also destroys the sample's bulk motion, because
-    an isotropic axis has no preferred direction left.
+    with those two factors positively correlated, its band is the noise floor
+    OF THIS SAMPLE. It also destroys the sample's bulk motion, because an
+    isotropic axis has no preferred direction left.
 
     The Gaussian null does the opposite on both counts: the drawn speed is
     detached from its center (so the speed <-> environment correlation is
-    gone, and the error band is a model's floor rather than this sample's),
-    while <v> is matched, so the bulk-flow direction SURVIVES. It is
-    therefore mildly anisotropic by construction
-    (`matched_gaussian_sample` documents why the mean is matched rather than
-    zeroed).
+    gone, and the band is a model's floor rather than this sample's), while
+    <v> is matched, so the bulk-flow direction SURVIVES. It is therefore
+    mildly anisotropic by construction (`matched_gaussian_sample` documents
+    why the mean is matched rather than zeroed).
 
     Read them together: random-axis is the conservative floor -- change one
     thing, the direction -- and Gaussian is the parametric comparison whose
     distance from it measures what the halo velocity distribution's shape
     (non-Gaussian speed tail, speed-environment coupling, retained bulk
-    flow) is worth. Neither replaces the other; `run_random_axis_null`
+    flow) is worth. Neither replaces the other; `random_axis_null_dipoles`
     remains this frame's PRIMARY null.
 
     Parameters
@@ -386,35 +418,34 @@ def run_gaussian_velocity_null(
     cfg : ComparisonRunConfig
     centers : SharedCenterSet
         From `select_shared_centers` (or, within `run_both_frames`, already
-        confirmed row-aligned).
-    s_tracers : ndarray, shape (N_t, 3)
-    observer : ndarray, shape (3,)
+        confirmed row-aligned with `result`).
+    result : VelocityFrameShellDipoleResult
+        The signal run, for its cached geometry (`per_center_direction_sum`).
 
     Returns
     -------
-    VelocityFrameShellDipoleResult
+    ndarray, shape (R, B)
+        R = `cfg.n_null_realizations` raw stacked dipoles, one row per
+        realization.
 
     Notes
     -----
-    The zero-speed guard is `velocity_frame_shell_dipole`'s own ValueError,
-    not re-implemented here: a drawn v_null_alpha with |v| = 0 would need
-    three independent normals to land within float-epsilon of -<v>
-    simultaneously, which a continuous draw does not do in practice. If it
-    ever fires, the estimator says so loudly rather than inventing an axis
-    -- which is the behavior
-    `dvcorr.estimators.velocity_frame_dipole`'s hard-rule-0 audit chose it
-    for.
+    A drawn v_null_alpha of exactly zero length would have an undefined axis.
+    It cannot bite here the way it would in an estimator pass: the
+    recombination consumes the raw VECTOR (speed and direction together, see
+    `_null_dipoles_from_velocities`), so a zero vector contributes zero to
+    the stack rather than needing a direction at all -- and three independent
+    normals landing within float-epsilon of -<v> simultaneously is not
+    something a continuous draw does in practice regardless.
     """
-    v_null = matched_gaussian_sample(centers.v_centers, cfg.velocity_gaussian_null_seed)
-
-    return velocity_frame_shell_dipole(
-        s_centers=centers.s_centers,
-        v_centers=v_null,
-        s_tracers=s_tracers,
-        shell_edges=cfg.shells.shell_edges,
-        sub_volume_radius=cfg.sub_volume_radius,
-        observer=observer,
-    )
+    return np.array([
+        _null_dipoles_from_velocities(
+            result, matched_gaussian_sample(centers.v_centers, int(child))
+        )
+        for child in null_realization_seeds(
+            cfg.velocity_gaussian_null_seed, cfg.n_null_realizations
+        )
+    ])
 
 
 @dataclass(frozen=True)
@@ -428,59 +459,58 @@ class FrameRunResults:
         built later, inside `normalize_result` -- nothing to store here.
     vel_result : VelocityFrameShellDipoleResult
         Velocity-frame result, on the SAME `centers`.
-    vel_null_result : VelocityFrameShellDipoleResult
-        Velocity-frame result on the same centers with axes replaced by
-        isotropic random directions (`run_random_axis_null`) -- this frame's
-        PRIMARY null; see that function's docstring for why a scalar
-        permutation would not be a valid null here.
-    vel_gaussian_null_result : VelocityFrameShellDipoleResult
-        Velocity-frame result on the same centers with the velocities
-        replaced by a matched Gaussian draw
-        (`run_gaussian_velocity_null`) -- this frame's second null, stored
-        separately because, unlike the observer frame's, it too costs a full
-        estimator pass and so must be carried rather than rebuilt.
+    vel_null_dipoles : ndarray, shape (R, B)
+        R realizations of the velocity frame's PRIMARY null -- the same
+        centers with axes replaced by isotropic random directions
+        (`random_axis_null_dipoles`); see that function for why a scalar
+        permutation would not be a valid null here. Raw stacked dipoles, one
+        row per realization, not estimator results: each is a recombination
+        of `vel_result`'s cached direction sums.
+    vel_gaussian_null_dipoles : ndarray, shape (R, B)
+        R realizations of this frame's second null, the velocities replaced
+        by a matched Gaussian draw (`gaussian_velocity_null_dipoles`).
     centers : SharedCenterSet
         The shared center set both frames (and both nulls) were run on.
     """
 
     obs_result: VelocityCenteredShellDipoleResult
     vel_result: VelocityFrameShellDipoleResult
-    vel_null_result: VelocityFrameShellDipoleResult
-    vel_gaussian_null_result: VelocityFrameShellDipoleResult
+    vel_null_dipoles: np.ndarray
+    vel_gaussian_null_dipoles: np.ndarray
     centers: SharedCenterSet
 
 
 def normalize_velocity_frame_result(
     result: VelocityFrameShellDipoleResult,
-    null_result: VelocityFrameShellDipoleResult,
-    gaussian_null_result: VelocityFrameShellDipoleResult,
+    null_dipoles: np.ndarray,
+    gaussian_null_dipoles: np.ndarray,
     n_bar: float,
 ) -> NormalizedDipole:
     """Thin delegate to `normalize_stacked_dipole` for the velocity frame.
 
     For this frame, the returned `NormalizedDipole.zeta_hat_shuffle` (and
-    `.sem_shuffle`) hold the RANDOM-AXIS null (`run_random_axis_null`'s
-    output), not a scalar permutation -- the field name is inherited
+    `.null_spread_shuffle`) hold the RANDOM-AXIS null
+    (`random_axis_null_dipoles`' output), not a scalar permutation -- the field name is inherited
     unchanged from the observer-frame path (`normalize_stacked_dipole`'s
     docstring already documents that it names "whatever null the caller
     built"), so it is repeated here explicitly to avoid the field name being
     misread as a promise about construction. `.zeta_hat_gaussian` /
-    `.sem_gaussian` need no such caveat: they hold a matched-Gaussian null in
-    BOTH frames, differing only in whether the draw is the (N_c,) u or the
-    (N_c, 3) v (`run_gaussian_velocity_null`).
+    `.null_spread_gaussian` need no such caveat: they hold a matched-Gaussian
+    null in BOTH frames, differing only in whether the draw is the (N_c,) u or
+    the (N_c, 3) v (`gaussian_velocity_null_dipoles`).
 
     Parameters
     ----------
     result : VelocityFrameShellDipoleResult
         The signal run, e.g. `FrameRunResults.vel_result`.
-    null_result : VelocityFrameShellDipoleResult
-        The random-axis null run, e.g. `FrameRunResults.vel_null_result`.
-    gaussian_null_result : VelocityFrameShellDipoleResult
-        The matched-Gaussian null run, e.g.
-        `FrameRunResults.vel_gaussian_null_result`. Required here, unlike on
-        `normalize_stacked_dipole` where it is optional: this frame's null
-        can only come from a completed estimator pass, so there is no
-        "arithmetic-only" call pattern for it to accommodate.
+    null_dipoles : ndarray, shape (R, B)
+        Random-axis null realizations, e.g. `FrameRunResults.vel_null_dipoles`.
+    gaussian_null_dipoles : ndarray, shape (R, B)
+        Matched-Gaussian null realizations, e.g.
+        `FrameRunResults.vel_gaussian_null_dipoles`. Required here, unlike on
+        `normalize_stacked_dipole` where it is optional: this pipeline always
+        builds both nulls, so there is no "arithmetic-only" call pattern for
+        it to accommodate.
     n_bar : float
         Mean halo number density over the whole box, e.g. from
         `dvcorr.pipeline.velocity_centered.box_number_density`.
@@ -494,12 +524,10 @@ def normalize_velocity_frame_result(
         dipole=result.dipole,
         monopole=result.monopole,
         per_center_dipole=result.per_center_dipole,
-        null_dipole=null_result.dipole,
-        null_per_center_dipole=null_result.per_center_dipole,
+        null_dipoles=null_dipoles,
         n_centers=result.n_centers,
         n_bar=n_bar,
-        gaussian_null_dipole=gaussian_null_result.dipole,
-        gaussian_null_per_center_dipole=gaussian_null_result.per_center_dipole,
+        gaussian_null_dipoles=gaussian_null_dipoles,
     )
 
 
@@ -547,8 +575,8 @@ def normalize_comparison(
     The stacked curves: `results.obs_result` normalizes via `normalize_result`
     (its two recombination nulls, seeded by `cfg.shuffle_seed` and
     `cfg.gaussian_null_seed`); `results.vel_result` normalizes via
-    `normalize_velocity_frame_result` (its two estimator-pass nulls,
-    `results.vel_null_result` and `results.vel_gaussian_null_result`). Four
+    `normalize_velocity_frame_result` (its two recombination nulls,
+    `results.vel_null_dipoles` and `results.vel_gaussian_null_dipoles`). Four
     null curves reach the figure, two per frame, and the pairing is what they
     are for -- within a frame the two nulls share their first two moments and
     differ only in distribution shape.
@@ -617,12 +645,16 @@ def normalize_comparison(
     FrameComparison
     """
     obs = normalize_result(
-        results.obs_result, n_bar, cfg.shuffle_seed, cfg.gaussian_null_seed
+        results.obs_result,
+        n_bar,
+        cfg.shuffle_seed,
+        cfg.gaussian_null_seed,
+        cfg.n_null_realizations,
     )
     vel = normalize_velocity_frame_result(
         results.vel_result,
-        results.vel_null_result,
-        results.vel_gaussian_null_result,
+        results.vel_null_dipoles,
+        results.vel_gaussian_null_dipoles,
         n_bar,
     )
 
@@ -672,8 +704,8 @@ def make_comparison_figure(
 
         obs : u-shuffle (`normalize_result`'s permutation of per_center_u)
               gaussian  (`normalize_result`'s matched draw of per_center_u)
-        vel : random-axis (`run_random_axis_null`)
-              gaussian    (`run_gaussian_velocity_null`)
+        vel : random-axis (`random_axis_null_dipoles`)
+              gaussian    (`gaussian_velocity_null_dipoles`)
 
     How to read four nulls without drowning in them: WITHIN a frame, the two
     nulls are matched on their first two moments by construction, so their
@@ -681,7 +713,7 @@ def make_comparison_figure(
     `dvcorr.pipeline.velocity_centered.matched_gaussian_sample`). ACROSS
     frames they are not comparable curve-for-curve -- the obs pair is two
     recombinations of one estimator pass, the vel pair is two independent
-    estimator passes measuring different things (`run_gaussian_velocity_null`
+    constructions measuring different things (`gaussian_velocity_null_dipoles`
     documents exactly what each of the vel-frame pair preserves). The primary
     null of each frame -- dashed -- is the one to read the signal against;
     the dotted one is read against its own dashed partner.
@@ -774,9 +806,21 @@ def make_comparison_figure(
         r, comparison.obs.zeta_hat, "o-", color=_COLOR_OBS,
         label=fr"$\hat\zeta_1^{{obs}}$  (N$_c$={results.obs_result.n_centers})",
     )
+    ax_dipole.fill_between(
+        r,
+        comparison.obs.zeta_hat_shuffle - comparison.obs.null_spread_shuffle,
+        comparison.obs.zeta_hat_shuffle + comparison.obs.null_spread_shuffle,
+        color=_COLOR_OBS_NULL, alpha=_BAND_ALPHA,
+    )
     ax_dipole.plot(
         r, comparison.obs.zeta_hat_shuffle, "o--", color=_COLOR_OBS_NULL,
         label="obs null (u-shuffle)",
+    )
+    ax_dipole.fill_between(
+        r,
+        comparison.obs.zeta_hat_gaussian - comparison.obs.null_spread_gaussian,
+        comparison.obs.zeta_hat_gaussian + comparison.obs.null_spread_gaussian,
+        color=_COLOR_OBS_GAUSSIAN, alpha=_BAND_ALPHA,
     )
     ax_dipole.plot(
         r, comparison.obs.zeta_hat_gaussian, "o:", color=_COLOR_OBS_GAUSSIAN,
@@ -791,9 +835,21 @@ def make_comparison_figure(
         r, comparison.vel.zeta_hat, "s-", color=_COLOR_VEL,
         label=fr"$\hat\zeta_1^{{vel}}$  (N$_c$={results.vel_result.n_centers})",
     )
+    ax_dipole.fill_between(
+        r,
+        comparison.vel.zeta_hat_shuffle - comparison.vel.null_spread_shuffle,
+        comparison.vel.zeta_hat_shuffle + comparison.vel.null_spread_shuffle,
+        color=_COLOR_VEL_NULL, alpha=_BAND_ALPHA,
+    )
     ax_dipole.plot(
         r, comparison.vel.zeta_hat_shuffle, "s--", color=_COLOR_VEL_NULL,
         label="vel null (random-axis)",
+    )
+    ax_dipole.fill_between(
+        r,
+        comparison.vel.zeta_hat_gaussian - comparison.vel.null_spread_gaussian,
+        comparison.vel.zeta_hat_gaussian + comparison.vel.null_spread_gaussian,
+        color=_COLOR_VEL_GAUSSIAN, alpha=_BAND_ALPHA,
     )
     ax_dipole.plot(
         r, comparison.vel.zeta_hat_gaussian, "s:", color=_COLOR_VEL_GAUSSIAN,

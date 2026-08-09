@@ -19,6 +19,8 @@ import pytest
 from dvcorr import conventions
 from dvcorr.pipeline.catalog_conversion import (
     IS_DISTINCT_COLUMN,
+    NUM_OF_SUBHALOS_COLUMN,
+    NUM_OF_SUBHALOS_UNKNOWN,
     PARQUET_COLUMNS,
     convert_catalog_to_parquet,
 )
@@ -65,14 +67,27 @@ class TestSchema:
             schemas.append(tuple(frame.columns))
         assert schemas[0] == schemas[1] == PARQUET_COLUMNS
 
-    def test_dtypes_are_float32_and_bool(self, tmp_path) -> None:
+    def test_dtypes_are_float32_bool_and_int32(self, tmp_path) -> None:
         csv_path = tmp_path / "c.csv"
         _write_csv(csv_path)
         report = convert_catalog_to_parquet(csv_path, tmp_path / "c.parquet")
         frame = pd.read_parquet(report.parquet_path)
-        for name in PARQUET_COLUMNS[:-1]:
+        # The float columns are named, not sliced off the end of
+        # PARQUET_COLUMNS: that slice silently changes meaning every time a
+        # non-float column is appended, which is how this test broke when
+        # NUM_OF_SUBHALOS_COLUMN landed.
+        float_columns = (
+            *conventions.POSITION_COLUMNS,
+            *conventions.VELOCITY_COLUMNS,
+            conventions.HALO_COLUMNS["mass"],
+        )
+        assert set(float_columns) | {IS_DISTINCT_COLUMN, NUM_OF_SUBHALOS_COLUMN} == set(
+            PARQUET_COLUMNS
+        )
+        for name in float_columns:
             assert frame[name].dtype == np.float32
         assert frame[IS_DISTINCT_COLUMN].dtype == np.bool_
+        assert frame[NUM_OF_SUBHALOS_COLUMN].dtype == np.int32
 
     def test_is_distinct_matches_pid(self, tmp_path) -> None:
         csv_path = tmp_path / "c.csv"
@@ -82,6 +97,122 @@ class TestSchema:
         np.testing.assert_array_equal(
             frame[IS_DISTINCT_COLUMN].to_numpy(), (source["pid"] == -1).to_numpy()
         )
+
+
+class TestNumOfSubhalos:
+    """The derived daughter count -- the one column that cannot be read off the
+    row it describes, and so the one with a way to be subtly wrong."""
+
+    @staticmethod
+    def _catalog_with_known_family(path, n=40):
+        """A catalog whose parentage is hand-built rather than random.
+
+        Row 0 hosts three daughters, row 1 hosts one, and row 3 -- itself a
+        subhalo of row 0 -- hosts a sub-subhalo. That last case is what
+        separates "is a parent" from "is distinct".
+        """
+        ids = np.arange(n) + 12_000_000_000
+        pid = np.full(n, -1, dtype=np.int64)
+        pid[[3, 4, 5]] = ids[0]
+        pid[6] = ids[1]
+        pid[7] = ids[3]
+
+        rng = np.random.default_rng(3)
+        frame = pd.DataFrame(
+            {
+                "mvir": np.sort(
+                    conventions.PARTICLE_MASS * rng.integers(2, 10_000, size=n)
+                ).astype(float),
+                "rvir": rng.uniform(20.0, 3000.0, size=n),
+                "rs": rng.uniform(1.0, 900.0, size=n),
+                "rockstarid": ids,
+                "pid": pid,
+                "x": rng.uniform(0.0, conventions.BOX_SIZE, size=n),
+                "y": rng.uniform(0.0, conventions.BOX_SIZE, size=n),
+                "z": rng.uniform(0.0, conventions.BOX_SIZE, size=n),
+                "vx": rng.normal(scale=300.0, size=n),
+                "vy": rng.normal(scale=300.0, size=n),
+                "vz": rng.normal(scale=300.0, size=n),
+            }
+        )
+        frame.to_csv(path, index=False)
+        return frame, n
+
+    def test_counts_the_daughters_of_every_halo(self, tmp_path) -> None:
+        csv_path = tmp_path / "family.csv"
+        _, n = self._catalog_with_known_family(csv_path)
+        report = convert_catalog_to_parquet(csv_path, tmp_path / "family.parquet")
+        frame = pd.read_parquet(report.parquet_path)
+
+        expected = np.zeros(n, dtype=np.int32)
+        expected[0] = 3   # three daughters
+        expected[1] = 1   # one daughter
+        expected[3] = 1   # a subhalo that itself hosts a sub-subhalo
+        np.testing.assert_array_equal(
+            frame[NUM_OF_SUBHALOS_COLUMN].to_numpy(), expected
+        )
+        assert report.n_parents == 3
+        assert report.num_of_subhalos_derived
+
+    def test_a_subhalo_can_be_a_parent_in_this_column(self, tmp_path) -> None:
+        """The column is a pure daughter COUNT and says nothing about `pid`.
+
+        Combining the two into "is a host halo" is
+        `dvcorr.pipeline.halo_class_comparison.center_class_mask`'s job, not
+        this column's -- keeping them separate here is what lets that module
+        define the classes in one place.
+        """
+        csv_path = tmp_path / "family.csv"
+        source, _ = self._catalog_with_known_family(csv_path)
+        report = convert_catalog_to_parquet(csv_path, tmp_path / "family.parquet")
+        frame = pd.read_parquet(report.parquet_path)
+
+        assert not frame[IS_DISTINCT_COLUMN][3]              # row 3 is a subhalo
+        assert frame[NUM_OF_SUBHALOS_COLUMN][3] == 1         # and still has a daughter
+        assert (source["pid"][3] != -1)
+
+    def test_a_catalog_without_subhalos_writes_the_unknown_sentinel(self, tmp_path) -> None:
+        """Writing 0 there would assert "hosts none", which is not what a
+        pre-cut, distinct-only catalog is able to say."""
+        csv_path = tmp_path / "distinct_only.csv"
+        source = _write_csv(csv_path)
+        source["pid"] = -1
+        source.to_csv(csv_path, index=False)
+
+        report = convert_catalog_to_parquet(csv_path, tmp_path / "distinct_only.parquet")
+        frame = pd.read_parquet(report.parquet_path)
+
+        assert not report.num_of_subhalos_derived
+        assert (frame[NUM_OF_SUBHALOS_COLUMN] == NUM_OF_SUBHALOS_UNKNOWN).all()
+
+    def test_a_file_missing_the_column_is_reconverted_not_reused(self, tmp_path) -> None:
+        """Cache-and-skip keys on the SCHEMA as well as on provenance.
+
+        An old file matches its CSV perfectly and would otherwise be reused
+        forever, leaving the new column permanently absent with no error until
+        something asked for it.
+        """
+        import pyarrow.parquet as pq
+
+        csv_path = tmp_path / "c.csv"
+        _write_csv(csv_path)
+        parquet_path = tmp_path / "c.parquet"
+        report = convert_catalog_to_parquet(csv_path, parquet_path)
+        assert not report.skipped
+        assert convert_catalog_to_parquet(csv_path, parquet_path).skipped
+
+        # Rewrite it without the new column, preserving the provenance
+        # metadata -- exactly what an older conversion left on disk.
+        table = pq.read_table(parquet_path)
+        stale = table.drop_columns([NUM_OF_SUBHALOS_COLUMN]).replace_schema_metadata(
+            table.schema.metadata
+        )
+        pq.write_table(stale, parquet_path)
+        assert NUM_OF_SUBHALOS_COLUMN not in pq.read_schema(parquet_path).names
+
+        rebuilt = convert_catalog_to_parquet(csv_path, parquet_path)
+        assert not rebuilt.skipped
+        assert NUM_OF_SUBHALOS_COLUMN in pq.read_schema(parquet_path).names
 
 
 class TestPositionFolding:

@@ -324,3 +324,123 @@ def test_non_finite_weight_raises_not_treated_as_zero():
     with pytest.raises(ValueError):
         shell_dipole(s_center, s_neighbors, np.array([0.0, 10.0]),
                      weights=np.array([1.0, np.nan]))
+
+
+# ---------------------------------------------------------------------------
+# per_center_shell_counts -- the pure-geometry occupancy
+# ---------------------------------------------------------------------------
+#
+# Its whole reason to exist is occupancy on a binning of its own, with an
+# innermost edge of ZERO (see `dvcorr.pipeline.halo_class_comparison
+# .class_shell_occupancy`). That is exactly the regime where the self-pair and
+# the bin-edge convention stop being cosmetic, so both are pinned here.
+
+
+def _radial_tracers(center: np.ndarray, radii: np.ndarray) -> np.ndarray:
+    """Tracers at the given radii from `center`, all along +x, shape (N, 3)."""
+    offsets = np.zeros((radii.size, 3))
+    offsets[:, 0] = radii
+    return center + offsets
+
+
+def test_per_center_counts_agree_with_the_estimator_they_mirror():
+    """The documented contract: same edges, same number as the estimator's own
+    `per_center_count`. If the two binnings ever drift the occupancy figure
+    silently stops describing the runs it sits next to."""
+    from dvcorr.estimators.shell_dipole import (
+        per_center_shell_counts,
+        velocity_centered_shell_dipole,
+    )
+
+    rng = np.random.default_rng(7)
+    observer = np.asarray(conventions.OBSERVER_POSITION, dtype=float)
+    tracers = observer + rng.normal(scale=20.0, size=(2000, 3))
+    centers = observer + rng.normal(scale=5.0, size=(12, 3))
+    edges = np.array([0.0, 2.0, 5.0, 9.0, 14.0])
+
+    estimator = velocity_centered_shell_dipole(
+        centers,
+        rng.normal(scale=300.0, size=centers.shape),
+        tracers,
+        edges,
+        sub_volume_radius=conventions.MAX_ANALYSIS_RADIUS,
+        core_margin=0.0,
+        observer=observer,
+    )
+    counts = per_center_shell_counts(centers, tracers, edges)
+
+    assert counts.shape == estimator.per_center_count.shape
+    np.testing.assert_array_equal(counts, estimator.per_center_count)
+
+
+def test_a_center_does_not_count_itself():
+    """With `edges[0] == 0` a center drawn from the tracer field finds itself at
+    r = 0; entering that would put a pure self-correlation in the first shell."""
+    from dvcorr.estimators.shell_dipole import per_center_shell_counts
+
+    center = np.array([[10.0, 10.0, 10.0]])
+    tracers = np.vstack([center, _radial_tracers(center[0], np.array([0.05, 0.5]))])
+    counts = per_center_shell_counts(center, tracers, np.array([0.0, 0.1, 1.0]))
+
+    np.testing.assert_array_equal(counts, np.array([[1.0, 1.0]]))
+
+
+def test_counts_bin_left_closed_right_open_with_the_outer_edge_included():
+    """A tracer sitting exactly on an interior edge belongs to the shell ABOVE
+    it, and one on the outermost edge falls in the last shell rather than off
+    the end -- `shell_dipole`'s convention, restated on counts."""
+    from dvcorr.estimators.shell_dipole import per_center_shell_counts
+
+    center = np.array([[0.0, 0.0, 0.0]])
+    edges = np.array([0.0, 1.0, 2.0])
+    tracers = _radial_tracers(center[0], np.array([0.5, 1.0, 1.5, 2.0]))
+    counts = per_center_shell_counts(center, tracers, edges)
+
+    assert counts.tolist() == [[1.0, 3.0]]
+
+
+def test_uniform_field_counts_recover_n_bar_times_shell_volume():
+    """The reference `expected_shell_occupancy` draws on the occupancy figure is
+    the right one: on a uniform field the ratio is 1, so any departure from it
+    on real data is clustering and not a normalization slip."""
+    from dvcorr.estimators.shell_dipole import (
+        expected_shell_occupancy,
+        per_center_shell_counts,
+    )
+
+    rng = np.random.default_rng(11)
+    box = 40.0
+    n_tracers = 200_000
+    tracers = rng.uniform(0.0, box, size=(n_tracers, 3))
+    # Centers kept a full r_max clear of every face, so no shell is clipped.
+    edges = np.array([0.0, 2.0, 4.0, 6.0])
+    centers = rng.uniform(edges[-1], box - edges[-1], size=(200, 3))
+
+    counts = per_center_shell_counts(centers, tracers, edges)
+    expected = expected_shell_occupancy(n_tracers / box**3, edges)
+
+    np.testing.assert_allclose(counts.mean(axis=0) / expected, 1.0, rtol=0.05)
+
+
+def test_no_tracers_and_no_centers_give_zeros_not_a_crash():
+    from dvcorr.estimators.shell_dipole import per_center_shell_counts
+
+    edges = np.array([0.0, 1.0, 2.0])
+    assert per_center_shell_counts(np.zeros((3, 3)), np.zeros((0, 3)), edges).shape == (3, 2)
+    assert per_center_shell_counts(np.zeros((0, 3)), np.zeros((5, 3)), edges).shape == (0, 2)
+    np.testing.assert_array_equal(
+        per_center_shell_counts(np.zeros((3, 3)), np.zeros((0, 3)), edges), 0.0
+    )
+
+
+def test_counts_reject_a_binning_the_box_cannot_support():
+    from dvcorr.estimators.shell_dipole import per_center_shell_counts
+
+    centers = np.zeros((1, 3))
+    with pytest.raises(ValueError):
+        per_center_shell_counts(centers, centers + 1.0, np.array([2.0, 1.0]))
+    with pytest.raises(ValueError):
+        per_center_shell_counts(
+            centers, centers + 1.0,
+            np.array([0.0, conventions.MAX_ANALYSIS_RADIUS + 1.0]),
+        )

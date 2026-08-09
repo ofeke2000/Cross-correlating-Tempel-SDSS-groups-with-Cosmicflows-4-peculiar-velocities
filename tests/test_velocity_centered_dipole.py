@@ -44,6 +44,7 @@ from dvcorr.pipeline.velocity_centered import (
     box_number_density,
     matched_gaussian_sample,
     normalize_stacked_dipole,
+    null_realization_seeds,
 )
 from dvcorr.redshift_space import to_redshift_space
 from dvcorr.estimators.shell_dipole import (
@@ -114,7 +115,7 @@ def test_joint_sign_gate_group_and_velocity_centered_are_opposite():
     gc_result = shell_dipole(s_center, s_neighbors, shell_edges, weights=u)
     assert gc_result.dipole[0] < 0.0
     assert np.sign(gc_result.dipole[0]) == conventions.INFALL_DIPOLE_SIGN
-    recovered_gc = 3.0 * gc_result.dipole[0] / gc_result.pair_count[0]
+    recovered_gc = gc_result.dipole[0] / gc_result.pair_count[0]
     assert recovered_gc == pytest.approx(V_INFALL, rel=0.1)
 
     # --- velocity-centered zeta: reversed orientation ------------------------
@@ -141,7 +142,7 @@ def test_joint_sign_gate_group_and_velocity_centered_are_opposite():
     assert vc_result.dipole[0] > 0.0    # must FAIL LOUDLY if the orientation flips
 
     y10_norm = np.sqrt(3.0 / (4.0 * np.pi))
-    recovered_vc = 3.0 * vc_result.dipole[0] / (y10_norm * vc_result.pair_count[0])
+    recovered_vc = vc_result.dipole[0] / (y10_norm * vc_result.pair_count[0])
     assert recovered_vc == pytest.approx(-V_INFALL, rel=0.1)
 
     # Opposite signs -- zeta_ell = (-1)**ell * xi_Tu,ell made concrete.
@@ -564,7 +565,7 @@ def test_isotropic_shell_around_each_center_gives_vanishing_normalized_dipole():
     assert result.pair_count[0] == n_centers * _ISO_N_TRACERS  # exact geometry
 
     y10_norm = np.sqrt(3.0 / (4.0 * np.pi))
-    normalized_dipole = 3.0 * result.dipole[0] / (y10_norm * result.pair_count[0])
+    normalized_dipole = result.dipole[0] / (y10_norm * result.pair_count[0])
     assert normalized_dipole == pytest.approx(0.0, abs=1e-2)
 
 
@@ -807,8 +808,8 @@ def test_empty_shell_under_geometric_edges_normalizes_to_zero_not_nan():
         dipole=result.dipole,
         monopole=result.monopole,
         per_center_dipole=result.per_center_dipole,
-        null_dipole=result.dipole,               # any finite null suffices here
-        null_per_center_dipole=result.per_center_dipole,
+        # any finite null stack suffices here; two identical realizations
+        null_dipoles=np.repeat(result.dipole[None, :], 2, axis=0),
         n_centers=result.n_centers,
         n_bar=_GEOM_N_BAR,
     )
@@ -1021,8 +1022,7 @@ def _assert_binning_invariance(
         dipole=result_linear.dipole,
         monopole=result_linear.monopole,
         per_center_dipole=result_linear.per_center_dipole,
-        null_dipole=result_linear.dipole,
-        null_per_center_dipole=result_linear.per_center_dipole,
+        null_dipoles=np.repeat(result_linear.dipole[None, :], 2, axis=0),
         n_centers=result_linear.n_centers,
         n_bar=_GATE_N_BAR,
     )
@@ -1031,8 +1031,7 @@ def _assert_binning_invariance(
         dipole=result_geom.dipole,
         monopole=result_geom.monopole,
         per_center_dipole=result_geom.per_center_dipole,
-        null_dipole=result_geom.dipole,
-        null_per_center_dipole=result_geom.per_center_dipole,
+        null_dipoles=np.repeat(result_geom.dipole[None, :], 2, axis=0),
         n_centers=result_geom.n_centers,
         n_bar=_GATE_N_BAR,
     )
@@ -1256,7 +1255,7 @@ def test_core_margin_reduces_outer_shell_truncation_bias():
             core_margin=core_margin,
         )
         assert result.n_centers > 0
-        return 3.0 * (result.dipole / result.n_centers) / (y10_norm * nbar_v_b)
+        return (result.dipole / result.n_centers) / (y10_norm * nbar_v_b)
 
     default_margin_stack = normalized_stack(None)  # core_margin -> r_max
     zero_margin_stack = normalized_stack(0.0)
@@ -1490,34 +1489,63 @@ def test_every_null_in_the_three_pipelines_gets_its_own_seed():
     assert len(set(seeds)) == len(seeds), f"seed collision in the null ladder: {seeds}"
 
 
-def test_normalize_stacked_dipole_rejects_half_a_gaussian_null():
-    """Passing one of the two Gaussian-null arrays without the other raises,
-    rather than producing a curve with no band (or a band with no curve).
+def test_normalize_stacked_dipole_rejects_a_single_null_realization():
+    """A (B,) null -- one realization presented as the answer -- raises, and so
+    does an (R, B) stack with R < 2.
+
+    The band this function reports is the spread ACROSS realizations
+    (`NormalizedDipole.null_spread_shuffle`), i.e. how far the null curve
+    moves when only its seed changes. From one draw that spread is undefined,
+    and reporting it as zero would claim the null is exactly determined --
+    which on the inner shells, where one draw lands O(100 km/s) from zero, is
+    the precise misreading this API exists to prevent.
     """
     shell_edges = np.array([0.0, 10.0])
     zeros_b = np.zeros(1)
     zeros_cb = np.zeros((2, 1))
+    zeros_rb = np.zeros((4, 1))          # 4 realizations, 1 shell
     common = dict(
         shell_edges=shell_edges,
         dipole=zeros_b,
         monopole=zeros_b,
         per_center_dipole=zeros_cb,
-        null_dipole=zeros_b,
-        null_per_center_dipole=zeros_cb,
         n_centers=2,
         n_bar=1.0,
     )
 
-    with pytest.raises(ValueError):
-        normalize_stacked_dipole(**common, gaussian_null_dipole=zeros_b)
-    with pytest.raises(ValueError):
-        normalize_stacked_dipole(**common, gaussian_null_per_center_dipole=zeros_cb)
+    with pytest.raises(ValueError):      # 1-D: a single realization
+        normalize_stacked_dipole(**common, null_dipoles=zeros_b)
+    with pytest.raises(ValueError):      # 2-D but only one row
+        normalize_stacked_dipole(**common, null_dipoles=zeros_rb[:1])
+    with pytest.raises(ValueError):      # the same rule applies to the second null
+        normalize_stacked_dipole(
+            **common, null_dipoles=zeros_rb, gaussian_null_dipoles=zeros_b
+        )
 
-    # Neither given: NaN curve, not an exception -- the documented
-    # arithmetic-only call pattern.
-    normalized = normalize_stacked_dipole(**common)
+    # Gaussian null omitted entirely: NaN curve, not an exception -- the
+    # documented arithmetic-only call pattern.
+    normalized = normalize_stacked_dipole(**common, null_dipoles=zeros_rb)
     assert np.all(np.isnan(normalized.zeta_hat_gaussian))
-    assert np.all(np.isnan(normalized.sem_gaussian))
+    assert np.all(np.isnan(normalized.null_spread_gaussian))
+
+
+def test_null_realization_seeds_are_distinct_and_reproducible():
+    """`null_realization_seeds` splits one base seed into independent children,
+    deterministically, and neighbouring base seeds do not collide.
+
+    The collision case is the reason `SeedSequence` is used instead of
+    `seed + i`: `shuffle_seed` = 43 and `axis_null_seed` = 44 are adjacent, so
+    a naive ladder would hand two nulls that are supposed to be independent
+    evidence 31 of their 32 realizations in common.
+    """
+    first = null_realization_seeds(43, 32)
+    again = null_realization_seeds(43, 32)
+    neighbour = null_realization_seeds(44, 32)
+
+    assert first.shape == (32,)
+    np.testing.assert_array_equal(first, again)          # reproducible
+    assert len(set(first.tolist())) == first.size        # distinct within a stream
+    assert not set(first.tolist()) & set(neighbour.tolist())  # and across adjacent streams
 
 
 # ---------------------------------------------------------------------------

@@ -53,6 +53,7 @@ from dataclasses import dataclass, field
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
+import pyarrow.parquet as pq
 
 from dvcorr import conventions
 from dvcorr.config import (
@@ -62,7 +63,7 @@ from dvcorr.config import (
     ShellConfig,
     volume_weighted_shell_radii,
 )
-from dvcorr.pipeline.catalog_conversion import IS_DISTINCT_COLUMN
+from dvcorr.pipeline.catalog_conversion import IS_DISTINCT_COLUMN, NUM_OF_SUBHALOS_COLUMN
 from dvcorr.estimators.shell_dipole import (
     VelocityCenteredShellDipoleResult,
     center_standard_error,
@@ -182,6 +183,12 @@ def _default_shells() -> ShellConfig:
     )
 
 
+#: Fewest null realizations `RunConfig` accepts. Two is the arithmetic floor
+#: (a ddof=1 standard deviation needs two samples), not a recommendation --
+#: the default is far higher, see `RunConfig.n_null_realizations`.
+_MIN_NULL_REALIZATIONS: int = 2
+
+
 @dataclass
 class RunConfig:
     """Every tunable number for this run, in one place (CLAUDE.md hard rule 4).
@@ -242,6 +249,33 @@ class RunConfig:
         `ComparisonRunConfig.velocity_gaussian_null_seed` = 47,
         `RedshiftSpaceRunConfig.redshift_gaussian_null_seed` = 48 -- so no
         two nulls anywhere in the three pipelines share a random stream.
+    n_null_realizations : int
+        How many independent draws every null is built from. Each null seed
+        above names a random STREAM, not a single draw: the stream is spawned
+        into this many child seeds (`null_realization_seeds`), the null is
+        rebuilt once per child, and what gets reported is the across-
+        realization MEAN with the across-realization standard deviation as its
+        band (`NormalizedDipole.zeta_hat_shuffle` / `.null_spread_shuffle`).
+
+        A null is a random variable, and a single draw of it is not its
+        expectation. On the innermost shells the two are far apart: the
+        normalization divides by nbar*V_b, which is ~0.5 expected pairs in
+        [0, 1) h^-1 Mpc, while the numerator's scatter does not shrink with
+        the shell volume, so ONE realization there lands O(100 km/s) from
+        zero with a sign set by nothing but the seed. Reported as a single
+        curve that reads as a systematic trend -- it is not one; measured
+        across 20 seeds the mean is zero to within its own error and the sign
+        is a coin flip (10/20, 13/20, 14/20 negative in the inner bins). The
+        band is the honest statement: it IS the noise floor the signal has to
+        clear, and it collapses by ~2 orders of magnitude between r = 0.5 and
+        r = 7 h^-1 Mpc.
+
+        Costs nothing per realization by construction -- every null in this
+        package is a recombination of arrays the estimator already returned
+        (see `normalize_result` and
+        `dvcorr.pipeline.velocity_frame_comparison.random_axis_null_dipoles`),
+        never a second estimator pass -- so this is bounded by memory, not
+        runtime. Must be >= 2: a standard deviation needs two samples.
     output_name : str
         Output figure filename, written under `PathsConfig().output_dir`.
     dpi : int
@@ -274,6 +308,7 @@ class RunConfig:
     seed: int = 42
     shuffle_seed: int = 43
     gaussian_null_seed: int = 46
+    n_null_realizations: int = 32
     output_name: str = "velocity_centered_dipole.png"
     dpi: int = 150
     min_center_speed: float = 1.0
@@ -297,6 +332,13 @@ class RunConfig:
                 f"RunConfig: min_center_speed ({self.min_center_speed}) must be "
                 ">= 0. 0.0 is allowed and means 'drop only exactly-zero-speed "
                 "centers'."
+            )
+        if self.n_null_realizations < _MIN_NULL_REALIZATIONS:
+            raise ValueError(
+                f"RunConfig: n_null_realizations ({self.n_null_realizations}) "
+                f"must be >= {_MIN_NULL_REALIZATIONS}; the null is reported as "
+                "an across-realization mean and standard deviation, and a "
+                "standard deviation needs at least two samples."
             )
 
 
@@ -323,12 +365,16 @@ def _binning_description(shells: ShellConfig) -> str:
     `SPACING_LINEAR` -> "r in [r_min, r_max] h^-1 Mpc, step h^-1 Mpc" -- so a
     saved PNG states its own binning rather than only `r_max` (the titles'
     previous behavior), and a reader never has to cross-reference the
-    `RunConfig` that produced the figure. Used by all four figure builders
-    that carry a radial x-axis (`make_figure`,
+    `RunConfig` that produced the figure. Used by every figure builder that
+    carries a radial x-axis (`make_figure`,
     `dvcorr.pipeline.velocity_frame_comparison.make_comparison_figure`,
     `dvcorr.pipeline.redshift_space_comparison.make_redshift_comparison_figure`
-    and `.make_single_center_figure`) -- one home, so the phrasing cannot
-    drift between them.
+    and `.make_single_center_figure`, and the two class-contrast figures plus
+    `.make_class_occupancy_figure` in
+    `dvcorr.pipeline.halo_class_comparison`) -- one home, so the phrasing
+    cannot drift between them. Note that the last of those passes a DIFFERENT
+    `ShellConfig` (`HaloClassRunConfig.occupancy_shells`, not `cfg.shells`);
+    the argument is the binning to describe, never assumed to be the run's.
 
     Parameters
     ----------
@@ -386,6 +432,11 @@ class HaloArrays:
         by count.
     is_distinct : ndarray, shape (N_total,), bool
         True where the halo is not a subhalo (`pid == -1`).
+    num_of_subhalos : ndarray, shape (N_total,), int32 | None
+        How many subhalos name this halo as their parent
+        (`dvcorr.pipeline.catalog_conversion.NUM_OF_SUBHALOS_COLUMN`). None
+        unless the caller asked for it -- see `_load_all_halos`'s
+        `with_num_of_subhalos` for why it is opt-in rather than always loaded.
     n_total : int
         `pos.shape[0]`, after the catalog's own cuts.
     """
@@ -395,9 +446,12 @@ class HaloArrays:
     mvir: np.ndarray
     is_distinct: np.ndarray
     n_total: int
+    num_of_subhalos: np.ndarray | None = None
 
 
-def _load_all_halos(paths: PathsConfig, catalog: CatalogConfig) -> HaloArrays:
+def _load_all_halos(
+    paths: PathsConfig, catalog: CatalogConfig, *, with_num_of_subhalos: bool = False
+) -> HaloArrays:
     """Read a halo catalog and apply its mass / subhalo cuts, uncarved.
 
     Factored out of `load_and_carve` (which calls this, then carves) so that
@@ -419,12 +473,23 @@ def _load_all_halos(paths: PathsConfig, catalog: CatalogConfig) -> HaloArrays:
     are applied in memory afterwards, since neither can skip contiguous row
     groups the way a floor on the sort column can.
 
+    `with_num_of_subhalos` is OPT-IN, not the default, purely on memory: the
+    column is int32 over the uncarved catalog, ~508 MB on the full one, and
+    only `dvcorr.pipeline.halo_class_comparison` has any use for it. Every
+    other run keeps its previous footprint exactly. It is a load-time keyword
+    rather than a `CatalogConfig` field because it selects a COLUMN, not a cut
+    -- it changes what is read about the halos, never which halos are kept.
+
     Parameters
     ----------
     paths : PathsConfig
         Resolves `catalog.name` to a file via `halo_catalog`.
     catalog : CatalogConfig
         Which catalog, and which halos to keep from it.
+    with_num_of_subhalos : bool, keyword-only
+        Also read `dvcorr.pipeline.catalog_conversion.NUM_OF_SUBHALOS_COLUMN`,
+        surfacing on `HaloArrays.num_of_subhalos`. Left False, that field is
+        None.
 
     Returns
     -------
@@ -438,7 +503,10 @@ def _load_all_halos(paths: PathsConfig, catalog: CatalogConfig) -> HaloArrays:
         rather than surfacing as a bare missing-file traceback.
     RuntimeError
         If zero halos survive. Distinguishes an empty catalog from cuts that
-        removed everything, since the fix differs.
+        removed everything, since the fix differs. Also if
+        `with_num_of_subhalos` was asked for but the Parquet file predates that
+        column -- a stale-conversion problem with a one-command fix, said
+        plainly here rather than surfacing as a pyarrow key error.
     """
     parquet_path = paths.halo_catalog(catalog.name)
     if not parquet_path.exists():
@@ -454,6 +522,15 @@ def _load_all_halos(paths: PathsConfig, catalog: CatalogConfig) -> HaloArrays:
         mass_col,
         IS_DISTINCT_COLUMN,
     ]
+    if with_num_of_subhalos:
+        available = set(pq.read_schema(parquet_path).names)
+        if NUM_OF_SUBHALOS_COLUMN not in available:
+            raise RuntimeError(
+                f"{parquet_path.name} has no {NUM_OF_SUBHALOS_COLUMN!r} column: it "
+                "was converted before that column existed. Rebuild it with:\n"
+                f"    python -m scripts.convert_mdpl2_catalog {catalog.name}"
+            )
+        columns.append(NUM_OF_SUBHALOS_COLUMN)
     filters = None if catalog.mass_min is None else [(mass_col, ">=", catalog.mass_min)]
 
     print(f"loading {parquet_path.name} [{catalog.describe_cuts()}] ...")
@@ -475,6 +552,9 @@ def _load_all_halos(paths: PathsConfig, catalog: CatalogConfig) -> HaloArrays:
     vel = halos[list(conventions.VELOCITY_COLUMNS)].to_numpy()[keep]
     mvir = halos[mass_col].to_numpy()[keep]
     is_distinct = halos[IS_DISTINCT_COLUMN].to_numpy()[keep]
+    num_of_subhalos = (
+        halos[NUM_OF_SUBHALOS_COLUMN].to_numpy()[keep] if with_num_of_subhalos else None
+    )
 
     n_total = pos.shape[0]
     if n_total == 0:
@@ -485,7 +565,12 @@ def _load_all_halos(paths: PathsConfig, catalog: CatalogConfig) -> HaloArrays:
     print(f"loaded {n_total} halos ({n_read - n_total} removed by in-memory cuts)")
 
     return HaloArrays(
-        pos=pos, vel=vel, mvir=mvir, is_distinct=is_distinct, n_total=n_total
+        pos=pos,
+        vel=vel,
+        mvir=mvir,
+        is_distinct=is_distinct,
+        n_total=n_total,
+        num_of_subhalos=num_of_subhalos,
     )
 
 
@@ -513,6 +598,13 @@ class CarvedHalos:
         Carved virial masses, h^-1 M_sun, same row order.
     is_distinct : ndarray, shape (N_carved,), bool
         False for subhalos.
+    num_of_subhalos : ndarray, shape (N_carved,), int32 | None
+        Carved halos' daughter counts, same row order. None unless
+        `load_and_carve` was asked for them. Note that this is a property of
+        the halo in the WHOLE box, derived at conversion time: a carved
+        parent's daughters need not themselves be inside the carve, and a
+        catalog mass cut does not decrement it. That is deliberate -- "is this
+        a host halo" should not change with the analysis sub-volume.
     n_carved : int
         `pos.shape[0]`.
     n_total : int
@@ -532,9 +624,12 @@ class CarvedHalos:
     n_carved: int
     n_total: int
     catalog_mvir: np.ndarray
+    num_of_subhalos: np.ndarray | None = None
 
 
-def load_and_carve(cfg: RunConfig, paths: PathsConfig) -> CarvedHalos:
+def load_and_carve(
+    cfg: RunConfig, paths: PathsConfig, *, with_num_of_subhalos: bool = False
+) -> CarvedHalos:
     """Load the selected halo catalog and carve a sphere around the observer.
 
     Loads via `_load_all_halos`, then keeps halos within
@@ -550,6 +645,10 @@ def load_and_carve(cfg: RunConfig, paths: PathsConfig) -> CarvedHalos:
         read in the first place.
     paths : PathsConfig
         Resolves the catalog name to a file.
+    with_num_of_subhalos : bool, keyword-only
+        Passed through to `_load_all_halos`; surfaces on
+        `CarvedHalos.num_of_subhalos`. Only
+        `dvcorr.pipeline.halo_class_comparison` sets it.
 
     Returns
     -------
@@ -564,7 +663,7 @@ def load_and_carve(cfg: RunConfig, paths: PathsConfig) -> CarvedHalos:
         misleading traceback, not a diagnosis.
     """
     observer = np.asarray(conventions.OBSERVER_POSITION, dtype=float)
-    halos = _load_all_halos(paths, cfg.catalog)
+    halos = _load_all_halos(paths, cfg.catalog, with_num_of_subhalos=with_num_of_subhalos)
 
     d_obs = np.linalg.norm(halos.pos - observer, axis=1)
     in_sub = d_obs <= cfg.sub_volume_radius
@@ -592,6 +691,9 @@ def load_and_carve(cfg: RunConfig, paths: PathsConfig) -> CarvedHalos:
         n_carved=n_carved,
         n_total=halos.n_total,
         catalog_mvir=halos.mvir,
+        num_of_subhalos=(
+            None if halos.num_of_subhalos is None else halos.num_of_subhalos[in_sub]
+        ),
     )
 
 
@@ -1095,9 +1197,24 @@ class NormalizedDipole:
         Standard error of `zeta_hat`, from `center_standard_error`, scaled by
         the same normalization.
     zeta_hat_shuffle : ndarray, shape (B,)
-        The velocity-shuffle null, same normalization.
-    sem_shuffle : ndarray, shape (B,)
-        Standard error of `zeta_hat_shuffle`.
+        The velocity-shuffle null, same normalization: the MEAN over
+        `RunConfig.n_null_realizations` independent draws, not a single draw.
+        Read it with `null_spread_shuffle`, never alone -- see that field.
+    null_spread_shuffle : ndarray, shape (B,)
+        Across-realization standard deviation (ddof=1) of the same null --
+        the width of the null's own sampling distribution, and therefore the
+        NOISE FLOOR the signal has to clear in that shell.
+
+        This is not the across-center standard error it replaced. That number
+        described the scatter of one realization's centers about their own
+        mean; this one describes how far the null curve itself moves when
+        nothing but the seed changes. The distinction is the whole point on
+        the innermost shells, where the nbar*V_b denominator is a fraction of
+        a pair and one realization lands O(100 km/s) from zero with a
+        seed-determined sign (`RunConfig.n_null_realizations`). Plotted as a
+        band around `zeta_hat_shuffle`, it says "anything inside here is
+        indistinguishable from no signal" -- which a single dashed null curve
+        did not say, and was routinely misread as saying.
     zeta_hat_gaussian : ndarray, shape (B,)
         The matched-Gaussian null, same normalization: the same statistic with
         the per-center velocities REPLACED by a Gaussian draw matched to the
@@ -1108,16 +1225,20 @@ class NormalizedDipole:
         the non-Gaussianity of that distribution and nothing else.
 
         Which construction sits here depends on the frame, exactly as for
-        `zeta_hat_shuffle`: the observer frame draws a matched (N_c,) u
-        (`normalize_result`, no estimator pass -- recombined against the
-        fixed-axis amplitude), the velocity frame draws a matched (N_c, 3) v
-        and RE-RUNS the estimator
-        (`dvcorr.pipeline.velocity_frame_comparison.run_gaussian_velocity_null`),
-        because there its axis and its weight both come from the drawn vector.
-        NaN throughout if the caller passed no Gaussian null to
-        `normalize_stacked_dipole` (see that function's Parameters).
-    sem_gaussian : ndarray, shape (B,)
-        Standard error of `zeta_hat_gaussian`.
+        `zeta_hat_shuffle`: the observer frame draws a matched (N_c,) u and
+        recombines it against the fixed-axis amplitude (`normalize_result`),
+        the velocity frame draws a matched (N_c, 3) v -- axis and weight
+        together, since there both come from the drawn vector -- and
+        recombines it against the cached direction sums
+        (`dvcorr.pipeline.velocity_frame_comparison.gaussian_velocity_null_dipoles`).
+        Neither costs an estimator pass.
+        Like `zeta_hat_shuffle`, the MEAN over
+        `RunConfig.n_null_realizations` draws. NaN throughout if the caller
+        passed no Gaussian null to `normalize_stacked_dipole` (see that
+        function's Parameters).
+    null_spread_gaussian : ndarray, shape (B,)
+        Across-realization standard deviation of the Gaussian null, the
+        counterpart of `null_spread_shuffle`.
     monopole_norm : ndarray, shape (B,)
         Normalised ell=0 companion (CLAUDE.md hard rule 6), km/s. Since the
         per-center weight is the SPEED |u_alpha|
@@ -1132,14 +1253,14 @@ class NormalizedDipole:
     zeta_hat: np.ndarray
     sem: np.ndarray
     zeta_hat_shuffle: np.ndarray
-    sem_shuffle: np.ndarray
+    null_spread_shuffle: np.ndarray
     zeta_hat_gaussian: np.ndarray
-    sem_gaussian: np.ndarray
+    null_spread_gaussian: np.ndarray
     monopole_norm: np.ndarray
 
 
 def shell_dipole_norm_scale(shell_edges: np.ndarray, n_bar: float) -> np.ndarray:
-    """The per-shell dipole normalization scale, `3 / (sqrt(3/4pi) * nbar*V_b)`.
+    """The per-shell dipole normalization scale, `1 / (sqrt(3/4pi) * nbar*V_b)`.
 
     ONE home for this factor (CLAUDE.md's DRY spirit, extracted specifically
     because two call sites now need it): `normalize_stacked_dipole` uses it
@@ -1152,7 +1273,6 @@ def shell_dipole_norm_scale(shell_edges: np.ndarray, n_bar: float) -> np.ndarray
     that the normalization convention could drift between the plotted stack
     and the per-center breakdown that is supposed to sum back to it.
 
-        3 = 2*ell + 1, picks up <mu^2> = 1/3 over a full shell
         sqrt(3/4pi) = the Y_10 normalization constant, undone here so the
                       number is comparable (up to the (-1)^ell relation,
                       dvcorr.conventions.nusser_multipole_sign) to the
@@ -1176,7 +1296,7 @@ def shell_dipole_norm_scale(shell_edges: np.ndarray, n_bar: float) -> np.ndarray
     """
     nbar_v_b = expected_shell_occupancy(n_bar, shell_edges)
     y10_norm = np.sqrt(3.0 / (4.0 * np.pi))
-    return 3.0 / (y10_norm * nbar_v_b)  # per-shell scale, (B,)
+    return 1.0 / (y10_norm * nbar_v_b)  # per-shell scale, (B,)
 
 
 def matched_gaussian_sample(sample: np.ndarray, seed: int) -> np.ndarray:
@@ -1186,7 +1306,7 @@ def matched_gaussian_sample(sample: np.ndarray, seed: int) -> np.ndarray:
     by both frames: the observer frame matches the (N_c,) signed radial
     velocities u_alpha (`normalize_result`), the velocity frame matches the
     (N_c, 3) velocity vectors v_alpha
-    (`dvcorr.pipeline.velocity_frame_comparison.run_gaussian_velocity_null`).
+    (`dvcorr.pipeline.velocity_frame_comparison.gaussian_velocity_null_dipoles`).
     Keeping the convention here means the two frames cannot drift apart on
     what "matched to the halos" means.
 
@@ -1219,7 +1339,7 @@ def matched_gaussian_sample(sample: np.ndarray, seed: int) -> np.ndarray:
     isotropy the halo sample does not have. The resulting 3-D null is
     therefore mildly anisotropic BY CONSTRUCTION, which is the point: it is
     what makes it a different question from
-    `dvcorr.pipeline.velocity_frame_comparison.run_random_axis_null`'s
+    `dvcorr.pipeline.velocity_frame_comparison.random_axis_null_dipoles`'s
     strictly isotropic axis.
 
     Parameters
@@ -1263,17 +1383,45 @@ def matched_gaussian_sample(sample: np.ndarray, seed: int) -> np.ndarray:
     return rng.normal(loc=mu, scale=sigma, size=values.shape)
 
 
+def null_realization_seeds(seed: int, n_realizations: int) -> np.ndarray:
+    """Spawn one null seed into `n_realizations` independent child seeds.
+
+    Every null seed in the config ladder (`RunConfig.shuffle_seed`,
+    `.gaussian_null_seed`, `ComparisonRunConfig.axis_null_seed`, ...) names a
+    random STREAM rather than a single draw, and this is the one place a
+    stream is split. `numpy.random.SeedSequence` does the splitting, so the
+    children are independent by construction -- not `seed + i`, which for two
+    nulls whose base seeds differ by less than `n_realizations` would hand
+    them overlapping streams and quietly correlate two curves that are
+    supposed to be independent evidence.
+
+    Deterministic in `seed`: the same base seed always yields the same
+    children, so a whole run's nulls -- band and all -- reproduce exactly.
+
+    Parameters
+    ----------
+    seed : int
+        Base seed naming the stream.
+    n_realizations : int
+        How many children to spawn, e.g. `RunConfig.n_null_realizations`.
+
+    Returns
+    -------
+    ndarray, shape (n_realizations,), uint32
+        Child seeds, each suitable for `np.random.default_rng`.
+    """
+    return np.random.SeedSequence(seed).generate_state(n_realizations, dtype=np.uint32)
+
+
 def normalize_stacked_dipole(
     shell_edges: np.ndarray,
     dipole: np.ndarray,
     monopole: np.ndarray,
     per_center_dipole: np.ndarray,
-    null_dipole: np.ndarray,
-    null_per_center_dipole: np.ndarray,
+    null_dipoles: np.ndarray,
     n_centers: int,
     n_bar: float,
-    gaussian_null_dipole: np.ndarray | None = None,
-    gaussian_null_per_center_dipole: np.ndarray | None = None,
+    gaussian_null_dipoles: np.ndarray | None = None,
 ) -> NormalizedDipole:
     """The normalization arithmetic, factored out to ONE home.
 
@@ -1282,15 +1430,24 @@ def normalize_stacked_dipole(
     pulled out to a stand-alone function because
     `dvcorr.pipeline.velocity_frame_comparison` needs the identical
     normalization for the velocity-frame result, and that frame's NULLS are
-    different constructions (a random-axis re-run, not a scalar permutation --
-    see `dvcorr.pipeline.velocity_frame_comparison.run_random_axis_null` for
-    why; and a re-run on drawn velocities rather than a recombination, see
-    `.run_gaussian_velocity_null`) -- so the pieces that legitimately differ
-    between the two call sites, BOTH nulls, are parameters here rather than
-    built inside this function.
+    different constructions (a random AXIS rather than a permuted scalar --
+    see `dvcorr.pipeline.velocity_frame_comparison.random_axis_null_dipoles`
+    for why) -- so the pieces that legitimately differ between the two call
+    sites, BOTH nulls, are parameters here rather than built inside this
+    function.
 
-        zeta_hat_1(r_b) = 3 * (dipole_b / n_centers) / (sqrt(3/4pi) * nbar*V_b)
-          3            = 2*ell + 1, picks up <mu^2> = 1/3 over a full shell
+    Nulls arrive as REALIZATION STACKS, shape (R, B)
+    ---------------------------------------------------
+    Every null parameter here is (R, B): R independent draws of the same null,
+    one row each. This function reduces them to the reported pair -- the mean
+    across rows, and the ddof=1 standard deviation across rows as the band --
+    and there is no path that accepts a single realization, deliberately. A
+    (B,) null is a sample of size one presented as if it were an answer, and
+    on the inner shells it is a badly misleading one
+    (`RunConfig.n_null_realizations` documents the measurement). Callers build
+    the R rows; this function does the arithmetic.
+
+        zeta_hat_1(r_b) = (dipole_b / n_centers) / (sqrt(3/4pi) * nbar*V_b)
           sqrt(3/4pi)  = the Y_10 normalization constant, undone here so the
                          number is comparable (up to the (-1)^ell relation,
                          dvcorr.conventions.nusser_multipole_sign) to the
@@ -1311,39 +1468,35 @@ def normalize_stacked_dipole(
     per_center_dipole : ndarray, shape (N_c, B)
         Per-center dipole breakdown, e.g. `result.per_center_dipole`, used
         for the across-center standard error via `center_standard_error`.
-    null_dipole : ndarray, shape (B,)
-        The raw stacked dipole of whatever NULL the caller has already
-        built -- a shuffled/permuted recombination for the observer frame
-        (`normalize_result`'s velocity-shuffle), or a random-axis re-run of
-        the estimator for the velocity frame
-        (`dvcorr.pipeline.velocity_frame_comparison.run_random_axis_null`).
-        This function does not know or care which; it only normalizes
-        whatever it is handed. `zeta_hat_shuffle` on the returned
+    null_dipoles : ndarray, shape (R, B)
+        R independent realizations of whatever NULL the caller has already
+        built -- permuted-velocity recombinations for the observer frame
+        (`normalize_result`'s velocity-shuffle), random-axis recombinations
+        for the velocity frame
+        (`dvcorr.pipeline.velocity_frame_comparison.random_axis_null_dipoles`)
+        -- each row a raw stacked dipole in the same units as `dipole`. This
+        function does not know or care which construction produced them; it
+        only normalizes what it is handed. `zeta_hat_shuffle` on the returned
         `NormalizedDipole` therefore names "whatever null the caller built",
         not specifically a scalar permutation -- read it as the null curve,
         not as a promise about its construction.
-    null_per_center_dipole : ndarray, shape (N_c, B)
-        Per-center breakdown of the same null, for its own standard error.
     n_centers : int
         Number of surviving centers, e.g. `result.n_centers`. Shared by the
         signal and the null: both are stacks over the SAME center set.
     n_bar : float
         Mean halo number density over the whole box, e.g. from
         `box_number_density`.
-    gaussian_null_dipole : ndarray, shape (B,), optional
-        Raw stacked dipole of the SECOND null, the matched-Gaussian one --
-        again already built by the caller, and again differently per frame
-        (`normalize_result` recombines a drawn u; `dvcorr.pipeline
-        .velocity_frame_comparison.run_gaussian_velocity_null` re-runs the
-        estimator on a drawn v). Both frames' production paths always supply
-        it. It is optional ONLY so that a unit test exercising the
-        normalization ARITHMETIC does not have to fabricate a second null it
-        is not testing; omitting it fills `NormalizedDipole.zeta_hat_gaussian`
-        and `.sem_gaussian` with NaN, which propagates to a visibly missing
-        curve rather than to a wrong number.
-    gaussian_null_per_center_dipole : ndarray, shape (N_c, B), optional
-        Per-center breakdown of the same null, for its own standard error.
-        Must be given together with `gaussian_null_dipole`.
+    gaussian_null_dipoles : ndarray, shape (R, B), optional
+        R realizations of the SECOND null, the matched-Gaussian one -- again
+        already built by the caller, and again differently per frame
+        (`normalize_result` recombines drawn u; `dvcorr.pipeline
+        .velocity_frame_comparison.gaussian_velocity_null_dipoles` recombines
+        drawn 3-D v). Both frames' production paths always supply it. It is
+        optional ONLY so that a unit test exercising the normalization
+        ARITHMETIC does not have to fabricate a second null it is not
+        testing; omitting it fills `NormalizedDipole.zeta_hat_gaussian` and
+        `.null_spread_gaussian` with NaN, which propagates to a visibly
+        missing curve rather than to a wrong number.
 
     Returns
     -------
@@ -1352,18 +1505,17 @@ def normalize_stacked_dipole(
     Raises
     ------
     ValueError
-        If exactly one of `gaussian_null_dipole` /
-        `gaussian_null_per_center_dipole` is given: half a null would
-        silently produce a curve with no error band, or a band with no curve.
+        If a null stack is not 2-D `(R, B)`, or holds fewer than two
+        realizations. Both are the same mistake -- passing a single
+        realization where the sampling distribution of the null is what is
+        being asked for -- and it is rejected loudly rather than reported as
+        a band of zero width, which would read as "this null is exactly
+        determined".
     """
-    if (gaussian_null_dipole is None) != (gaussian_null_per_center_dipole is None):
-        raise ValueError(
-            "normalize_stacked_dipole: gaussian_null_dipole and "
-            "gaussian_null_per_center_dipole must be given together or not at "
-            "all; got "
-            f"gaussian_null_dipole={'None' if gaussian_null_dipole is None else 'array'}, "
-            f"gaussian_null_per_center_dipole="
-            f"{'None' if gaussian_null_per_center_dipole is None else 'array'}."
+    null_dipoles = _validated_null_stack(null_dipoles, "null_dipoles")
+    if gaussian_null_dipoles is not None:
+        gaussian_null_dipoles = _validated_null_stack(
+            gaussian_null_dipoles, "gaussian_null_dipoles"
         )
 
     nbar_v_b = expected_shell_occupancy(n_bar, shell_edges)
@@ -1372,15 +1524,20 @@ def normalize_stacked_dipole(
     zeta_hat = (dipole / n_centers) * norm_scale
     sem = center_standard_error(per_center_dipole) * norm_scale
 
-    zeta_hat_shuffle = (null_dipole / n_centers) * norm_scale
-    sem_shuffle = center_standard_error(null_per_center_dipole) * norm_scale
+    # (R, B) -> the reported pair: mean across realizations, and the spread
+    # ACROSS realizations as the band. Not center_standard_error, which would
+    # describe the scatter within one draw; see NormalizedDipole's docstring.
+    zeta_hat_null = (null_dipoles / n_centers) * norm_scale
+    zeta_hat_shuffle = zeta_hat_null.mean(axis=0)
+    null_spread_shuffle = zeta_hat_null.std(axis=0, ddof=1)
 
-    if gaussian_null_dipole is None:
+    if gaussian_null_dipoles is None:
         zeta_hat_gaussian = np.full_like(zeta_hat, np.nan)
-        sem_gaussian = np.full_like(zeta_hat, np.nan)
+        null_spread_gaussian = np.full_like(zeta_hat, np.nan)
     else:
-        zeta_hat_gaussian = (gaussian_null_dipole / n_centers) * norm_scale
-        sem_gaussian = center_standard_error(gaussian_null_per_center_dipole) * norm_scale
+        zeta_hat_gaussian_null = (gaussian_null_dipoles / n_centers) * norm_scale
+        zeta_hat_gaussian = zeta_hat_gaussian_null.mean(axis=0)
+        null_spread_gaussian = zeta_hat_gaussian_null.std(axis=0, ddof=1)
 
     # ell=0 companion, same normalization convention minus the 3/Y10 factors
     # (hard rule 6: never plot the dipole without it).
@@ -1390,11 +1547,35 @@ def normalize_stacked_dipole(
         zeta_hat=zeta_hat,
         sem=sem,
         zeta_hat_shuffle=zeta_hat_shuffle,
-        sem_shuffle=sem_shuffle,
+        null_spread_shuffle=null_spread_shuffle,
         zeta_hat_gaussian=zeta_hat_gaussian,
-        sem_gaussian=sem_gaussian,
+        null_spread_gaussian=null_spread_gaussian,
         monopole_norm=monopole_norm,
     )
+
+
+def _validated_null_stack(null_dipoles: np.ndarray, name: str) -> np.ndarray:
+    """Check a null realization stack is `(R, B)` with R >= 2; return it as float.
+
+    Shared by `normalize_stacked_dipole`'s two null parameters so both report
+    the same failure the same way. See that function's Raises section for why
+    a single realization is an error rather than a zero-width band.
+    """
+    values = np.asarray(null_dipoles, dtype=float)
+    if values.ndim != 2:
+        raise ValueError(
+            f"normalize_stacked_dipole: {name} must be 2-D (R, B), one row per "
+            f"null realization, got ndim={values.ndim} (shape {values.shape}). "
+            "A single (B,) realization is a sample of size one: build R of "
+            "them with null_realization_seeds."
+        )
+    if values.shape[0] < _MIN_NULL_REALIZATIONS:
+        raise ValueError(
+            f"normalize_stacked_dipole: {name} holds {values.shape[0]} "
+            f"realization(s); at least {_MIN_NULL_REALIZATIONS} are needed for "
+            "the across-realization spread that is reported as the null's band."
+        )
+    return values
 
 
 def normalize_result(
@@ -1402,6 +1583,7 @@ def normalize_result(
     n_bar: float,
     shuffle_seed: int,
     gaussian_null_seed: int,
+    n_realizations: int,
 ) -> NormalizedDipole:
     """Turn a raw estimator result + n_bar into the plotted, normalized curves.
 
@@ -1418,7 +1600,7 @@ def normalize_result(
     definite |u_alpha|. Permuting the weight against the untouched amplitudes
     would NOT be a null: a permutation of positive numbers leaves the
     alignment that produced the signal exactly where it was -- the same trap
-    `dvcorr.pipeline.velocity_frame_comparison.run_random_axis_null`
+    `dvcorr.pipeline.velocity_frame_comparison.random_axis_null_dipoles`
     documents for the velocity frame, which is self-aligned for the same
     reason.
 
@@ -1461,10 +1643,14 @@ def normalize_result(
     hang an error model later.
 
     Neither null costs an estimator pass: both are recombinations of arrays
-    the result already carries. (The velocity frame gets no such discount for
-    either of its nulls -- see
-    `dvcorr.pipeline.velocity_frame_comparison.run_random_axis_null` and
-    `.run_gaussian_velocity_null`.)
+    the result already carries. That is what makes REALIZATIONS affordable --
+    each of the `n_realizations` draws is one permutation (or one Gaussian
+    sample) plus one matrix multiply, so the whole band costs a fraction of
+    the single estimator pass that produced `result`. The velocity frame
+    reaches the same place by a different route, caching the per-shell
+    direction sums so its axis draws are recombinations too (see
+    `dvcorr.estimators.velocity_frame_dipole.VelocityFrameShellDipoleResult
+    .per_center_direction_sum`).
 
     Parameters
     ----------
@@ -1473,42 +1659,59 @@ def normalize_result(
         Mean halo number density over the whole box, e.g. from
         `box_number_density`.
     shuffle_seed : int
-        Seed for the velocity-shuffle null (see above).
+        Base seed for the velocity-shuffle null (see above). Spawned into
+        `n_realizations` child seeds by `null_realization_seeds`; it names the
+        stream, not one permutation.
     gaussian_null_seed : int
-        Seed for the matched-Gaussian null, distinct from `shuffle_seed` so
-        the two nulls are independent draws rather than two views of one
-        random stream. See `RunConfig.gaussian_null_seed` for the full ladder.
+        Base seed for the matched-Gaussian null, distinct from `shuffle_seed`
+        so the two nulls are independent streams rather than two views of one.
+        See `RunConfig.gaussian_null_seed` for the full ladder.
+    n_realizations : int
+        How many draws of each null to build, e.g.
+        `RunConfig.n_null_realizations`. Reported as a mean and an
+        across-realization band; see that field for why a single draw is not
+        an acceptable answer on the inner shells.
 
     Returns
     -------
     NormalizedDipole
     """
-    shuffle_rng = np.random.default_rng(shuffle_seed)
-    perm = shuffle_rng.permutation(result.per_center_u.size)
-
     # Undo the z_hat = sign(u) n_hat_V flip to recover the fixed-axis
     # amplitude, then permute the SIGNED u against it -- see the docstring.
+    # Built once and reused by every realization of both nulls: it is a pure
+    # function of the geometry, which no null touches.
     fixed_axis_amplitude = np.sign(result.per_center_u)[:, None] * result.per_center_amplitude
-    shuffled_per_center_dipole = result.per_center_u[perm][:, None] * fixed_axis_amplitude
-    null_dipole = shuffled_per_center_dipole.sum(axis=0)
+
+    def stacked(u_replacement: np.ndarray) -> np.ndarray:
+        """One realization: recombine a replacement scalar against the axis."""
+        return (u_replacement[:, None] * fixed_axis_amplitude).sum(axis=0)
+
+    def permuted(child_seed: int) -> np.ndarray:
+        """The signed u_alpha, reshuffled among centers."""
+        perm = np.random.default_rng(child_seed).permutation(result.per_center_u.size)
+        return result.per_center_u[perm]
+
+    null_dipoles = np.array([
+        stacked(permuted(child))
+        for child in null_realization_seeds(shuffle_seed, n_realizations)
+    ])
 
     # Second null: the same recombination, against a matched Gaussian draw of
     # the signed u rather than a permutation of it.
-    u_gaussian = matched_gaussian_sample(result.per_center_u, gaussian_null_seed)
-    gaussian_per_center_dipole = u_gaussian[:, None] * fixed_axis_amplitude
-    gaussian_null_dipole = gaussian_per_center_dipole.sum(axis=0)
+    gaussian_null_dipoles = np.array([
+        stacked(matched_gaussian_sample(result.per_center_u, int(child)))
+        for child in null_realization_seeds(gaussian_null_seed, n_realizations)
+    ])
 
     return normalize_stacked_dipole(
         shell_edges=result.shell_edges,
         dipole=result.dipole,
         monopole=result.monopole,
         per_center_dipole=result.per_center_dipole,
-        null_dipole=null_dipole,
-        null_per_center_dipole=shuffled_per_center_dipole,
+        null_dipoles=null_dipoles,
         n_centers=result.n_centers,
         n_bar=n_bar,
-        gaussian_null_dipole=gaussian_null_dipole,
-        gaussian_null_per_center_dipole=gaussian_per_center_dipole,
+        gaussian_null_dipoles=gaussian_null_dipoles,
     )
 
 
@@ -1534,6 +1737,14 @@ def make_figure(
     and the matched Gaussian, dotted) share their first two moments by
     construction, so the gap between the two dashed/dotted curves -- not
     either one's distance from zero -- is what carries information.
+
+    The two bands are DIFFERENT quantities and are read differently. The
+    signal's is an across-CENTER standard error: how noisy this stack is.
+    Each null's is an across-REALIZATION standard deviation
+    (`NormalizedDipole.null_spread_shuffle`): how far the null curve moves
+    when only its seed changes, i.e. the noise floor. A signal point inside
+    its null's band is not a measurement, however far from zero it sits --
+    which on the innermost shells it always is, by a wide margin.
 
     Parameters
     ----------
@@ -1562,8 +1773,8 @@ def make_figure(
         label=fr"$\hat\zeta_1$  (N$_c$={result.n_centers})",
     )
     ax_dipole.fill_between(
-        r, normalized.zeta_hat_shuffle - normalized.sem_shuffle,
-        normalized.zeta_hat_shuffle + normalized.sem_shuffle,
+        r, normalized.zeta_hat_shuffle - normalized.null_spread_shuffle,
+        normalized.zeta_hat_shuffle + normalized.null_spread_shuffle,
         color=_COLOR_NULL, alpha=_BAND_ALPHA,
     )
     ax_dipole.plot(r, normalized.zeta_hat_shuffle, "s--", color=_COLOR_NULL, label="shuffle null")
@@ -1574,8 +1785,8 @@ def make_figure(
     # nothing, and the legend entry is the only trace, which is the intended
     # visible-absence behavior (`normalize_stacked_dipole`).
     ax_dipole.fill_between(
-        r, normalized.zeta_hat_gaussian - normalized.sem_gaussian,
-        normalized.zeta_hat_gaussian + normalized.sem_gaussian,
+        r, normalized.zeta_hat_gaussian - normalized.null_spread_gaussian,
+        normalized.zeta_hat_gaussian + normalized.null_spread_gaussian,
         color=_COLOR_GAUSSIAN_NULL, alpha=_BAND_ALPHA,
     )
     ax_dipole.plot(

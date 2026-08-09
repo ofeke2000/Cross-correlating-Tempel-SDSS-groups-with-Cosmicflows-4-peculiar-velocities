@@ -35,12 +35,15 @@ from dvcorr.estimators.shell_dipole import (
     velocity_centered_shell_dipole,
 )
 from dvcorr.estimators.velocity_frame_dipole import velocity_frame_shell_dipole
-from dvcorr.pipeline.velocity_centered import matched_gaussian_sample
+from dvcorr.pipeline.velocity_centered import (
+    matched_gaussian_sample,
+    null_realization_seeds,
+)
 from dvcorr.pipeline.velocity_frame_comparison import (
     ComparisonRunConfig,
+    gaussian_velocity_null_dipoles,
+    random_axis_null_dipoles,
     run_both_frames,
-    run_gaussian_velocity_null,
-    run_random_axis_null,
     select_shared_centers,
 )
 
@@ -573,8 +576,8 @@ def test_uncorrelated_density_field_gives_null_dipole_in_both_frames():
     nbar_v_b = expected_shell_occupancy(n_bar, _NULL_SHELL_EDGES)
     y10_norm = np.sqrt(3.0 / (4.0 * np.pi))
 
-    obs_normalized = 3.0 * (obs_result.dipole / obs_result.n_centers) / (y10_norm * nbar_v_b)
-    vf_normalized = 3.0 * (vf_result.dipole / vf_result.n_centers) / (y10_norm * nbar_v_b)
+    obs_normalized = (obs_result.dipole / obs_result.n_centers) / (y10_norm * nbar_v_b)
+    vf_normalized = (vf_result.dipole / vf_result.n_centers) / (y10_norm * nbar_v_b)
 
     # Tolerance scaled to the total speed |v_alpha| = sqrt(radial^2 + transverse^2),
     # the natural scale of both u_alpha (bounded by it) and |v_alpha| (equal to it).
@@ -593,6 +596,11 @@ _CLUSTER_SHELL_MAX = 30.0
 _CLUSTER_SUB_VOLUME_RADIUS = 300.0
 _CLUSTER_AXIS_MIX = 0.6       # concentration of tracers toward the flow axis; 0=isotropic, 1=on-axis
 _CLUSTER_COLLAPSE_FRACTION = 0.2  # the null must land well below this fraction of the signal
+_CLUSTER_N_REALIZATIONS = 8       # enough for a mean and a spread on a 12-center toy
+#: How many standard errors the null's across-realization MEAN may sit from
+#: zero before the construction is judged not to be a null. Three: the mean of
+#: R draws is asymptotically normal about zero, so this is a ~99.7% band.
+_NULL_MEAN_SIGMA_TOLERANCE = 3.0
 
 
 def _clustered_signal_centers_and_tracers(
@@ -630,25 +638,25 @@ def _clustered_signal_centers_and_tracers(
     return s_centers, v_centers, s_tracers
 
 
-def test_random_axis_null_collapses_the_velocity_frame_dipole_on_a_clustered_signal():
-    """`run_random_axis_null` collapses the velocity-frame dipole relative to
-    a genuine, nonzero signal built by biasing tracers toward each center's
-    own flow direction (see `_clustered_signal_centers_and_tracers`).
-    """
-    rng = np.random.default_rng(20260727)
-    observer = np.asarray(conventions.OBSERVER_POSITION, dtype=float)
-    cfg = ComparisonRunConfig(
+def _clustered_cfg() -> ComparisonRunConfig:
+    """The single-shell config all four null tests below share."""
+    return ComparisonRunConfig(
         sub_volume_radius=_CLUSTER_SUB_VOLUME_RADIUS,
         shells=ShellConfig(
             min_radius=_CLUSTER_SHELL_MIN,
             max_radius=_CLUSTER_SHELL_MAX,
             radii_step=_CLUSTER_SHELL_MAX - _CLUSTER_SHELL_MIN,  # a single shell
         ),
+        n_null_realizations=_CLUSTER_N_REALIZATIONS,
     )
 
+
+def _clustered_signal_run(rng: np.random.Generator):
+    """Centers, tracers, and the signal estimator pass they produce."""
+    observer = np.asarray(conventions.OBSERVER_POSITION, dtype=float)
+    cfg = _clustered_cfg()
     s_centers, v_centers, s_tracers = _clustered_signal_centers_and_tracers(rng)
     centers = select_shared_centers(cfg, s_centers, v_centers, observer)
-    assert centers.n_centers == _CLUSTER_N_CENTERS  # nothing dropped: fast, well-placed centers
 
     signal_result = velocity_frame_shell_dipole(
         s_centers=centers.s_centers,
@@ -658,171 +666,188 @@ def test_random_axis_null_collapses_the_velocity_frame_dipole_on_a_clustered_sig
         sub_volume_radius=cfg.sub_volume_radius,
         observer=observer,
     )
-    null_result = run_random_axis_null(cfg, centers, s_tracers, observer)
+    return cfg, centers, s_tracers, observer, signal_result
 
-    assert signal_result.n_centers == centers.n_centers
-    assert null_result.n_centers == centers.n_centers
+
+def test_random_axis_null_collapses_the_velocity_frame_dipole_on_a_clustered_signal():
+    """`random_axis_null_dipoles` collapses the velocity-frame dipole relative
+    to a genuine, nonzero signal built by biasing tracers toward each center's
+    own flow direction (see `_clustered_signal_centers_and_tracers`).
+
+    Checked on the across-realization MEAN, which is what reaches the figure,
+    and then on every individual realization -- the second is the stronger
+    statement, and it is the one that would catch a null that collapses only
+    on average because its draws cancel.
+    """
+    rng = np.random.default_rng(20260727)
+    cfg, centers, _s_tracers, _observer, signal_result = _clustered_signal_run(rng)
+    assert centers.n_centers == _CLUSTER_N_CENTERS  # nothing dropped: fast, well-placed centers
+
+    null_dipoles = random_axis_null_dipoles(cfg, centers, signal_result)
+    assert null_dipoles.shape == (cfg.n_null_realizations, signal_result.dipole.size)
 
     y10_norm = np.sqrt(3.0 / (4.0 * np.pi))
-    signal_normalized = 3.0 * signal_result.dipole / (y10_norm * signal_result.pair_count)
-    null_normalized = 3.0 * null_result.dipole / (y10_norm * null_result.pair_count)
+    signal_normalized = signal_result.dipole / (y10_norm * signal_result.pair_count)
+    null_normalized = null_dipoles / (y10_norm * signal_result.pair_count)
 
     assert abs(signal_normalized[0]) > 0.0  # sanity: the signal is genuinely nonzero
-    assert abs(null_normalized[0]) < _CLUSTER_COLLAPSE_FRACTION * abs(signal_normalized[0])
+    bar = _CLUSTER_COLLAPSE_FRACTION * abs(signal_normalized[0])
+    null_mean = null_normalized.mean(axis=0)[0]
+    assert abs(null_mean) < bar
+
+    # ... and the mean is consistent with ZERO given the realizations' own
+    # scatter, which is the sharper statement. Note what is deliberately NOT
+    # asserted: that every INDIVIDUAL realization clears `bar`. Several do not
+    # -- on a 12-center toy a single draw lands a few times the bar away from
+    # zero, in either direction -- and demanding otherwise would be demanding
+    # that a random variable equal its own expectation. That mistake, made on
+    # the production figure rather than here, is what made a single-realization
+    # null curve read as a systematic trend at small r.
+    null_sem = null_normalized[:, 0].std(ddof=1) / np.sqrt(null_normalized.shape[0])
+    assert abs(null_mean) < _NULL_MEAN_SIGMA_TOLERANCE * null_sem
 
 
-def test_run_random_axis_null_preserves_speed_and_position():
-    """`run_random_axis_null` randomizes only the DIRECTION of each center's
-    velocity; its docstring's claim that speed and position are unchanged is
-    checked here directly (the collapse test above only exercises the
-    randomized-direction half).
+def test_random_axis_null_realization_equals_a_full_estimator_pass():
+    """The recombination is EXACT, not an approximation: realization k of
+    `random_axis_null_dipoles` equals what `velocity_frame_shell_dipole`
+    returns when re-run on that realization's replacement velocities.
 
-    Speed is checked through `per_center_speed` on the null result (which
-    equals `|v_null_alpha|` by construction, so this also indirectly confirms
-    `v_null_alpha` is not accidentally renormalized to something else).
-    Position is checked by confirming the null result's occupancy
-    (`per_center_count`, pure geometry that cannot depend on velocity at all)
-    matches a direct call using the ORIGINAL `centers.s_centers` /
-    `centers.v_centers` on the same tracers -- if `run_random_axis_null`
-    silently altered any center's position, occupancy would change.
+    This is the invariant that lets the null be built from cached direction
+    sums instead of a second estimator pass
+    (`VelocityFrameShellDipoleResult.per_center_direction_sum`), and it
+    subsumes what two older tests checked separately -- that the null keeps
+    each center's own speed attached, and that it leaves positions (and hence
+    occupancy) untouched. Neither could survive a mismatch here.
     """
     rng = np.random.default_rng(20260729)
-    observer = np.asarray(conventions.OBSERVER_POSITION, dtype=float)
-    cfg = ComparisonRunConfig(
-        sub_volume_radius=_CLUSTER_SUB_VOLUME_RADIUS,
-        shells=ShellConfig(
-            min_radius=_CLUSTER_SHELL_MIN,
-            max_radius=_CLUSTER_SHELL_MAX,
-            radii_step=_CLUSTER_SHELL_MAX - _CLUSTER_SHELL_MIN,
-        ),
+    cfg, centers, s_tracers, observer, signal_result = _clustered_signal_run(rng)
+
+    null_dipoles = random_axis_null_dipoles(cfg, centers, signal_result)
+
+    # Rebuild realization 0's velocities exactly as the function does, then
+    # pay for the estimator pass this construction exists to avoid.
+    child = null_realization_seeds(cfg.axis_null_seed, cfg.n_null_realizations)[0]
+    speeds = np.linalg.norm(centers.v_centers, axis=1)
+    v_null = speeds[:, None] * unit_vector(
+        np.random.default_rng(child).normal(size=centers.v_centers.shape)
     )
-
-    s_centers, v_centers, s_tracers = _clustered_signal_centers_and_tracers(rng)
-    centers = select_shared_centers(cfg, s_centers, v_centers, observer)
-
-    null_result = run_random_axis_null(cfg, centers, s_tracers, observer)
-
-    original_speed = np.linalg.norm(centers.v_centers, axis=1)
-    np.testing.assert_allclose(null_result.per_center_speed, original_speed, atol=1e-8)
-
-    reference_result = velocity_frame_shell_dipole(
+    reference = velocity_frame_shell_dipole(
         s_centers=centers.s_centers,
-        v_centers=centers.v_centers,  # the ORIGINAL (non-randomized) velocities
+        v_centers=v_null,
         s_tracers=s_tracers,
         shell_edges=cfg.shells.shell_edges,
         sub_volume_radius=cfg.sub_volume_radius,
         observer=observer,
     )
-    np.testing.assert_array_equal(null_result.per_center_count, reference_result.per_center_count)
+
+    np.testing.assert_allclose(null_dipoles[0], reference.dipole, rtol=1e-10, atol=1e-10)
+    # Speed preserved by the draw, and occupancy (pure geometry) untouched.
+    np.testing.assert_allclose(reference.per_center_speed, speeds, atol=1e-8)
+    np.testing.assert_array_equal(
+        reference.per_center_count, signal_result.per_center_count
+    )
 
 
 def test_gaussian_velocity_null_collapses_the_velocity_frame_dipole():
-    """`run_gaussian_velocity_null` is a NULL on the same clustered signal
+    """`gaussian_velocity_null_dipoles` is a NULL on the same clustered signal
     the random-axis null is checked against, and to the same bar.
 
     Both of this frame's nulls have to clear this: whatever else they differ
-    on (`run_gaussian_velocity_null`'s docstring lays out exactly what each
+    on (`gaussian_velocity_null_dipoles`' docstring lays out exactly what each
     preserves), a construction that did not decouple the axis from the
     density field would not be a null at all and would have no business on
     the figure.
     """
     rng = np.random.default_rng(20260804)
-    observer = np.asarray(conventions.OBSERVER_POSITION, dtype=float)
-    cfg = ComparisonRunConfig(
-        sub_volume_radius=_CLUSTER_SUB_VOLUME_RADIUS,
-        shells=ShellConfig(
-            min_radius=_CLUSTER_SHELL_MIN,
-            max_radius=_CLUSTER_SHELL_MAX,
-            radii_step=_CLUSTER_SHELL_MAX - _CLUSTER_SHELL_MIN,  # a single shell
-        ),
-    )
+    cfg, centers, _s_tracers, _observer, signal_result = _clustered_signal_run(rng)
 
-    s_centers, v_centers, s_tracers = _clustered_signal_centers_and_tracers(rng)
-    centers = select_shared_centers(cfg, s_centers, v_centers, observer)
-
-    signal_result = velocity_frame_shell_dipole(
-        s_centers=centers.s_centers,
-        v_centers=centers.v_centers,
-        s_tracers=s_tracers,
-        shell_edges=cfg.shells.shell_edges,
-        sub_volume_radius=cfg.sub_volume_radius,
-        observer=observer,
-    )
-    gaussian_null_result = run_gaussian_velocity_null(cfg, centers, s_tracers, observer)
-
-    assert gaussian_null_result.n_centers == centers.n_centers
+    gaussian_null_dipoles = gaussian_velocity_null_dipoles(cfg, centers, signal_result)
 
     y10_norm = np.sqrt(3.0 / (4.0 * np.pi))
-    signal_normalized = 3.0 * signal_result.dipole / (y10_norm * signal_result.pair_count)
-    null_normalized = 3.0 * gaussian_null_result.dipole / (
-        y10_norm * gaussian_null_result.pair_count
-    )
+    signal_normalized = signal_result.dipole / (y10_norm * signal_result.pair_count)
+    null_normalized = gaussian_null_dipoles / (y10_norm * signal_result.pair_count)
 
     assert abs(signal_normalized[0]) > 0.0
-    assert abs(null_normalized[0]) < _CLUSTER_COLLAPSE_FRACTION * abs(signal_normalized[0])
+    bar = _CLUSTER_COLLAPSE_FRACTION * abs(signal_normalized[0])
+    null_mean = null_normalized.mean(axis=0)[0]
+    assert abs(null_mean) < bar
+
+    # Same two-part bar as the random-axis null, and the same reason for not
+    # testing individual realizations -- see that test.
+    null_sem = null_normalized[:, 0].std(ddof=1) / np.sqrt(null_normalized.shape[0])
+    assert abs(null_mean) < _NULL_MEAN_SIGMA_TOLERANCE * null_sem
 
 
-def test_gaussian_velocity_null_replaces_speed_but_keeps_position():
-    """The two velocity-frame nulls differ in EXACTLY the documented way, and
-    this pins both halves of that difference.
+def test_gaussian_velocity_null_detaches_the_speed_from_its_center():
+    """The two velocity-frame nulls differ in EXACTLY the documented way.
 
-    Speed: `run_random_axis_null` keeps each center's own |v_alpha| attached
-    to that center (asserted in
-    `test_run_random_axis_null_preserves_speed_and_position`); this one does
-    NOT -- it draws a fresh vector, so the per-center speeds must differ
+    Speed: `random_axis_null_dipoles` keeps each center's own |v_alpha|
+    attached to that center (asserted in
+    `test_random_axis_null_realization_equals_a_full_estimator_pass`); this
+    one does NOT -- it draws a fresh vector, so the per-center speeds differ
     center-by-center while the population's per-component mean and spread are
     matched. If this ever starts preserving the speeds, the two nulls have
     silently become the same test and the figure's dotted curve stops
     carrying information.
 
-    Position: unchanged, same as the random-axis null -- confirmed through
-    `per_center_count`, pure geometry that cannot depend on velocity.
+    The recombination itself is checked the same way as the random-axis
+    null's: realization 0 must equal a full estimator pass on the same drawn
+    velocities.
     """
     rng = np.random.default_rng(20260804)
-    observer = np.asarray(conventions.OBSERVER_POSITION, dtype=float)
-    cfg = ComparisonRunConfig(
-        sub_volume_radius=_CLUSTER_SUB_VOLUME_RADIUS,
-        shells=ShellConfig(
-            min_radius=_CLUSTER_SHELL_MIN,
-            max_radius=_CLUSTER_SHELL_MAX,
-            radii_step=_CLUSTER_SHELL_MAX - _CLUSTER_SHELL_MIN,
-        ),
-    )
+    cfg, centers, s_tracers, observer, signal_result = _clustered_signal_run(rng)
 
-    s_centers, v_centers, s_tracers = _clustered_signal_centers_and_tracers(rng)
-    centers = select_shared_centers(cfg, s_centers, v_centers, observer)
+    gaussian_null_dipoles = gaussian_velocity_null_dipoles(cfg, centers, signal_result)
 
-    gaussian_null_result = run_gaussian_velocity_null(cfg, centers, s_tracers, observer)
+    child = null_realization_seeds(
+        cfg.velocity_gaussian_null_seed, cfg.n_null_realizations
+    )[0]
+    drawn_v = matched_gaussian_sample(centers.v_centers, int(child))
 
-    # Speed detached from its center: the per-center speeds are NOT the
-    # originals (contrast the random-axis null, which preserves them exactly).
+    # Speed detached from its center (contrast the random-axis null, which
+    # preserves it exactly). The moment-MATCHING contract of the draw is not
+    # re-checked here: this toy has ~12 centers, where a matched draw's mean
+    # scatters by sigma/sqrt(12), so it is pinned at large N in
+    # `tests/test_velocity_centered_dipole.py::test_matched_gaussian_sample_matches_each_column_of_a_vector_sample`.
     original_speed = np.linalg.norm(centers.v_centers, axis=1)
-    assert not np.allclose(gaussian_null_result.per_center_speed, original_speed, atol=1e-8)
+    assert not np.allclose(np.linalg.norm(drawn_v, axis=1), original_speed, atol=1e-8)
 
-    # ... and the speeds the estimator saw are exactly those of the matched
-    # draw for this config's seed -- i.e. the null really is
-    # `matched_gaussian_sample`'s output and not some other vector. The
-    # moment-MATCHING contract of that draw is not re-checked here: this toy
-    # has ~12 centers, where a matched draw's mean scatters by sigma/sqrt(12),
-    # so it is pinned at large N in
-    # `tests/test_velocity_centered_dipole.py::test_matched_gaussian_sample_matches_each_column_of_a_vector_sample`
-    # instead. This test's job is the speed/position half.
-    drawn_v = matched_gaussian_sample(centers.v_centers, cfg.velocity_gaussian_null_seed)
-    np.testing.assert_allclose(
-        np.linalg.norm(drawn_v, axis=1), gaussian_null_result.per_center_speed, atol=1e-8
-    )
-
-    # Position untouched: identical occupancy against the ORIGINAL velocities.
-    reference_result = velocity_frame_shell_dipole(
+    reference = velocity_frame_shell_dipole(
         s_centers=centers.s_centers,
-        v_centers=centers.v_centers,
+        v_centers=drawn_v,
         s_tracers=s_tracers,
         shell_edges=cfg.shells.shell_edges,
         sub_volume_radius=cfg.sub_volume_radius,
         observer=observer,
     )
+    np.testing.assert_allclose(
+        gaussian_null_dipoles[0], reference.dipole, rtol=1e-10, atol=1e-10
+    )
+    # Position untouched: identical occupancy against the ORIGINAL velocities.
     np.testing.assert_array_equal(
-        gaussian_null_result.per_center_count, reference_result.per_center_count
+        reference.per_center_count, signal_result.per_center_count
+    )
+
+
+def test_per_center_direction_sum_projects_onto_the_amplitude():
+    """A_alpha,b == sqrt(3/4pi) * (z_hat_alpha . S_alpha,b), exactly.
+
+    The linearity that every null in this frame rests on: Y_10 is linear in
+    the direction cosine, so summing over a shell's tracers commutes with
+    projecting onto the axis. If this ever fails, the cached direction sums
+    are not the amplitude's factorization and every null built from them is
+    measuring something else.
+    """
+    rng = np.random.default_rng(20260806)
+    _cfg, centers, _s_tracers, _observer, signal_result = _clustered_signal_run(rng)
+
+    z_hat = unit_vector(centers.v_centers)
+    projected = np.sqrt(3.0 / (4.0 * np.pi)) * np.einsum(
+        "ac,abc->ab", z_hat, signal_result.per_center_direction_sum
+    )
+
+    np.testing.assert_allclose(
+        projected, signal_result.per_center_amplitude, rtol=1e-10, atol=1e-12
     )
 
 

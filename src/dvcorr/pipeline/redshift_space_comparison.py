@@ -341,6 +341,13 @@ class BufferedCarve:
         centers are drawn from the core carve, not the buffer.
     catalog_mvir : ndarray, shape (N_total,)
         Masses of the full pre-carve population, for the funnel's first stage.
+    num_of_subhalos_core : ndarray, shape (N_core,), int32 | None
+        Daughter counts of the PLAIN carve, row-aligned with `pos_core` /
+        `vel_core`. Carried for the core carve only, and not for the buffer,
+        for the same reason `mvir_core` is: candidate centers are drawn from
+        the core, while the buffer exists solely to supply a complete
+        redshift-space TRACER field, and a tracer's halo class is never asked
+        about. None unless `load_and_carve_buffered` was asked for it.
     """
 
     pos_buffer: np.ndarray
@@ -356,9 +363,12 @@ class BufferedCarve:
     v_margin_kms: float
     v_margin_mpc: float
     buffered_radius: float
+    num_of_subhalos_core: np.ndarray | None = None
 
 
-def load_and_carve_buffered(cfg: RedshiftSpaceRunConfig, paths: PathsConfig) -> BufferedCarve:
+def load_and_carve_buffered(
+    cfg: RedshiftSpaceRunConfig, paths: PathsConfig, *, with_num_of_subhalos: bool = False
+) -> BufferedCarve:
     """Load the MDPL2 catalog once; carve twice (plain, then buffered).
 
     Pass 1: a plain `cfg.sub_volume_radius` carve, used ONLY to compute
@@ -375,6 +385,10 @@ def load_and_carve_buffered(cfg: RedshiftSpaceRunConfig, paths: PathsConfig) -> 
     ----------
     cfg : RedshiftSpaceRunConfig
     paths : PathsConfig
+    with_num_of_subhalos : bool, keyword-only
+        Passed through to `_load_all_halos`; surfaces on
+        `BufferedCarve.num_of_subhalos_core`. Only
+        `dvcorr.pipeline.halo_class_comparison` sets it.
 
     Returns
     -------
@@ -388,7 +402,7 @@ def load_and_carve_buffered(cfg: RedshiftSpaceRunConfig, paths: PathsConfig) -> 
         printing any percentage, mirroring `load_and_carve`'s guard).
     """
     observer = np.asarray(conventions.OBSERVER_POSITION, dtype=float)
-    halos = _load_all_halos(paths, cfg.catalog)
+    halos = _load_all_halos(paths, cfg.catalog, with_num_of_subhalos=with_num_of_subhalos)
     d_obs = np.linalg.norm(halos.pos - observer, axis=1)
 
     in_core = d_obs <= cfg.sub_volume_radius
@@ -435,6 +449,9 @@ def load_and_carve_buffered(cfg: RedshiftSpaceRunConfig, paths: PathsConfig) -> 
         mvir_core=halos.mvir[in_core],
         is_distinct_core=halos.is_distinct[in_core],
         catalog_mvir=halos.mvir,
+        num_of_subhalos_core=(
+            None if halos.num_of_subhalos is None else halos.num_of_subhalos[in_core]
+        ),
     )
 
 
@@ -925,13 +942,18 @@ def normalize_redshift_comparison(
     RedshiftSpaceComparison
     """
     real = normalize_result(
-        results.real_result, n_bar, cfg.shuffle_seed, cfg.gaussian_null_seed
+        results.real_result,
+        n_bar,
+        cfg.shuffle_seed,
+        cfg.gaussian_null_seed,
+        cfg.n_null_realizations,
     )
     redshift = normalize_result(
         results.redshift_result,
         n_bar,
         cfg.redshift_shuffle_seed,
         cfg.redshift_gaussian_null_seed,
+        cfg.n_null_realizations,
     )
 
     return RedshiftSpaceComparison(

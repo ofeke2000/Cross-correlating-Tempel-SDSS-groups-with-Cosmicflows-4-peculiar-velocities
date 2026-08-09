@@ -108,8 +108,17 @@ Two halo catalogs are supported and **both stay available** — a run picks one 
 reproduces `mvir12` exactly. Box coordinates are half-open, [0, BOX_SIZE): conversion folds
 the ~196 halos Rockstar emits at exactly `BOX_SIZE` down to `0.0`, matching what `mvir12`
 already did. The pipeline reads Parquet, not CSV — convert once with
-`python -m scripts.convert_mdpl2_catalog` (~10 min, ~2.9 GB for `full`). A full-catalog
+`python -m scripts.convert_mdpl2_catalog` (~15 min, ~2.9 GB for `full`). A full-catalog
 run needs ~16 GB of RAM and a couple of minutes; ask before running anything long.
+
+Conversion makes **two** passes over the CSV. The second is the ordinary streaming write;
+the first tallies the `pid` column to build `num_of_subhalos` — how many halos name this one
+as their parent, which no property of a halo's own row can answer and which must therefore
+be complete before the first output row is written. `mvir12` was pre-cut to `pid == -1`, so
+it has no subhalos to tally and carries `NUM_OF_SUBHALOS_UNKNOWN` (-1) rather than a `0`
+that would falsely claim its halos host none. Only `dvcorr.pipeline.halo_class_comparison`
+reads the column, and only from `full`. Loading it is opt-in
+(`load_and_carve(..., with_num_of_subhalos=True)`) because it costs ~508 MB uncarved.
 
 ## Hard rules
 

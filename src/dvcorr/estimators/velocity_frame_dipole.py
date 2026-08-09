@@ -69,7 +69,7 @@ the full derivation. This is NOT the frame-agreement limit (which concerns
 whether the two axes literally coincide) and NOT the |v| vs. |u| effect (which
 concerns the scalar, not the amplitude) -- it is a THIRD, independent
 enhancement of the velocity frame's amplitude relative to the observer
-frame's, present even when the two axes are only loosely correlated. `run_random_axis_null`
+frame's, present even when the two axes are only loosely correlated. `random_axis_null_dipoles`
 (`dvcorr.pipeline.velocity_frame_comparison`) measures the NULL floor of this
 statistic (what the amplitude looks like with no axis-density correlation at
 all) but does not, by itself, isolate this enhancement from a genuine
@@ -341,6 +341,28 @@ class VelocityFrameShellDipoleResult:
         the pure-geometry accumulator, before the |v_alpha| weight is
         applied. `per_center_speed[:, None] * per_center_amplitude` and
         summing over centers reproduces `dipole`.
+    per_center_direction_sum : ndarray, shape (N_c, B, 3)
+        S_alpha,b = Sigma_{i in b} n_hat_i, the raw VECTOR sum of the tracer
+        directions in each shell -- `per_center_amplitude` before it is
+        projected onto an axis. The two are related exactly, not
+        approximately:
+
+            A_alpha,b(z_hat) = sqrt(3/4pi) * (z_hat . S_alpha,b)
+
+        because Y_10 is LINEAR in the direction cosine, so the sum over
+        tracers commutes with the projection. Hence
+        `per_center_amplitude == sqrt(3/4pi) * einsum(z_hat, S)` for the
+        axis this run used (pinned in tests/test_velocity_frame_dipole.py).
+
+        This is what makes an axis-randomized null a RECOMBINATION rather
+        than a second estimator pass: the KDTree query and the per-tracer
+        unit vectors -- all of the cost -- depend only on the positions,
+        which no null touches. Re-projecting S onto a fresh set of axes
+        costs one einsum per realization, so the many realizations a null
+        band needs are affordable at all (see
+        `dvcorr.pipeline.velocity_frame_comparison.random_axis_null_dipoles`).
+        Cheap to carry: (N_c, B, 3) floats, ~2 MB for the production
+        N_c ~ 7700, B = 13.
     per_center_count : ndarray, shape (N_c, B)
         N_alpha,b, the realized tracer occupancy per surviving center per
         shell. `pair_count == per_center_count.sum(axis=0)` by construction,
@@ -397,7 +419,9 @@ class VelocityFrameShellDipoleResult:
     Cross-check invariants that hold by construction:
     `dipole == per_center_dipole.sum(axis=0)`,
     `pair_count == per_center_count.sum(axis=0)`,
-    `monopole == (per_center_speed[:, None] * per_center_count).sum(axis=0)`.
+    `monopole == (per_center_speed[:, None] * per_center_count).sum(axis=0)`,
+    `per_center_amplitude == sqrt(3/4pi) * einsum("ac,abc->ab", z_hat,
+    per_center_direction_sum)` with z_hat = unit_vector(v_centers).
     """
 
     shell_edges: np.ndarray
@@ -407,6 +431,7 @@ class VelocityFrameShellDipoleResult:
     dipole: np.ndarray
     per_center_dipole: np.ndarray
     per_center_amplitude: np.ndarray
+    per_center_direction_sum: np.ndarray
     per_center_count: np.ndarray
     per_center_speed: np.ndarray
     per_center_axis_angle: np.ndarray
@@ -608,6 +633,7 @@ def velocity_frame_shell_dipole(
 
     per_center_count = np.zeros((n_centers, n_bins), dtype=float)
     per_center_amplitude = np.zeros((n_centers, n_bins), dtype=float)
+    per_center_direction_sum = np.zeros((n_centers, n_bins, 3), dtype=float)
     per_center_speed = np.zeros(n_centers, dtype=float)
     per_center_axis_angle = np.zeros(n_centers, dtype=float)
 
@@ -653,7 +679,8 @@ def velocity_frame_shell_dipole(
             # the center in the "center" slot of pair_separation gives
             # r_vec = s_tracer - s_alpha, center -> tracer.
             r_vec, r_mag = pair_separation(s_alpha, s_near)
-            cos_theta = mu_cosine(unit_vector(r_vec), z_hat[a])
+            n_hat_i = unit_vector(r_vec)
+            cos_theta = mu_cosine(n_hat_i, z_hat[a])
 
             # r_mag > 0 drops the center's own self-pair (centers are
             # subsampled from the tracer array, so there is exactly one per
@@ -672,6 +699,17 @@ def velocity_frame_shell_dipole(
             per_center_count[a] = np.bincount(b, minlength=n_bins)[:n_bins].astype(float)
             per_center_amplitude[a] = np.bincount(b, weights=y10_in, minlength=n_bins)[:n_bins]
 
+            # S_alpha,b = Sigma_i n_hat_i, the same shell binning applied to
+            # the direction vectors themselves rather than to their projection
+            # on this run's axis. Three more bincounts on an index array that
+            # is already computed; it buys every axis-randomized null for free
+            # downstream (see the dataclass docstring).
+            n_hat_in = n_hat_i[in_range]
+            for component in range(3):  # 3: the spatial dimensions of n_hat_i
+                per_center_direction_sum[a, :, component] = np.bincount(
+                    b, weights=n_hat_in[:, component], minlength=n_bins
+                )[:n_bins]
+
     per_center_dipole = per_center_speed[:, None] * per_center_amplitude
 
     pair_count = per_center_count.sum(axis=0)
@@ -686,6 +724,7 @@ def velocity_frame_shell_dipole(
         dipole=dipole,
         per_center_dipole=per_center_dipole,
         per_center_amplitude=per_center_amplitude,
+        per_center_direction_sum=per_center_direction_sum,
         per_center_count=per_center_count,
         per_center_speed=per_center_speed,
         per_center_axis_angle=per_center_axis_angle,

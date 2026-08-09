@@ -66,7 +66,9 @@ def _tiny_result_and_normalized(
         sub_volume_radius=conventions.MAX_ANALYSIS_RADIUS,
     )
     n_bar = box_number_density(1)
-    normalized = normalize_result(result, n_bar, shuffle_seed=1, gaussian_null_seed=2)
+    normalized = normalize_result(
+        result, n_bar, shuffle_seed=1, gaussian_null_seed=2, n_realizations=4
+    )
     return result, normalized
 
 

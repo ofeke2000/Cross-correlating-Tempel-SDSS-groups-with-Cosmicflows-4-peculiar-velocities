@@ -654,6 +654,105 @@ def center_standard_error(per_center_values: np.ndarray) -> np.ndarray:
     return values.std(axis=0, ddof=1) / np.sqrt(n_centers)
 
 
+def per_center_shell_counts(
+    s_centers: np.ndarray,
+    s_tracers: np.ndarray,
+    shell_edges: np.ndarray,
+) -> np.ndarray:
+    """Realized tracer occupancy N_alpha,b per center per shell, shape (N_c, B).
+
+    The pure-geometry half of `velocity_centered_shell_dipole` on its own: no
+    velocities, no axis, no weight -- just "how many tracers sit in shell b
+    around center alpha". It exists because occupancy is worth measuring on a
+    binning of its OWN (e.g. a sub-h^-1-Mpc ladder that resolves the one-halo
+    term, far inside the shells any dipole is estimated on), and re-running a
+    full estimator to read `per_center_count` off the result would tie the two
+    binnings together for no reason.
+
+    Binning semantics are the estimator's, deliberately and to the letter --
+    `np.digitize` left-closed/right-open, the outermost edge folded into the
+    last shell, anything below `edges[0]` excluded -- so a count from this
+    function and a `per_center_count` from `velocity_centered_shell_dipole` on
+    the same edges are the same number, not merely a similar one.
+
+    Coincident pairs (`r == 0`) are dropped on the same `r_mag > 0` test the
+    estimators use. That matters here in a way it usually does not: this
+    function's whole point is binnings whose innermost edge IS zero, and a
+    center drawn from the tracer population finds ITSELF at zero separation.
+    Without the exclusion every center would contribute a spurious +1 to the
+    first shell -- a pure self-correlation, and on a shell whose true
+    occupancy may be well under 1, a dominant one.
+
+    NO PERIODIC WRAPPING, matching every other estimator here: separations are
+    plain Euclidean, which IS the minimum image for the carved sub-volume
+    (`dvcorr.pipeline.velocity_centered.load_and_carve` -- the carve sits well
+    inside the box, clear of the faces). Passing uncarved box coordinates
+    spanning a periodic face would be a bug (CLAUDE.md hard rule 3).
+
+    Parameters
+    ----------
+    s_centers : ndarray, shape (N_c, 3)
+        Center positions, comoving h^-1 Mpc. Taken as given -- unlike
+        `velocity_centered_shell_dipole`, no `core_center_mask` is applied
+        here, because a caller measuring occupancy usually wants exactly the
+        centers an estimator already selected. Apply the cut before calling if
+        shells must fit inside the sub-volume.
+    s_tracers : ndarray, shape (N_t, 3)
+        Tracer positions, comoving h^-1 Mpc.
+    shell_edges : ndarray, shape (B + 1,)
+        Strictly increasing radial shell boundaries, h^-1 Mpc. `edges[0] == 0`
+        is allowed and is the expected case here (see above).
+
+    Returns
+    -------
+    ndarray, shape (N_c, B), float
+        Tracer count per center per shell. Empty shells are 0.0, never NaN.
+        Float rather than int so it feeds `center_standard_error` and the
+        `expected_shell_occupancy` ratio without a cast at every call site.
+
+    Raises
+    ------
+    ValueError
+        If `shell_edges` is not 1-D, not strictly increasing, or reaches past
+        `dvcorr.conventions.MAX_ANALYSIS_RADIUS` (hard rule 3).
+    """
+    edges = np.asarray(shell_edges, dtype=float)
+    if edges.ndim != 1 or edges.size < 2:
+        raise ValueError("shell_edges must be 1-D with at least two entries.")
+    if not np.all(np.diff(edges) > 0.0):
+        raise ValueError("shell_edges must be strictly increasing.")
+    if edges[-1] > conventions.MAX_ANALYSIS_RADIUS:
+        raise ValueError(
+            f"outermost shell edge {edges[-1]} exceeds "
+            f"conventions.MAX_ANALYSIS_RADIUS = {conventions.MAX_ANALYSIS_RADIUS}."
+        )
+    n_bins = edges.size - 1
+
+    s_centers = np.atleast_2d(np.asarray(s_centers, dtype=float))
+    s_tracers = np.atleast_2d(np.asarray(s_tracers, dtype=float))
+    n_centers = s_centers.shape[0]
+
+    counts = np.zeros((n_centers, n_bins), dtype=float)
+    if n_centers == 0 or s_tracers.shape[0] == 0:
+        return counts
+
+    tree = cKDTree(s_tracers)
+    for a, idx in _neighbors_by_center(tree, s_centers, edges[-1]):
+        if idx.size == 0:
+            continue
+        _, r_mag = pair_separation(s_centers[a], s_tracers[idx])
+
+        # r_mag > 0 drops the center's own self-pair; see this function's
+        # docstring on why that is load-bearing when edges[0] == 0.
+        in_range = (r_mag > 0.0) & (r_mag >= edges[0]) & (r_mag <= edges[-1])
+        bin_index = np.digitize(r_mag, edges) - 1
+        bin_index = np.where(bin_index == n_bins, n_bins - 1, bin_index)
+
+        counts[a] = np.bincount(bin_index[in_range], minlength=n_bins)[:n_bins]
+
+    return counts
+
+
 @dataclass(frozen=True)
 class VelocityCenteredShellDipoleResult:
     """Per-shell raw sums of the velocity-centered (Nusser eq. 23-24) statistic.
@@ -710,7 +809,7 @@ class VelocityCenteredShellDipoleResult:
         the axis is now derived from the same u_alpha the weight comes from,
         so permuting |u| alone would leave every A_alpha,b (and therefore the
         alignment that produced the signal) untouched -- the same trap
-        `dvcorr.pipeline.velocity_frame_comparison.run_random_axis_null`
+        `dvcorr.pipeline.velocity_frame_comparison.random_axis_null_dipoles`
         documents for the velocity frame. Undo the flip first,
         `np.sign(per_center_u)[:, None] * per_center_amplitude`, to recover
         the fixed-axis amplitude, then permute the SIGNED per_center_u
