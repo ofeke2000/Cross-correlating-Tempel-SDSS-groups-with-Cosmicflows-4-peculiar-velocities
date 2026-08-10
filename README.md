@@ -108,7 +108,9 @@ python -m scripts.convert_mdpl2_catalog  # once — CSV → Parquet for both hal
 pytest                                # geometry and sign-convention tests must pass
 ```
 
-Core dependencies, declared in `pyproject.toml`: numpy, pandas, scipy, astropy, healpy, matplotlib, h5py (plus pytest for the test suite). The data arm will additionally need Corrfunc (group autocorrelation), CAMB or CLASS ($P_m(k)$), and halotools (MDPL2), added when those stages are built.
+Core dependencies, declared in `pyproject.toml`: numpy, pandas, scipy, astropy, healpy, matplotlib, h5py (plus pytest for the test suite).
+
+The `bias` extra — Corrfunc, colossus, CAMB, mcfit — is needed only by `dvcorr.pipeline.galaxy_bias` (the linear-bias measurement, `notebooks/09_galaxy_bias.ipynb`), which imports all four lazily so the rest of the package runs without them. Corrfunc ships no wheels and needs a **shared** GSL at build time; see the comment on the `bias` group in `pyproject.toml` for the no-root recipe and the two build traps.
 
 ## Data
 

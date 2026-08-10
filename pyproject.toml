@@ -20,6 +20,23 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest"]
+# Needed only by dvcorr.pipeline.galaxy_bias, which imports them lazily so the
+# rest of the package (and its tests) run without them.
+#   Corrfunc  -- periodic-box pair counting; needs GSL at BUILD time
+#   colossus  -- Tinker (2010) halo bias
+#   camb      -- P_lin(k) at the MDPL2 cosmology
+#   mcfit     -- the P(k) -> xi_ell Hankel transforms
+# Corrfunc has no wheels and will not build without GSL. On a machine with no
+# root, build GSL into a prefix and put its bin/ on PATH first:
+#   curl -LO https://ftp.gnu.org/gnu/gsl/gsl-2.7.1.tar.gz && tar xzf gsl-2.7.1.tar.gz
+#   cd gsl-2.7.1 && ./configure --prefix=$HOME/.local/gsl && make -j && make install
+#   PATH=$HOME/.local/gsl/bin:$PATH pip install -e .[bias]
+# GSL must be SHARED (the default): a static build is not -fPIC and the final
+# link of Corrfunc's extension fails. On Ubuntu, if /usr/include/python3.10/numpy
+# exists and holds NumPy 1.x headers, Corrfunc compiles against those and then
+# fails to import under NumPy 2 -- see docs/architecture.md, "Optional
+# dependencies", for the one-line fix.
+bias = ["Corrfunc", "colossus", "camb", "mcfit"]
 
 [tool.setuptools.packages.find]
 where = ["src"]

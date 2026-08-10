@@ -80,6 +80,13 @@ extra (`pytest`), and `testpaths = ["tests"]`. `requirements.txt` is `-e .[dev]`
   run twice (real vs. redshift-space positions, `dvcorr.redshift_space`), on a shared
   center set built with a widened real-position margin; the buffered tracer carve,
   membership diagnostics, and the two comparison figures.
+- `galaxy_bias.py` **[done]** — the large-scale linear bias `b` of the ζ₁ tracer samples:
+  real-space `xi_hh` / `xi_hm` / `xi_mm` (Corrfunc, periodic natural estimator), the three
+  bias estimates and their constant fit, the Tinker (2010) mass-function cross-check
+  (including the host-mass resolution subhalos need), the CAMB/mcfit theory curves, the
+  ζ₁ amplitude-ratio test between the two catalogs, the estimator-free
+  `measure_velocity_density_correlation` that the ζ₁ normalization is audited against, and
+  the figures. Does not import the other pipeline modules.
 - `halo_class_comparison.py` **[done]** — both comparisons above re-run with the centers
   restricted by halo class (subhalo vs. parent): the class definitions
   (`center_class_mask`), the per-class orchestration, the two class-contrast figures, and
@@ -147,6 +154,10 @@ none contain algorithmic content (see Cross-cutting contracts below).
 - `08_halo_class_comparison.ipynb` **[done]** — exploratory twin of
   `scripts/plot_halo_class_comparison.py`; both comparisons for both center classes,
   seven figures; executed on the full catalog, outputs kept.
+- `09_galaxy_bias.ipynb` **[done]** — thin consumer of `pipeline.galaxy_bias` (plus the
+  unchanged `velocity_centered` pipeline for the two ζ₁ runs); measures `b` for both
+  catalogs; executed on the full catalog, outputs kept. It has no script twin: the
+  measurement is a one-off input to the ζ₁ overlay, not a per-run product.
 
 ### `Imports from old repo/` — reference dump, read only
 
@@ -260,6 +271,35 @@ folds at ingest, and the guarantee for any population that did not come through 
 synthetically in `test_velocity_centered_dipole.py` and
 against the real files in `test_catalog_equivalence.py`. Two runs over the same halos in
 different array order still differ at ~1e-16 in the dipole, from float addition order.
+
+**Optional dependencies are lazy, and one of them is awkward to build.** Everything under
+`dvcorr` imports only the `pyproject.toml` `dependencies` list at module import time. The
+four extras in the `bias` group — Corrfunc, colossus, camb, mcfit — are imported *inside*
+the functions of `pipeline/galaxy_bias.py` that use them, so importing that module, and
+running the tests that do not exercise those paths, works on a machine without them. Two
+build traps are worth recording because both fail late and confusingly:
+
+- Corrfunc ships no wheels and needs **GSL at build time**, and the GSL must be a **shared**
+  build. A static GSL (`--disable-shared`) is not `-fPIC` and the final link of Corrfunc's
+  extension dies on `relocation R_X86_64_PC32 ... can not be used when making a shared
+  object` — after several minutes of successful compilation.
+- On Ubuntu, `/usr/include/python3.10/numpy` may hold NumPy 1.x headers from the system
+  `python3-numpy`. Corrfunc's `common.mk` puts `$(PYTHON_INCL)` **before**
+  `$(NUMPY_INCL_FLAG)`, so those win over the venv's NumPy 2 headers and the extension
+  builds cleanly and then raises `_ARRAY_API not found` on first use. Fix by swapping the
+  two on `common.mk`'s `export PYTHON_CFLAGS` line in an unpacked sdist and installing
+  from that directory. `CFLAGS=-I<numpy include>` does **not** fix it.
+
+**The ζ₁ normalization has an absolute, estimator-free reference.**
+`pipeline/galaxy_bias.measure_velocity_density_correlation` measures
+`C(r) = <delta_h(x+r) v(x).rhat>` straight from halo pairs — no observer, no carve, no shared
+code with `estimators/` — and the pipeline's normalized `zeta_hat` equals `C(r)/3`, the
+`<mu**2> = 1/3` of a uniform shell. That same 1/3 is what turns linear theory's `1/(2 pi^2)`
+into the `1/(6 pi^2)` of `zeta_one_linear_prediction`, so the three quantities close on each
+other and any one of them can be checked against the other two. Measured on `CATALOG_FULL`:
+`3 * zeta_hat` tracks `C` to a few percent over 20–50 h⁻¹ Mpc, and both sit ~6% below linear
+theory. Anything that changes the estimator's normalization must move this agreement, which
+is what makes it a gate rather than a curiosity.
 
 **Import layering.** `conventions.py` and `geometry.py` are leaf modules: no intra-project
 imports (their docstrings name each other but do not import them). `config/*` imports only
