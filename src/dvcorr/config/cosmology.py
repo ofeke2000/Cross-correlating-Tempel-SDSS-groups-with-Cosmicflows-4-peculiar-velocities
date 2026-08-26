@@ -16,6 +16,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+import numpy as np
+
 from dvcorr import conventions
 
 #: Tolerance for the CosmologyConfig <-> dvcorr.conventions.HUBBLE_PARAM
@@ -110,3 +112,103 @@ class CosmologyConfig:
             "sigma8": self.sigma8,
             "ns": self.ns,
         }
+
+
+# --------------------------------------------------------------------------
+# Derived background quantities
+# --------------------------------------------------------------------------
+#
+# Free functions rather than methods: they transform the held metadata into a
+# number and need nothing of `self` beyond reading it (CLAUDE.md's "prefer
+# functions over class methods"). They live here, next to the parameters they
+# read, so that there is exactly ONE definition of each -- see
+# `hubble_h_units` for why that matters more than usual.
+
+
+def matter_density_parameter(cosmology: CosmologyConfig, z: float) -> float:
+    """`Omega_m(z)` for a flat LCDM background, dimensionless.
+
+    Parameters
+    ----------
+    cosmology : CosmologyConfig
+    z : float
+        Redshift.
+
+    Returns
+    -------
+    float
+    """
+    matter = cosmology.Om0 * (1.0 + z) ** 3
+    return matter / (matter + cosmology.Ode0)
+
+
+def growth_rate(cosmology: CosmologyConfig, z: float) -> float:
+    """`f(z) = Omega_m(z)^gamma`, the linear growth rate, dimensionless.
+
+    `gamma` is `CosmologyConfig.growth_index` (0.55 for GR). Callers wanting a
+    growth rate DECOUPLED from `Omega_m` -- the modified-gravity reading, or a
+    parameter scan over `f` at fixed transfer function -- pass their own `f`
+    downstream instead of calling this.
+
+    Parameters
+    ----------
+    cosmology : CosmologyConfig
+    z : float
+        Redshift.
+
+    Returns
+    -------
+    float
+    """
+    return matter_density_parameter(cosmology, z) ** cosmology.growth_index
+
+
+def hubble_h_units(cosmology: CosmologyConfig, z: float) -> float:
+    """`H(z) / h`, km/s per h^-1 Mpc, for a flat LCDM background.
+
+    The units conversion that every velocity prediction in this project passes
+    through, and the most dangerous line in any of them: getting it upside
+    down (multiplying by `h` instead of dividing) rescales every prediction by
+    `h**2 ~ 0.46` with NO change of shape, so it cannot be caught by looking at
+    a plot. It has a one-line check instead -- at z = 0 this must return
+    EXACTLY 100, which is what h^-1 Mpc units are for.
+
+    Divide, do not multiply: one h^-1 Mpc is `1/h` Mpc, so
+    `H [km/s/Mpc] * (1/h) [Mpc per h^-1 Mpc] = H/h`.
+
+    Parameters
+    ----------
+    cosmology : CosmologyConfig
+    z : float
+        Redshift.
+
+    Returns
+    -------
+    float
+        km/s per h^-1 Mpc.
+    """
+    hubble_z = cosmology.H0 * np.sqrt(cosmology.Om0 * (1.0 + z) ** 3 + cosmology.Ode0)
+    return float(hubble_z / cosmology.h)
+
+
+def scale_factor_hubble(cosmology: CosmologyConfig, z: float) -> float:
+    """`a H(z)`, km/s per COMOVING h^-1 Mpc -- the "aH" of the linear theory.
+
+    Linear theory relates a comoving separation to a peculiar velocity through
+    exactly one factor of `a H`, and every prediction in `dvcorr.theory`
+    carries exactly one. This is that factor, defined once so no module has to
+    re-derive it: `a = 1 / (1 + z)` times `hubble_h_units`. At z = 0 it is
+    exactly 100.
+
+    Parameters
+    ----------
+    cosmology : CosmologyConfig
+    z : float
+        Redshift.
+
+    Returns
+    -------
+    float
+        km/s per comoving h^-1 Mpc.
+    """
+    return hubble_h_units(cosmology, z) / (1.0 + z)

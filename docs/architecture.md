@@ -36,9 +36,13 @@ extra (`pytest`), and `testpaths = ["tests"]`. `requirements.txt` is `-e .[dev]`
 ### `src/dvcorr/config/` — tunable settings (counterpart to `conventions`'s frozen ones)
 
 - `paths.py` **[done]** — `PathsConfig`: catalog/output locations, repo-root-relative;
-  `halo_catalog(name)` resolves a catalog name to its CSV or Parquet path.
+  `halo_catalog(name)` resolves a catalog name to its CSV or Parquet path. `dm_snapshot`
+  is named by its own field, not through `halo_catalog` — it is a particle snapshot of a
+  different box, not one of `VALID_CATALOGS`.
 - `cosmology.py` **[done]** — `CosmologyConfig`: MDPL2 cosmology metadata; self-checks
-  against `conventions.HUBBLE_PARAM`.
+  against `conventions.HUBBLE_PARAM`. Also the derived-background free functions
+  (`matter_density_parameter`, `growth_rate`, `hubble_h_units`, `scale_factor_hubble`) —
+  the single definition of `f(z)` and of the `a H` that converts h⁻¹ Mpc to km/s.
 - `shells.py` **[done]** — `ShellConfig` + free builders (`linear_shell_edges`,
   `log_shell_edges`, `volume_weighted_shell_radii`): radial shell binning.
 - `selection.py` **[done]** — `SelectionConfig`: placeholder knobs for `mocks/`/`selection/`.
@@ -58,6 +62,28 @@ extra (`pytest`), and `testpaths = ["tests"]`. `requirements.txt` is `-e .[dev]`
 - `velocity_frame_dipole.py` **[done]** — `velocity_frame_shell_dipole`: an observer-free
   variant of the velocity-centered estimator (axis = full 3-D flow direction instead of
   its radial projection). Reuses `core_center_mask`/`real_y10` from `shell_dipole.py`.
+
+### `src/dvcorr/theory/` — linear-theory predictions, velocity-centered (Nusser 2017)
+
+The analytic arm: `P_lin(k)` in, predicted multipole out; no catalog, no observer, no
+estimator. Speaks Nusser's separation `y` (velocity → density) throughout, so its
+multipoles relate to the pipeline's by `conventions.nusser_multipole_sign`.
+
+- `__init__.py` **[done]** — package docstring: the orientation and normalization
+  conventions that govern the whole subpackage. No submodule imports.
+- `transforms.py` **[done]** — the spherical-Bessel k-integrals everything is built from:
+  `bessel_moment` (arbitrary `ell` and power of `k`), the FFTLog bias selector
+  `fftlog_tilt`, the master integrals `a_integral`/`b_integral`/`psi_perp_integral`, the
+  brute-quadrature reference `bessel_moment_quadrature`, and `log_interp`.
+- `gorski.py` **[done]** — the Górski (1988) functions `psi_perp`, `psi_parallel`,
+  `psi_minus` and the derivatives `psi_perp_prime`, `psi_minus_prime`; the
+  `GorskiFunctions` holder and its `gorski_identity_residual`.
+- `dipole.py` **[done]** — the public first moment `xi_udelta_dipole`, the un-cancelled
+  `dipole_from_gorski` it is checked against, the scalar `dipole_amplitude` /
+  `kaiser_dipole_bias` / `dipole_boost`, and the space/convention constants.
+- `wide_angle.py` **[done]** — exact finite-distance geometry (`wide_angle_geometry`),
+  `xi_uu`, the numerical `legendre_moment`, and the two moment functions behind Nusser's
+  Fig. 1 curves 3–5.
 
 ### `src/dvcorr/pipeline/` — reusable stage functions, consumed by `scripts/` and `notebooks/`
 
@@ -80,6 +106,15 @@ extra (`pytest`), and `testpaths = ["tests"]`. `requirements.txt` is `-e .[dev]`
   run twice (real vs. redshift-space positions, `dvcorr.redshift_space`), on a shared
   center set built with a widened real-position margin; the buffered tracer carve,
   membership diagnostics, and the two comparison figures.
+- `dm_snapshot.py` **[done]** — the Gadget-4 dark-matter particle snapshot
+  (`data/DM_simulation.hdf5`, a 300 h⁻¹ Mpc constrained box, NOT MDPL2) as a tracer field
+  the two comparison pipelines above consume unchanged: `SnapshotBox` +
+  `read_snapshot_header` (box, cosmology and resolution read from the file, units checked),
+  `snapshot_observer` / `snapshot_number_density` / `check_run_geometry` (this box's
+  counterparts to the MDPL2-frozen `OBSERVER_POSITION`, `box_number_density` and
+  `MAX_ANALYSIS_RADIUS`), and the two replacement loaders `load_and_carve_particles` /
+  `load_and_carve_particles_buffered`. Loaders only — it defines no estimator and forks
+  no pipeline stage.
 - `galaxy_bias.py` **[done]** — the large-scale linear bias `b` of the ζ₁ tracer samples:
   real-space `xi_hh` / `xi_hm` / `xi_mm` (Corrfunc, periodic natural estimator), the three
   bias estimates and their constant fit, the Tinker (2010) mass-function cross-check
@@ -129,6 +164,10 @@ none contain algorithmic content (see Cross-cutting contracts below).
   `redshift_space_comparison` (shared-center alignment, membership diagnostics).
 - `test_velocity_frame_dipole.py` **[done]** — sign gate and frame-agreement limit for the
   observer-free dipole; random-axis null.
+- `test_theory.py` **[done]** — `dvcorr.theory`: closed-form and quadrature checks per
+  `(ell, k_power)`, the Górski identity, the exact `j₂` cancellation with its
+  printed-sign negative control, the parameter scalings and collapse, `aH = 100`, and the
+  wide-angle DOL limits and `r_obs⁻²` convergence.
 - `test_settings.py` **[done]** — `dvcorr.config` dataclass tests.
 - `test_catalog_conversion.py` **[done]** — conversion schema, row order, cache-and-skip,
   on tiny synthetic CSVs.
@@ -151,6 +190,9 @@ none contain algorithmic content (see Cross-cutting contracts below).
   `scripts/plot_velocity_frame_comparison.py`; executed, outputs kept.
 - `07_redshift_space_comparison.ipynb` **[done]** — exploratory twin of
   `scripts/plot_redshift_space_comparison.py`; not executed, outputs cleared.
+- `DM_simulation.ipynb` **[done]** — notebooks 06 and 07 re-run on the Gadget-4 particle
+  snapshot via `pipeline.dm_snapshot`'s loaders; every other stage is the same library
+  function. No script twin. Executed, outputs kept.
 - `08_halo_class_comparison.ipynb` **[done]** — exploratory twin of
   `scripts/plot_halo_class_comparison.py`; both comparisons for both center classes,
   seven figures; executed on the full catalog, outputs kept.
@@ -158,6 +200,34 @@ none contain algorithmic content (see Cross-cutting contracts below).
   unchanged `velocity_centered` pipeline for the two ζ₁ runs); measures `b` for both
   catalogs; executed on the full catalog, outputs kept. It has no script twin: the
   measurement is a one-off input to the ζ₁ overlay, not a per-run product.
+
+### `intuition/` — pedagogical parameter scans; nothing imports from here
+
+Exploratory/teaching notebooks that consume the library and are consumed by nobody. Separate
+from `notebooks/` because those are exploratory twins of `scripts/` runs, whereas these have
+no script twin and produce no science product.
+
+- `linear_theory_parameter_scans.ipynb` **[done]** — how `b`, `f`, `σ8` and `Ω_m` enter the
+  real-space linear ζ₁, via `pipeline.galaxy_bias.zeta_one_linear_prediction`. Demonstrates
+  the exact `b f σ8²` degeneracy (33 curves collapse to one at 2.5e-14) and contrasts it
+  against `Ω_m`, the only shape parameter. Validates the FFTLog normalization against a
+  closed form and brute quadrature, and the MDPL2 box against the integral's k-range.
+  Figures in `intuition/figures/`; CAMB spectra cached in `intuition/cache/` (gitignored).
+
+- `linear_theory_redshift_space_scans.ipynb` **[done]** — the redshift-space twin of the
+  above: what linear RSD does to ζ₁ in the distant-observer limit (`b → b + 3f/5`, plus a
+  new octupole ζ₃ˢ), via `pipeline.galaxy_bias.multipole_shape_integral`. Shows the boost
+  is flat in r to 1e-16, the b–f degeneracy breaking, the λ-dial acceptance target
+  `1 + 0.6β`, and the `(b + 3f/5) f σ8²` collapse at 2.5e-14. Validates the j₃ FFTLog
+  normalization independently of j₁. Figures in `intuition/figures/`.
+
+- `nusser_dipole_real_and_redshift_space.ipynb` **[done]** — thin consumer of
+  `dvcorr.theory`: the Górski functions, the corrected Nusser eq. (17) and the exact `j₂`
+  cancellation (with the printed-sign negative control), the `f`/`σ8`/`b` scalings and
+  collapse, and a reproduction of Nusser's Fig. 1 (all five curves) with the wide-angle
+  geometry validated by its own `r_obs⁻²` convergence. Also the demonstration that mcfit's
+  default FFTLog bias fails at `k_power ≠ 1`. Figures are cell outputs; nothing is written
+  to `intuition/figures/`.
 
 ### `Imports from old repo/` — reference dump, read only
 
@@ -176,7 +246,8 @@ estimator built on them (`shell_dipole.py`, `velocity_frame_dipole.py`), do **no
 the minimum-image convention — they are plain Euclidean geometry on whatever coordinates
 they are handed. Periodicity is discharged upstream, once, at the carving step:
 `dvcorr.pipeline.velocity_centered.load_and_carve` (and `load_and_carve_buffered` in the
-redshift-space pipeline) carve a sub-volume around the observer and hand down coordinates
+redshift-space pipeline, and `pipeline/dm_snapshot.py`'s two particle-snapshot loaders)
+carve a sub-volume around the observer and hand down coordinates
 already the nearest image of their center, continuous with it. Re-adding a minimum-image
 reduction inside `geometry.py` or an estimator would silently corrupt already-unwrapped
 separations — it would look like a fix and would in fact wrap a legitimate neighbor back
@@ -215,7 +286,9 @@ recombination, and hand up R of them.
 **n̄ is the box mean, not the carve's density.** The eq. 24 denominator
 `expected_shell_occupancy(n_bar, edges)` = n̄·V_b is fed one n̄ throughout:
 `pipeline/velocity_centered.box_number_density(n_total)` — the catalog's post-cut halo
-count over `BOX_SIZE**3`. Every call site builds it that way
+count over `BOX_SIZE**3` (on the particle-snapshot path,
+`pipeline/dm_snapshot.snapshot_number_density(n_total, box)`: identical arithmetic against
+that box's own side length, and fed the count retained *after* any subsample). Every call site builds it that way
 (`CarvedHalos.n_total`, `BufferedCarve.n_total`), and no stage function derives it
 internally: the three normalize stages (`normalize_result`, `normalize_comparison`,
 `normalize_redshift_comparison`) all take n̄ as an argument, so the choice stays visible at
@@ -226,6 +299,22 @@ the whole universe of the simulation, and being carve-blind it also removes the
 count/radius mismatch the buffered carve in `redshift_space_comparison.py` used to expose.
 The one remaining obligation: the count must be the *same population* that enters the
 shells — post mass/subhalo cut, pre-carve.
+
+**Two boxes, one frozen set of conventions.** `conventions.py` is frozen around MDPL2:
+`BOX_SIZE` = 1000, hence `MAX_ANALYSIS_RADIUS` = 500 and `OBSERVER_POSITION` = box centre
+of *that* box. `data/DM_simulation.hdf5` is a 300 h⁻¹ Mpc box, so all three are wrong for
+it — and hard rule 1 forbids editing them to suit one dataset. None of the three has to be
+edited, because none is load-bearing on that path: every pipeline stage downstream of the
+loaders takes `observer` and `n_bar` as explicit arguments, so `pipeline/dm_snapshot.py`
+passes different **values** to parameters that already exist rather than redefining
+anything. The one thing that genuinely cannot be inherited is the ceiling: the estimators'
+`MAX_ANALYSIS_RADIUS` check is against 500, which every radius in a 300 h⁻¹ Mpc box passes
+trivially, so it is *inert* there rather than wrong. `dm_snapshot.check_run_geometry`
+supplies the tighter, box-specific ceiling (`SnapshotBox.max_analysis_radius` = 150) and
+must be called with the largest radius a run actually carves at — the **buffered** radius,
+not `sub_volume_radius`, on the redshift-space path. A tighter guard layered on top of the
+frozen one is not a weakening of it. Any future non-MDPL2 box follows this pattern:
+a loader module, no edit to `conventions.py`.
 
 **Catalog contract.** Two MDPL2 catalogs are supported and neither supersedes the other:
 `CATALOG_FULL` (~127M halos, down to 2 particles, subhalos included) and `CATALOG_MVIR12`
@@ -276,7 +365,10 @@ different array order still differ at ~1e-16 in the dipole, from float addition 
 `dvcorr` imports only the `pyproject.toml` `dependencies` list at module import time. The
 four extras in the `bias` group — Corrfunc, colossus, camb, mcfit — are imported *inside*
 the functions of `pipeline/galaxy_bias.py` that use them, so importing that module, and
-running the tests that do not exercise those paths, works on a machine without them. Two
+running the tests that do not exercise those paths, works on a machine without them.
+`theory/*` follows the same rule for `mcfit` and `scipy`, so the whole subpackage imports
+and its pure-algebra surface (`dipole_amplitude`, `kaiser_dipole_bias`, `dipole_boost`,
+`convention_factor`) is usable with neither installed. Two
 build traps are worth recording because both fail late and confusingly:
 
 - Corrfunc ships no wheels and needs **GSL at build time**, and the GSL must be a **shared**
@@ -303,7 +395,10 @@ is what makes it a gate rather than a curiosity.
 
 **Import layering.** `conventions.py` and `geometry.py` are leaf modules: no intra-project
 imports (their docstrings name each other but do not import them). `config/*` imports only
-`conventions`. `estimators/*` import `conventions` and `geometry`; `velocity_frame_dipole.py`
+`conventions`. `theory/*` imports `conventions` and `config` and **nothing else under
+`dvcorr`** — the dependency with `pipeline` runs one way only, `pipeline.galaxy_bias`
+importing `theory.transforms` (lazily, inside the two functions that need it) and never the
+reverse. `estimators/*` import `conventions` and `geometry`; `velocity_frame_dipole.py`
 additionally imports `core_center_mask`/`real_y10` from `shell_dipole.py` rather than
 redefining them. `pipeline/velocity_centered.py` is the shared base of `pipeline/`: it
 imports `config` and `estimators`, and both comparison pipelines
@@ -330,6 +425,48 @@ Which construction each of those seeds drives is the owning module's business, n
 file's — but the one fact that spans them: every frame carries **two** nulls, its own
 primary one plus a matched-Gaussian draw (`matched_gaussian_sample`) built at the
 sample's own mean and ddof=1 spread, so the pair differs only in distribution shape.
+
+**One FFTLog, and its bias is derived rather than defaulted.**
+`theory/transforms.bessel_moment` is the only Hankel transform in the package;
+`pipeline/galaxy_bias.multipole_shape_integral` is its `k_power = 1` case and delegates.
+The reason it is one function rather than several is that both of mcfit's traps have to be
+disarmed exactly once. The *phase*: `P2xi(l=ell)` carries an `i**ell`, so taking `Im(...)`
+is right at `ell = 1`, negated at `ell = 3`, and zero at even `ell` — passing mcfit's `n`
+argument makes it drop the phase and removes the decision. The *bias*: FFTLog transforms
+`k**-q F(k)`, and `q` must sit both inside the `j_ell` Mellin strip (`-ell < q < 2`) and
+between the integrand's two asymptotic slopes. mcfit's default is tuned for its own
+`k**3 P(k)`; at `k_power = -1` on a CDM spectrum it lands outside the `ell = 1` strip and
+returns an answer wrong by a factor of ~10⁵, **with the wrong sign and no warning**.
+`fftlog_tilt` measures the spectrum's own endpoint slopes (the two-point segments, the same
+ones `extrap=True` extends by) and takes the midpoint of the admissible window, raising when
+that window is empty — which is exactly when the integral diverges. With it, every
+closed-form check in `tests/test_theory.py` returns ~1e-12 where the default managed ~1e-5.
+Any new `(ell, k_power)` pair inherits this: add it to that test's closed-form table, and do
+not accept a loose tolerance as a fact about FFTLog.
+
+**`y = 0` is exact, and is never on the FFTLog grid.** A FFTLog output grid is
+logarithmic, so it cannot contain zero at any resolution — but every quantity has a closed
+form there, and `theory/transforms.py` returns it rather than interpolating (which used to
+give a silent NaN). `M_ell^p(0) = 0` for `ell >= 1`; `M_0^p(0) = Int k^p P dk`
+(`zero_separation_moment`); `A(0) = B(0) = 0`; and the one exception,
+`psi_perp_integral(0) = Int P dk / (6 pi^2)` — finite and non-zero, being `sigma_v^2 / f^2`,
+the common zero-lag value of `Psi_perp` and `Psi_par` (the velocity correlation tensor is
+isotropic at zero lag). Two consequences bind on callers: a negative `y` raises, and any
+RATIO of two predictions must exclude `y = 0`, since both dipoles vanish there and the ratio
+is `0/0` even though each side is exact.
+
+**Two conversions separate `dvcorr.theory` from the pipeline, and they are different
+things.** *Orientation* is a factor `(-1)**ell`
+(`conventions.nusser_multipole_sign`): Nusser's `y` runs velocity → density, the project's
+`r` runs density → velocity, so `theory.dipole.xi_udelta_dipole` is positive for infall
+where `xi_Tu,1` is negative. *Normalization* is a factor `2*ell + 1`
+(`theory.dipole.CONVENTION_NUSSER` / `CONVENTION_STANDARD`): Nusser omits it, the community
+standard carries it. The pipeline's `zeta_hat` already uses **Nusser's** normalization — the
+eq. 24 denominator carries the `<mu**2> = 1/3` of a uniform shell and no `(2 ell + 1)` —
+which is why `galaxy_bias.zeta_one_linear_prediction` equals
+`xi_udelta_dipole(..., space=SPACE_REAL, convention=CONVENTION_NUSSER)` exactly, with no
+factor of 3 anywhere. Neither factor is ever applied inside a theory function or an
+estimator; both are applied at the call site, explicitly.
 
 **Matplotlib backend discipline.** Only the three `scripts/*.py` entry points call
 `matplotlib.use("Agg")`, and each does so before importing its pipeline module. No module

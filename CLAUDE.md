@@ -45,6 +45,8 @@ src/dvcorr/
   mocks/               MDPL2 observers, halo selection, mock covariance (empty)
 tests/                 unit tests, including the spherical-infall sign gate
 notebooks/             exploration only — nothing load-bearing
+intuition/             pedagogical parameter-scan notebooks; consume the library, no script
+                       twin, nothing imports from them
 scripts/               runnable, load-bearing scripts (e.g. plot_velocity_centered_dipole.py)
 data/                  input catalogs (gitignored, see README)
 literature/            papers and the methodological note

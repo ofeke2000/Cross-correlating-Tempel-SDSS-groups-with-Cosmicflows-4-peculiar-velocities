@@ -65,6 +65,13 @@ class PathsConfig:
     sdss_tempel_catalog : Path
         Tempel et al. (2017) SDSS group catalog, default
         `data_dir / "SDSS_Temple.csv"`.
+    dm_snapshot : Path
+        Gadget-4 dark-matter particle snapshot at z = 0, default
+        `data_dir / "DM_simulation.hdf5"`. A 300 h^-1 Mpc box -- NOT MDPL2, and
+        not a halo catalog -- so it is named by its own field rather than
+        through `halo_catalog`, which resolves only
+        `dvcorr.config.catalog.VALID_CATALOGS`. Read by
+        `dvcorr.pipeline.dm_snapshot`, whose docstring covers what differs.
     """
 
     project_root: Path = field(
@@ -77,6 +84,7 @@ class PathsConfig:
     cf4_groups_catalog: Path | None = None
     cf4_velocities_catalog: Path | None = None
     sdss_tempel_catalog: Path | None = None
+    dm_snapshot: Path | None = None
 
     def __post_init__(self) -> None:
         if self.data_dir is None:
@@ -93,6 +101,8 @@ class PathsConfig:
             self.cf4_velocities_catalog = self.data_dir / "CF4_Groups_Velocities.csv"
         if self.sdss_tempel_catalog is None:
             self.sdss_tempel_catalog = self.data_dir / "SDSS_Temple.csv"
+        if self.dm_snapshot is None:
+            self.dm_snapshot = self.data_dir / "DM_simulation.hdf5"
 
     def halo_catalog(self, name: str, *, parquet: bool = True) -> Path:
         """Resolve a catalog NAME to a file path.

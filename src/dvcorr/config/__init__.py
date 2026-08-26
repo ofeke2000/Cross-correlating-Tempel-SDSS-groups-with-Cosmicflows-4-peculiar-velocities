@@ -11,11 +11,15 @@ One dataclass per file (`paths.py`, `cosmology.py`, `shells.py`,
 builders (`linear_shell_edges`, `log_shell_edges`,
 `volume_weighted_shell_radii`) that back `ShellConfig`'s properties, and
 `catalog.py` the catalog-name constants (`CATALOG_FULL`, `CATALOG_MVIR12`)
-that `PathsConfig.halo_catalog` resolves to files. Re-exported here for a
+that `PathsConfig.halo_catalog` resolves to files, and `cosmology.py` the
+derived-background free functions (`matter_density_parameter`, `growth_rate`,
+`hubble_h_units`, `scale_factor_hubble`) that turn those parameters into the
+`f` and `a H` every velocity prediction needs. Re-exported here for a
 clean import surface: `from dvcorr.config import Settings, default_settings,
 PathsConfig, CosmologyConfig, ShellConfig, SelectionConfig, CatalogConfig,
 CATALOG_FULL, CATALOG_MVIR12, VALID_CATALOGS, SPACING_LINEAR, SPACING_LOG,
-linear_shell_edges, log_shell_edges, volume_weighted_shell_radii`.
+linear_shell_edges, log_shell_edges, volume_weighted_shell_radii,
+matter_density_parameter, growth_rate, hubble_h_units, scale_factor_hubble`.
 """
 
 from __future__ import annotations
@@ -28,7 +32,13 @@ from dvcorr.config.catalog import (
     add_catalog_arguments,
     catalog_from_args,
 )
-from dvcorr.config.cosmology import CosmologyConfig
+from dvcorr.config.cosmology import (
+    CosmologyConfig,
+    growth_rate,
+    hubble_h_units,
+    matter_density_parameter,
+    scale_factor_hubble,
+)
 from dvcorr.config.paths import PathsConfig
 from dvcorr.config.selection import SelectionConfig
 from dvcorr.config.settings import Settings, default_settings
@@ -46,6 +56,10 @@ __all__ = [
     "default_settings",
     "PathsConfig",
     "CosmologyConfig",
+    "growth_rate",
+    "hubble_h_units",
+    "matter_density_parameter",
+    "scale_factor_hubble",
     "ShellConfig",
     "SelectionConfig",
     "CatalogConfig",

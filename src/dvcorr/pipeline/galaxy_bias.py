@@ -78,12 +78,23 @@ is wrong, and it is usually a mass-definition mismatch -- hence
 
 Layering
 ========
-Imports `dvcorr.conventions`, `dvcorr.config`; does NOT import the other
-`dvcorr.pipeline` modules' run machinery except `velocity_centered`'s loader
-config types, and nothing under `dvcorr` imports this module back. Corrfunc,
-camb, mcfit and colossus are imported lazily inside the functions that need
-them, so importing this module (and running the tests that do not exercise
-those paths) costs nothing and does not require them installed.
+Imports `dvcorr.conventions`, `dvcorr.config`, and (lazily) `dvcorr.theory`;
+does NOT import the other `dvcorr.pipeline` modules' run machinery except
+`velocity_centered`'s loader config types, and nothing under `dvcorr` imports
+this module back. Corrfunc, camb, mcfit and colossus are imported lazily
+inside the functions that need them, so importing this module (and running the
+tests that do not exercise those paths) costs nothing and does not require them
+installed.
+
+The `dvcorr.theory` dependency runs one way only. `multipole_shape_integral`
+and `_log_interp` delegate to `theory.transforms`, which owns the package's
+single FFTLog implementation (generalized there to an arbitrary power of `k`,
+which the Gorski functions need and this module does not); `theory` never
+imports back. `zeta_one_linear_prediction` is the production real-space
+overlay and is the same number as
+`theory.dipole.xi_udelta_dipole(..., space=SPACE_REAL)` -- asserted in
+`tests/test_theory.py`, since a disagreement would put a wrong curve on every
+measurement plot.
 """
 
 from __future__ import annotations
@@ -95,7 +106,13 @@ from pathlib import Path
 import numpy as np
 
 from dvcorr import conventions
-from dvcorr.config import CatalogConfig, CosmologyConfig, PathsConfig
+from dvcorr.config import (
+    CatalogConfig,
+    CosmologyConfig,
+    PathsConfig,
+    growth_rate,
+    scale_factor_hubble,
+)
 from dvcorr.config.catalog import CATALOG_FULL
 
 # ---------------------------------------------------------------------------
@@ -1193,11 +1210,13 @@ def linear_power_spectrum(
 
 
 def _log_interp(r_target: np.ndarray, r: np.ndarray, y: np.ndarray) -> np.ndarray:
-    """Cubic-spline interpolate `y(r)` onto `r_target` in log r, shape (len(r_target),)."""
-    from scipy.interpolate import CubicSpline
+    """Cubic-spline interpolate `y(r)` onto `r_target` in log r, shape (len(r_target),).
 
-    order = np.argsort(r)
-    return CubicSpline(np.log(r[order]), y[order])(np.log(np.asarray(r_target, dtype=float)))
+    Delegates to `dvcorr.theory.transforms.log_interp`, the definition site.
+    """
+    from dvcorr.theory import transforms
+
+    return transforms.log_interp(r_target, r, y)
 
 
 def theory_matter_xi(
@@ -1248,11 +1267,86 @@ def theory_matter_xi(
     return _log_interp(r, r_grid, np.real(xi_grid)), tag
 
 
+def multipole_shape_integral(
+    r: np.ndarray, k: np.ndarray, pk: np.ndarray, ell: int
+) -> np.ndarray:
+    """`S_ell(r) = Int dk k P(k) j_ell(k r)`, shape (B,), h^-1 Mpc.
+
+    The SHAPE half of every linear density-velocity multipole prediction:
+    everything that depends on the spectrum and on `r`, and nothing that
+    depends on `b`, `f` or the normalization of `P`. Split out because those
+    predictions factorize exactly into a scalar amplitude times this integral,
+    so a parameter scan over `b`, `f` or `sigma8` may reuse one evaluation of
+    it rather than recomputing an identical curve per parameter value.
+
+    `ell` is a parameter rather than a constant because linear REDSHIFT-space
+    distortions source an octupole as well as a dipole: the Kaiser factor's
+    `mu_k**3 = (3/5) L_1 + (2/5) L_3` puts `ell = 3` into the same k-integral.
+    Real space needs `ell = 1` alone.
+
+    Extracting the real integral from mcfit
+    ---------------------------------------
+    mcfit's `P2xi(l=ell)` returns `i**ell * Int dk k**2 / (2 pi**2) Q(k)
+    j_ell(k r)`. Feeding it `Q = P / k` and taking `2 pi**2 * Re(... / i**ell)`
+    recovers the integral above for ANY `ell`. Do NOT substitute `Im(...)`:
+    that is an `ell = 1` shortcut which SILENTLY NEGATES the result at
+    `ell = 3` (`i**3 = -i`), and a sign error in the octupole has no other
+    symptom. The phase convention is validated per-order against a closed form
+    and brute quadrature in
+    `intuition/linear_theory_redshift_space_scans.ipynb`; mcfit's conventions
+    are not assumed to carry over from one order to the next.
+
+    That mcfit call now lives in `dvcorr.theory.transforms.bessel_moment`,
+    which generalizes it to an arbitrary power of `k` in the integrand -- the
+    Gorski functions need `k_power` 0 and -1 as well. This function is its
+    `k_power = 1` case and delegates to it, so the package holds ONE FFTLog
+    implementation rather than two that can drift apart.
+
+    Parameters
+    ----------
+    r : ndarray, shape (B,)
+        Separations, h^-1 Mpc.
+    k : ndarray, shape (K,)
+        Wavenumbers, h/Mpc, log-spaced and strictly increasing -- FFTLog
+        requires a logarithmically uniform grid, which
+        `linear_power_spectrum` supplies.
+    pk : ndarray, shape (K,)
+        `P(k)` on that grid, (h^-1 Mpc)^3.
+    ell : int
+        Order of the spherical Bessel function, >= 0.
+
+    Returns
+    -------
+    ndarray, shape (B,)
+        The integral at each `r`, h^-1 Mpc. Positive over the range linear
+        theory is used on, for both `ell = 1` and `ell = 3`.
+    """
+    from dvcorr.theory import transforms
+
+    return transforms.bessel_moment(r, k, pk, ell=ell, k_power=1)
+
+
+def zeta_one_shape_integral(
+    r: np.ndarray, k: np.ndarray, pk: np.ndarray
+) -> np.ndarray:
+    """`S(r) = Int dk k P(k) j_1(k r)`, shape (B,), h^-1 Mpc.
+
+    The `ell = 1` case of `multipole_shape_integral`, which is the only one
+    `zeta_one_linear_prediction` needs; see that function for the convention
+    and shape contract. Kept as a named entry point because the dipole is what
+    the real-space pipeline is built on and every caller here wants it.
+    """
+    return multipole_shape_integral(r, k, pk, ell=1)
+
+
 def zeta_one_linear_prediction(
     r: np.ndarray,
     b: float,
     cosmology: CosmologyConfig | None = None,
     z: float = SNAPSHOT_REDSHIFT,
+    *,
+    f: float | None = None,
+    power_spectrum: tuple[np.ndarray, np.ndarray] | None = None,
 ) -> np.ndarray:
     """The linear velocity-centered dipole prediction, km/s, shape (B,).
 
@@ -1287,39 +1381,54 @@ def zeta_one_linear_prediction(
         Linear bias of the tracer population whose density field is counted.
     cosmology : CosmologyConfig, optional
     z : float
+    f : float, optional
+        Growth rate. None (the default) derives it from the cosmology as
+        `Om(z)**cosmology.growth_index`, which is the production behaviour.
+        Passing it explicitly DECOUPLES `f` from `Om0`, i.e. varies the growth
+        rate without touching the transfer function -- the modified-gravity
+        reading (gamma != 0.55), not the "different Om0" one. A scan over Om0
+        that means the latter must move the cosmology and leave this None.
+    power_spectrum : tuple of (ndarray (K,), ndarray (K,)), optional
+        A precomputed `(k, P_lin(k))` to use instead of solving CAMB here.
+        None (the default) calls `linear_power_spectrum(cosmology, z)`. Supply
+        it when the SAME spectrum is used for many evaluations -- a parameter
+        scan, or `shell_averaged_zeta_one`'s per-shell quadrature -- since a
+        CAMB solve costs ~3 s and dominates this function entirely. The caller
+        owns the consistency of the pair: nothing checks that the spectrum was
+        generated at `cosmology` and `z`, which is exactly what makes a sigma8
+        rescan possible (`P` is linear in `A_s`, so scaling `pk` by
+        `(sigma8_new / sigma8_old)**2` is an exact re-normalization).
 
     Returns
     -------
     ndarray, shape (B,)
         `zeta_1(r)`, km/s, in this project's velocity-centered sign convention.
+
+    Notes
+    -----
+    The prediction factorizes exactly as
+    `zeta_1(r) = +(a H / (6 pi**2)) * (b f sigma8**2) * S_hat(r)`, where
+    `S_hat` is `zeta_one_shape_integral` of a `P` normalized to unit sigma8.
+    `b`, `f` and `sigma8` therefore enter ONLY through the scalar amplitude and
+    are perfectly degenerate in this statistic; `Om0` is the only parameter
+    here that also moves the shape. See
+    `intuition/linear_theory_parameter_scans.ipynb`.
     """
-    import mcfit
-
     cosmology = cosmology or CosmologyConfig()
-    k, pk = linear_power_spectrum(cosmology, z, nonlinear=False)
+    if power_spectrum is None:
+        k, pk = linear_power_spectrum(cosmology, z, nonlinear=False)
+    else:
+        k, pk = power_spectrum
+    integral = zeta_one_shape_integral(r, k, pk)
 
-    # mcfit's P2xi(l=1) returns  i * Int dk k**2/(2 pi**2) Q(k) j_1(k r).
-    # Feeding it Q = P / k and taking 2 pi**2 * Im(...) recovers
-    # Int dk k P(k) j_1(k r) exactly (verified against direct quadrature).
-    r_grid, transform = mcfit.P2xi(k, l=1, lowring=True)(pk / k, extrap=True)
-    integral = _log_interp(r, r_grid, 2.0 * np.pi**2 * np.imag(transform))
+    # a * H(z) / h, km/s per comoving h^-1 Mpc -- exactly 100 at z = 0. Defined
+    # once, in `dvcorr.config.cosmology`, because getting it upside down
+    # rescales every prediction by h**2 with no change of shape; see that
+    # function's docstring.
+    a_hubble = scale_factor_hubble(cosmology, z)
+    f_growth = growth_rate(cosmology, z) if f is None else float(f)
 
-    a = 1.0 / (1.0 + z)
-    hubble_z = cosmology.H0 * np.sqrt(
-        cosmology.Om0 * (1.0 + z) ** 3 + cosmology.Ode0
-    )  # km/s/Mpc, flat LCDM
-    # km/s per h^-1 Mpc. DIVIDE by h, do not multiply: one h^-1 Mpc is 1/h Mpc,
-    # so H [km/s/Mpc] * (1/h) [Mpc per h^-1 Mpc] = H/h. At z = 0 this is exactly
-    # 100, which is the whole point of h^-1 Mpc units and the one-line check
-    # that this conversion is the right way up. Multiplying instead costs a
-    # factor h**2 ~ 0.46 -- the amplitude comes out low by 2.2x, flat in r, and
-    # looks exactly like a normalisation problem in the estimator.
-    hubble_h_units = hubble_z / cosmology.h
-    growth_rate = (
-        cosmology.Om0 * (1.0 + z) ** 3 / (cosmology.Om0 * (1.0 + z) ** 3 + cosmology.Ode0)
-    ) ** cosmology.growth_index
-
-    xi_tu_one = -(b * a * hubble_h_units * growth_rate / (6.0 * np.pi**2)) * integral
+    xi_tu_one = -(b * a_hubble * f_growth / (6.0 * np.pi**2)) * integral
     return conventions.nusser_multipole_sign(1) * xi_tu_one
 
 
