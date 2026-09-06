@@ -247,8 +247,10 @@ class RunConfig:
         `shuffle_seed` = 43, `ComparisonRunConfig.axis_null_seed` = 44,
         `RedshiftSpaceRunConfig.redshift_shuffle_seed` = 45, this = 46,
         `ComparisonRunConfig.velocity_gaussian_null_seed` = 47,
-        `RedshiftSpaceRunConfig.redshift_gaussian_null_seed` = 48 -- so no
-        two nulls anywhere in the three pipelines share a random stream.
+        `RedshiftSpaceRunConfig.redshift_gaussian_null_seed` = 48,
+        `dvcorr.pipeline.robustness.RobustnessRunConfig.subset_seed` = 49,
+        `RobustnessRunConfig.bootstrap_seed` = 50 -- so no two nulls or
+        resampling streams anywhere in the pipelines share a random stream.
     n_null_realizations : int
         How many independent draws every null is built from. Each null seed
         above names a random STREAM, not a single draw: the stream is spawned

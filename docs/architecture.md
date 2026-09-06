@@ -115,6 +115,20 @@ multipoles relate to the pipeline's by `conventions.nusser_multipole_sign`.
   `MAX_ANALYSIS_RADIUS`), and the two replacement loaders `load_and_carve_particles` /
   `load_and_carve_particles_buffered`. Loaders only — it defines no estimator and forks
   no pipeline stage.
+- `robustness.py` **[done]** — the five "is this shell real, or one noisy draw?" tests for
+  the velocity-centered dipole: `PerCenterStack` + `restack` (the one home for rebuilding a
+  normalized curve from a centre subset, `normalize_stacked_dipole`-exact) and `merge_shells`
+  (the fine-to-coarse bridge, so a resolved ladder can be compared to a wide-binned run), then
+  `precision_ladder`, `bootstrap_confidence`, `trim_ladder`, `seed_repeats` and
+  `property_split` (with its `crowding_split` / `speed_split` wrappers) and the six-panel
+  `make_robustness_figure`. Frame-agnostic via the `PerCenterResult` protocol; only
+  `seed_repeats` costs an estimator pass.
+- `frame_ratios.py` **[done]** — shell-by-shell ratios between the three frames the same
+  box is measured in (velocity, observer, redshift space): `FrameCurve` + `frame_curve`
+  (a pipeline-agnostic view of any `NormalizedDipole`), `frame_ratio` / `frame_ratios`
+  with the zero-crossing pole guard and the sign-branch split, `format_frame_ratio_table`
+  and the two-panel `make_frame_ratio_figure`. Imports no other comparison pipeline —
+  it consumes their normalized output.
 - `galaxy_bias.py` **[done]** — the large-scale linear bias `b` of the ζ₁ tracer samples:
   real-space `xi_hh` / `xi_hm` / `xi_mm` (Corrfunc, periodic natural estimator), the three
   bias estimates and their constant fit, the Tinker (2010) mass-function cross-check
@@ -176,6 +190,14 @@ none contain algorithmic content (see Cross-cutting contracts below).
 - `test_halo_class_comparison.py` **[done]** — class disjointness, the unknown-count
   sentinel guard, and both class-contrast figures, on synthetic arrays.
 - `test_mass_diagnostics.py` **[done]** — mass-funnel construction guards and figure build.
+- `test_robustness.py` **[done]** — `dvcorr.pipeline.robustness`: the `restack` ==
+  `normalize_stacked_dipole` contract, the subset-size divisor, ladder unbiasedness, the
+  bootstrap/SEM agreement in the well-behaved regime, symmetric (|·|) trimming, an injected
+  mechanism the split must recover, seed-stream distinctness, and the figure's axis scales.
+- `test_frame_ratios.py` **[done]** — `dvcorr.pipeline.frame_ratios`: the chain identity
+  `(3D/obs)·(obs/z) = 3D/z`, the shell-edge-mismatch refusal, the pole guard and its
+  unguarded counterpart, the sign-branch split, and the figure's linear axes, legend means
+  and broken-at-a-pole connecting line.
 - `test_plot_wiring.py` **[done]** — pins the log/linear axis-scale wiring.
 - `__init__.py` — present so `from tests.test_geometry import …` resolves.
 
@@ -192,7 +214,9 @@ none contain algorithmic content (see Cross-cutting contracts below).
   `scripts/plot_redshift_space_comparison.py`; not executed, outputs cleared.
 - `DM_simulation.ipynb` **[done]** — notebooks 06 and 07 re-run on the Gadget-4 particle
   snapshot via `pipeline.dm_snapshot`'s loaders; every other stage is the same library
-  function. No script twin. Executed, outputs kept.
+  function, including §C's five robustness tests (`pipeline.robustness`) on a shortened
+  r ≤ 10 ladder and §D's frame-to-frame ratios (`pipeline.frame_ratios`). No script twin.
+  Executed, outputs kept.
 - `08_halo_class_comparison.ipynb` **[done]** — exploratory twin of
   `scripts/plot_halo_class_comparison.py`; both comparisons for both center classes,
   seven figures; executed on the full catalog, outputs kept.
@@ -200,6 +224,12 @@ none contain algorithmic content (see Cross-cutting contracts below).
   unchanged `velocity_centered` pipeline for the two ζ₁ runs); measures `b` for both
   catalogs; executed on the full catalog, outputs kept. It has no script twin: the
   measurement is a one-off input to the ζ₁ overlay, not a per-run product.
+- `10_small_scale_robustness.ipynb` **[done]** — thin consumer of `pipeline.robustness`: the
+  five "is this shell real?" tests on the MDPL2 halo field, resolving notebook 05's single
+  `[0, 1)` bin into seven on a shortened r ≤ 10 ladder whose inner floor is derived from the
+  run's own n̄ and N_c. The halo counterpart of `DM_simulation.ipynb`'s §C, which ran the same
+  five tests on the Gadget-4 particle field. No script twin; executed on the full catalog,
+  outputs kept.
 
 ### `intuition/` — pedagogical parameter scans; nothing imports from here
 
