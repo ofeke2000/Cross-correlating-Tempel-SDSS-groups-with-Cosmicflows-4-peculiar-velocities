@@ -107,6 +107,11 @@ def test_joint_sign_gate_group_and_velocity_centered_are_opposite():
     is wrong, or the two magnitudes disagree, the orientation bookkeeping in
     `velocity_centered_shell_dipole` has a bug -- this is the test the whole
     velocity-centered estimator hangs on.
+
+    Magnitudes are read in the zeta-hat normalization -- the raw L_1 moment
+    per pair, no (2*ell + 1) prefactor -- so each recovers V_INFALL / 3 and
+    not V_INFALL; see the comment at the recovery lines for why the 1/3 is
+    left standing on both sides.
     """
     s_center, s_neighbors, u, v_vec = _infall_shell_with_velocities()
     shell_edges = np.array([0.5 * R_SHELL, 1.5 * R_SHELL])
@@ -115,8 +120,16 @@ def test_joint_sign_gate_group_and_velocity_centered_are_opposite():
     gc_result = shell_dipole(s_center, s_neighbors, shell_edges, weights=u)
     assert gc_result.dipole[0] < 0.0
     assert np.sign(gc_result.dipole[0]) == conventions.INFALL_DIPOLE_SIGN
+    # Both frames are read here in the zeta-hat normalization: the raw L_1
+    # moment per pair, with NO (2*ell + 1) prefactor (CLAUDE.md, Notation --
+    # "two normalizations, never mixed"). In that normalization a uniform
+    # shell of pure infall at speed V_INFALL returns V_INFALL / 3, not
+    # V_INFALL: the 1/3 is <mu^2> over a uniform shell (`geometry.mu_cosine`),
+    # the same 1/3 that separates the group-centered xi_Tu,1 = 3 * Sigma u mu /
+    # count from this raw moment. It is left standing on BOTH sides rather
+    # than divided out on one, so the two magnitudes stay directly comparable.
     recovered_gc = gc_result.dipole[0] / gc_result.pair_count[0]
-    assert recovered_gc == pytest.approx(V_INFALL, rel=0.1)
+    assert recovered_gc == pytest.approx(V_INFALL / 3.0, rel=0.1)
 
     # --- velocity-centered zeta: reversed orientation ------------------------
     # Pin the core-cut safety margin the toy geometry was built for: every
@@ -143,7 +156,7 @@ def test_joint_sign_gate_group_and_velocity_centered_are_opposite():
 
     y10_norm = np.sqrt(3.0 / (4.0 * np.pi))
     recovered_vc = vc_result.dipole[0] / (y10_norm * vc_result.pair_count[0])
-    assert recovered_vc == pytest.approx(-V_INFALL, rel=0.1)
+    assert recovered_vc == pytest.approx(-V_INFALL / 3.0, rel=0.1)
 
     # Opposite signs -- zeta_ell = (-1)**ell * xi_Tu,ell made concrete.
     assert np.sign(vc_result.dipole[0]) == -np.sign(gc_result.dipole[0])
@@ -694,10 +707,12 @@ def test_outermost_edge_is_included_in_the_last_shell():
 # Nothing above exercises a non-uniform `shell_edges` through the estimator
 # AND the normalization chain (dvcorr.pipeline.velocity_centered
 # .normalize_stacked_dipole) together -- every test above uses either a
-# single wide bin or evenly-spaced linear edges. Commit 2 flips the
-# production default to spacing="log", min_radius=1.0, max_radius=64.0,
-# n_bins=12 (edges 1, sqrt2, 2, 2 sqrt2, 4, ... 64), so these tests gate
-# that change.
+# single wide bin or evenly-spaced linear edges. The production default is
+# log spacing (`velocity_centered._default_shells`, currently min_radius=0.5,
+# max_radius=64.0, n_bins=14); these tests gate the LOG-BINNING MECHANISM
+# itself with a self-contained fixture ladder (min_radius=1.0, n_bins=12,
+# edges 1, sqrt2, 2, 2 sqrt2, 4, ... 64) rather than importing the current
+# production numbers, so they stay stable if that default is retuned again.
 
 _GEOM_R_MIN = 1.0
 _GEOM_R_MAX = 64.0
@@ -825,10 +840,14 @@ def test_empty_shell_under_geometric_edges_normalizes_to_zero_not_nan():
 # `ShellConfig.include_zero_bin` prepends [0, min_radius) to the log ladder,
 # so `shell_edges[0] == 0` and the innermost edge no longer excludes the
 # coincident pair. The pipeline subsamples its centers FROM the tracer array,
-# so that pair is not hypothetical: it is exactly one per center, and in the
-# production binning it would outnumber the real pairs in [0, 1) by ~60x.
-# These two tests pin the explicit `r_mag > 0` term that replaces the
-# incidental protection the positive innermost edge used to provide.
+# so that pair is not hypothetical: it is exactly one per center, and on the
+# production catalog it would outnumber the real pairs in the innermost bin
+# by more than an order of magnitude (see the module-level comment above
+# `velocity_centered._DEFAULT_SPACING` for the current numbers -- this test
+# fixture's own min_radius/n_bins below are chosen to exercise the mechanism,
+# not to mirror the production default). These two tests pin the explicit
+# `r_mag > 0` term that replaces the incidental protection the positive
+# innermost edge used to provide.
 
 _ZERO_BIN_EDGES = log_shell_edges(
     _GEOM_R_MIN, _GEOM_R_MAX, _GEOM_N_BINS, include_zero_bin=True

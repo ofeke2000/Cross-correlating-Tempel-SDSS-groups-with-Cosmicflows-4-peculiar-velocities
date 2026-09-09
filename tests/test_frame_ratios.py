@@ -302,13 +302,14 @@ def test_the_figure_uses_a_linear_radial_axis_despite_logarithmic_binning():
     """House style, pinned repo-wide: log BINNING never implies a log AXIS."""
     curves = _figure_curves()
     cfg = FrameRatioConfig()
-    fig = make_frame_ratio_figure(cfg, curves, frame_ratios(cfg, curves))
-    ax_ratio, ax_mono = fig.axes
+    figures = make_frame_ratio_figure(cfg, curves, frame_ratios(cfg, curves))
+    ax_ratio, ax_mono = figures.dipole.axes[0], figures.monopole.axes[0]
     assert ax_ratio.get_xscale() == "linear"
     assert ax_mono.get_xscale() == "linear"
     assert ax_ratio.get_yscale() == "linear"
     assert ax_mono.get_yscale() == "linear"
-    plt.close(fig)
+    plt.close(figures.dipole)
+    plt.close(figures.monopole)
 
 
 def test_the_figure_prints_each_mean_in_the_legend():
@@ -316,14 +317,15 @@ def test_the_figure_prints_each_mean_in_the_legend():
     curves = _figure_curves()
     cfg = FrameRatioConfig()
     ratios = frame_ratios(cfg, curves)
-    fig = make_frame_ratio_figure(cfg, curves, ratios)
-    labels = [t.get_text() for t in fig.axes[0].get_legend().get_texts()]
+    figures = make_frame_ratio_figure(cfg, curves, ratios)
+    labels = [t.get_text() for t in figures.dipole.axes[0].get_legend().get_texts()]
 
     assert len(labels) == len(ratios)
     for ratio, label in zip(ratios, labels):
         assert ratio.label in label
         assert f"{ratio.mean_ratio:.2f}" in label
-    plt.close(fig)
+    plt.close(figures.dipole)
+    plt.close(figures.monopole)
 
 
 def test_a_pole_is_drawn_but_does_not_set_the_y_limits():
@@ -331,39 +333,44 @@ def test_a_pole_is_drawn_but_does_not_set_the_y_limits():
     curves = _figure_curves()
     cfg = FrameRatioConfig()
     ratios = frame_ratios(cfg, curves)
-    fig = make_frame_ratio_figure(cfg, curves, ratios)
+    figures = make_frame_ratio_figure(cfg, curves, ratios)
 
     pole = max(abs(r.ratio[2]) for r in ratios)   # obs/z at the crossing: ~240
-    lo, hi = fig.axes[0].get_ylim()
+    lo, hi = figures.dipole.axes[0].get_ylim()
     assert pole > 10 * max(abs(lo), abs(hi))
 
     usable = np.concatenate([r.ratio[r.usable] for r in ratios])
     assert lo < usable.min() and usable.max() < hi
-    plt.close(fig)
+    plt.close(figures.dipole)
+    plt.close(figures.monopole)
 
 
 def test_the_figure_draws_unusable_shells_with_open_markers():
     curves = _figure_curves()
     cfg = FrameRatioConfig()
     ratios = frame_ratios(cfg, curves)
-    fig = make_frame_ratio_figure(cfg, curves, ratios)
+    figures = make_frame_ratio_figure(cfg, curves, ratios)
 
-    fills = {line.get_fillstyle() for line in fig.axes[0].get_lines()
+    fills = {line.get_fillstyle() for line in figures.dipole.axes[0].get_lines()
              if line.get_linestyle() == "None" and len(line.get_xdata()) > 0}
     assert "none" in fills and "full" in fills
-    plt.close(fig)
+    plt.close(figures.dipole)
+    plt.close(figures.monopole)
 
 
-def test_the_figure_has_a_monopole_panel_under_the_dipole_panel():
-    """Hard rule 6, at the figure level."""
+def test_the_figure_and_its_monopole_companion_are_two_separate_figures():
+    """CLAUDE.md hard rule 6: dipole and monopole are two Figures, not two
+    panels of one -- a dipole PNG must be sendable on its own.
+    """
     curves = _figure_curves()
     cfg = FrameRatioConfig()
-    fig = make_frame_ratio_figure(cfg, curves, frame_ratios(cfg, curves))
-    ax_ratio, ax_mono = fig.axes
+    figures = make_frame_ratio_figure(cfg, curves, frame_ratios(cfg, curves))
+    assert figures.dipole is not figures.monopole
+    ax_ratio, ax_mono = figures.dipole.axes[0], figures.monopole.axes[0]
     assert r"\hat\zeta_1" in ax_ratio.get_ylabel()
     assert r"\hat\zeta_0" in ax_mono.get_ylabel()
-    assert ax_mono.get_position().y0 < ax_ratio.get_position().y0
-    plt.close(fig)
+    plt.close(figures.dipole)
+    plt.close(figures.monopole)
 
 
 # ---------------------------------------------------------------------------
@@ -409,8 +416,8 @@ def test_the_legend_shows_both_branches_when_a_ratio_changes_sign():
     curves = _figure_curves()
     cfg = FrameRatioConfig()
     ratios = frame_ratios(cfg, curves)
-    fig = make_frame_ratio_figure(cfg, curves, ratios)
-    labels = [t.get_text() for t in fig.axes[0].get_legend().get_texts()]
+    figures = make_frame_ratio_figure(cfg, curves, ratios)
+    labels = [t.get_text() for t in figures.dipole.axes[0].get_legend().get_texts()]
 
     for ratio, label in zip(ratios, labels):
         if ratio.changes_sign:
@@ -420,7 +427,8 @@ def test_the_legend_shows_both_branches_when_a_ratio_changes_sign():
         else:
             assert "sign change" not in label
     assert any(r.changes_sign for r in ratios)   # the fixture must exercise it
-    plt.close(fig)
+    plt.close(figures.dipole)
+    plt.close(figures.monopole)
 
 
 def test_the_table_names_the_cancellation_when_a_ratio_changes_sign():
@@ -432,16 +440,99 @@ def test_the_table_names_the_cancellation_when_a_ratio_changes_sign():
     assert "2.000 (positive)" in text
 
 
-def test_the_connecting_line_breaks_at_a_pole_instead_of_spiking_through_it():
-    """A segment drawn to an off-scale point is a stripe that reads as structure."""
+def test_the_connecting_step_breaks_at_a_pole_instead_of_spiking_through_it():
+    """A step drawn to an off-scale value is a stripe that reads as structure.
+
+    CLAUDE.md hard rule 10: the connecting curve is now a STEP
+    (`ax.stairs`, a `StepPatch`), not a point-to-point `Line2D` -- one patch
+    per ratio, in the same order `ratios` was given.
+    """
     curves = _figure_curves()
     cfg = FrameRatioConfig()
     ratios = frame_ratios(cfg, curves)
-    fig = make_frame_ratio_figure(cfg, curves, ratios)
+    figures = make_frame_ratio_figure(cfg, curves, ratios)
 
-    joined = [line.get_ydata() for line in fig.axes[0].get_lines()
-              if line.get_linestyle() == "-" and len(line.get_xdata()) == N_BINS]
-    assert joined, "expected one connecting line per ratio"
-    for ratio, ydata in zip(ratios, joined):
-        np.testing.assert_array_equal(np.isnan(np.asarray(ydata, dtype=float)), ~ratio.usable)
-    plt.close(fig)
+    steps = figures.dipole.axes[0].patches
+    assert len(steps) == len(ratios), "expected one connecting step per ratio"
+    for ratio, step in zip(ratios, steps):
+        values = np.asarray(step.get_data().values, dtype=float)
+        np.testing.assert_array_equal(np.isnan(values), ~ratio.usable)
+    plt.close(figures.dipole)
+    plt.close(figures.monopole)
+
+
+# ---------------------------------------------------------------------------
+# Per-ratio edges (each FrameRatio carries its own, never a borrowed one)
+# ---------------------------------------------------------------------------
+
+
+def test_the_figure_draws_each_ratio_on_its_own_edges_not_the_first_curves():
+    """A ratio not involving `curves[0]` must be drawn on ITS OWN `shell_edges`.
+
+    `frame_ratio` only checks a match WITHIN one numerator/denominator pair,
+    never across different ratios, so two `FrameRatio`s handed to the figure
+    together may legitimately sit on different ladders (e.g. a redshift-space
+    curve built from a different `ShellConfig`). The figure must read each
+    ratio's edges off the ratio itself, never off `curves[0]`.
+    """
+    edges_a = np.array([0.0, 2.0, 5.0, 10.0, 20.0])
+    edges_b = np.array([0.0, 3.0, 6.0, 12.0, 24.0])
+    num_a = _curve("3D", [10.0, 8.0, 6.0, 4.0], edges=edges_a)
+    den_a = _curve("obs", [5.0, 4.0, 3.0, 2.0], edges=edges_a)
+    num_b = _curve("obs2", [5.0, 4.0, 3.0, 2.0], edges=edges_b)
+    den_b = _curve("z", [1.0, 1.0, 1.0, 1.0], edges=edges_b)
+    ratio_a = frame_ratio(FrameRatioConfig(), num_a, den_a)
+    ratio_b = frame_ratio(FrameRatioConfig(), num_b, den_b)
+
+    figures = make_frame_ratio_figure(
+        FrameRatioConfig(), (num_a, den_a, num_b, den_b), (ratio_a, ratio_b)
+    )
+
+    steps = figures.dipole.axes[0].patches
+    assert len(steps) == 2
+    np.testing.assert_array_equal(steps[0].get_data().edges, edges_a)
+    np.testing.assert_array_equal(steps[1].get_data().edges, edges_b)
+    plt.close(figures.dipole)
+    plt.close(figures.monopole)
+
+
+def test_the_figure_builds_with_no_ratios_at_all():
+    """Empty `curves` / `ratios` must not crash on a `curves[0]` index.
+
+    The pre-`DipoleFigures` version of this figure never indexed into
+    `curves` directly (only into `ratios`, inside the loop), so an empty
+    pair was never a special case; `edges = curves[0].shell_edges` at the
+    top of the function was a regression against that.
+    """
+    figures = make_frame_ratio_figure(FrameRatioConfig(), (), ())
+    assert figures.dipole is not figures.monopole
+    assert len(figures.dipole.axes[0].patches) == 0
+    plt.close(figures.dipole)
+    plt.close(figures.monopole)
+
+
+def test_markers_sit_at_the_bins_lower_edge_not_the_volume_weighted_radius():
+    """One abscissa per panel (CLAUDE.md hard rule 10): the usable/pole
+    markers must sit where the step starts (`shell_edges[:-1]`), not at
+    `shell_centers`'s volume-weighted radius -- two abscissae in one panel
+    is exactly the failure the step rendering was meant to remove.
+    """
+    num = _curve("obs", [40.0, 40.0, 40.0, 40.0])
+    den = _curve("z", [20.0, 20.0, -0.5, 20.0], sem=[1.0] * N_BINS)
+    ratio = frame_ratio(FrameRatioConfig(min_denominator_sigma=3.0), num, den)
+    lower_edges = ratio.shell_edges[:-1]
+    # The fixture's lower edges and volume-weighted centers must actually
+    # differ, or this test would pass by accident.
+    assert not np.allclose(lower_edges, ratio.shell_centers)
+
+    figures = make_frame_ratio_figure(FrameRatioConfig(min_denominator_sigma=3.0), (num, den), (ratio,))
+
+    marker_lines = [
+        line for line in figures.dipole.axes[0].get_lines()
+        if line.get_linestyle() == "None" and len(line.get_xdata()) > 0
+    ]
+    assert marker_lines, "expected at least one usable/pole marker series"
+    all_marker_x = np.sort(np.concatenate([line.get_xdata() for line in marker_lines]))
+    np.testing.assert_array_equal(all_marker_x, np.sort(lower_edges))
+    plt.close(figures.dipole)
+    plt.close(figures.monopole)

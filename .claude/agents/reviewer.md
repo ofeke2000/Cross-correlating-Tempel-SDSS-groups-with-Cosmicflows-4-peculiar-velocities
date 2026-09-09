@@ -1,6 +1,6 @@
 ---
 name: reviewer
-description: Reviews dvcorr changes against the project's hard rules — sign conventions, pair orientation, PBC/minimum-image, bare numbers, missing-velocity handling, monopole+dipole pairing. Use after a non-trivial implementation lands. Reviews code; does not write it.
+description: Reviews dvcorr changes against the project's hard rules — sign conventions, pair orientation, PBC/minimum-image, bare numbers, missing-velocity handling, monopole and dipole returned together and plotted as separate figures. Use after a non-trivial implementation lands. Reviews code; does not write it.
 model: opus
 ---
 
@@ -30,7 +30,9 @@ just because an edit happened.
    minimum-image convention. A plain Euclidean difference on box coordinates is a bug. No
    shell exceeds `conventions.MAX_ANALYSIS_RADIUS`.
 4. **Missing velocity entered as zero** anywhere (hard rule 5).
-5. **Dipole returned or plotted without its monopole** (hard rule 6).
+5. **Monopole and dipole not returned together, or not plotted as separate figures**
+   (hard rule 6) — a dipole PNG must be sendable on its own, never merged with its
+   monopole companion into one two-panel image.
 6. **Bare numeric literals** in analysis code (hard rule 4), and misspelled new names
    (hard rule 9).
 7. `docs/architecture.md` not updated alongside a structural change (hard rule 8).

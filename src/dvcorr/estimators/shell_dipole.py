@@ -50,6 +50,29 @@ They coincide only when the weights are uniform (w_i = 1); once w_i = u_i the
 monopole is the velocity monopole Sigma u, a different quantity from the count,
 which is exactly why both are kept.
 
+Which denominator: the realized count, or the expected occupancy
+-----------------------------------------------------------------
+Dividing by the REALIZED pair_count, as above, gives Nusser's MASS-WEIGHTED
+zeta^M -- normalized by the tracers actually found in the shell, not by the
+number a uniform field would put there. Around a center drawn from the tracers
+themselves <pair_count> = n_bar V_b (1 + xi_TT(r)), so the two normalizations
+differ by exactly the tracer autocorrelation,
+
+    zeta^M(r) = zeta^V(r) / (1 + xi_TT(r))
+
+and the mass-weighted form is the LOWER of the two -- of order 10% at
+r = 20 h^-1 Mpc for group-like tracers, and far more on the inner shells.
+Nusser's eq. 23-24 is zeta^V: its denominator is the EXPECTED uniform occupancy
+n_bar V_b (`expected_shell_occupancy`), never a realized count. The simulation
+pipeline already normalizes that way
+(`dvcorr.pipeline.velocity_centered.normalize_stacked_dipole`, which takes
+n_bar and the shell edges rather than the counts) and is unaffected by this.
+The DATA arm must do the same, with a random catalog supplying n_bar V_b --
+eq. 24 with randoms, not the methodological note's eq. 28 with the data pair
+count W^D -- or else report zeta^M knowingly and predict zeta^M too. What is
+not allowed is measuring one and comparing it against the other (CLAUDE.md,
+Notation: "two normalizations, never mixed").
+
 Why the monopole travels with the dipole
 -----------------------------------------
 The velocity monopole (Sigma u, normalized by pair_count) is not a by-product to

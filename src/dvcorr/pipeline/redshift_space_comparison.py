@@ -160,7 +160,7 @@ import numpy as np
 from scipy.spatial import cKDTree
 
 from dvcorr import conventions
-from dvcorr.config import PathsConfig, volume_weighted_shell_radii
+from dvcorr.config import PathsConfig
 from dvcorr.estimators.shell_dipole import VelocityCenteredShellDipoleResult, velocity_centered_shell_dipole
 from dvcorr.redshift_space import (
     FLIP_GUARD_FLOOR,
@@ -177,11 +177,12 @@ from dvcorr.redshift_space import (
 from dvcorr.pipeline.velocity_centered import (
     _BAND_ALPHA,
     _COLOR_ZERO_LINE,
-    _FIGSIZE,
+    _DIPOLE_FIGSIZE,
     _GRID_ALPHA,
-    _HEIGHT_RATIOS,
     _LABEL_COLOR,
+    _MONOPOLE_FIGSIZE,
     _ZERO_LINE_WIDTH,
+    DipoleFigures,
     NormalizedDipole,
     RunConfig,
     SharedCenterSet,
@@ -190,6 +191,7 @@ from dvcorr.pipeline.velocity_centered import (
     normalize_result,
     select_shared_centers,
     shell_dipole_norm_scale,
+    step_band,
 )
 from dvcorr.pipeline.velocity_centered import _COLOR_SIGNAL as _COLOR_REAL
 
@@ -1206,19 +1208,26 @@ def make_redshift_comparison_figure(
     cfg: RedshiftSpaceRunConfig,
     results: RedshiftSpaceFrameResults,
     comparison: RedshiftSpaceComparison,
-) -> plt.Figure:
+) -> DipoleFigures:
     """Center-averaged comparison: real-space vs. redshift-space zeta_hat_1 + monopole.
 
-    Two panels sharing the x-axis (separation r), height ratios (3, 1) --
-    identical layout convention to `dvcorr.pipeline.velocity_centered
-    .make_figure` and `dvcorr.pipeline.velocity_frame_comparison
-    .make_comparison_figure` (CLAUDE.md hard rule 6: the dipole never travels
-    without its monopole). Unlike the observer-vs-velocity-frame comparison,
-    a SINGLE shared y-axis suffices for the monopole panel here: both curves
-    are the SAME kind of quantity (Sigma |u_alpha| N_alpha,b, normalized the
-    same way) on the SAME set of u_alpha values (n_hat invariance), differing
-    only through shell occupancy N_alpha,b -- there is no projection-factor
-    scale gap to hide behind a twin axis.
+    Two separate figures (CLAUDE.md hard rule 6: the dipole never travels
+    without its monopole, but a dipole PNG must be sendable on its own),
+    returned together as a `DipoleFigures` -- the same return type as
+    `dvcorr.pipeline.velocity_centered.make_figure` and
+    `dvcorr.pipeline.velocity_frame_comparison.make_comparison_figure`.
+    Unlike the observer-vs-velocity-frame comparison, a SINGLE shared y-axis
+    suffices for the monopole figure here: both curves are the SAME kind of
+    quantity (Sigma |u_alpha| N_alpha,b, normalized the same way) on the SAME
+    set of u_alpha values (n_hat invariance), differing only through shell
+    occupancy N_alpha,b -- there is no projection-factor scale gap to hide
+    behind a twin axis.
+
+    Every curve is a STEP (`ax.stairs`), held flat across each bin's full
+    width from `results.real_result.shell_edges[0]` (0.0 under the default
+    binning) -- CLAUDE.md hard rule 10 -- rather than a point at the
+    volume-weighted radius; `anchor_dipole_at_origin` is therefore not needed
+    here either.
 
     TOP panel: `zeta_hat` for both spaces, each with its own across-center
     SEM band and its own TWO nulls -- the velocity shuffle dashed in a
@@ -1256,53 +1265,51 @@ def make_redshift_comparison_figure(
 
     Returns
     -------
-    matplotlib.figure.Figure
+    DipoleFigures
     """
-    fig, (ax_dipole, ax_mono) = plt.subplots(
-        2, 1, figsize=_FIGSIZE, sharex=True, gridspec_kw={"height_ratios": _HEIGHT_RATIOS}
-    )
+    edges = results.real_result.shell_edges
 
-    # comparison.shell_centers (the plain midpoint) is deliberately left
-    # alone -- r_eff, the volume-weighted radius, is the plotting abscissa.
-    r = volume_weighted_shell_radii(results.real_result.shell_edges)
+    fig_dipole, ax_dipole = plt.subplots(figsize=_DIPOLE_FIGSIZE)
 
-    ax_dipole.fill_between(
-        r, comparison.real.zeta_hat - comparison.real.sem, comparison.real.zeta_hat + comparison.real.sem,
-        color=_COLOR_REAL, alpha=_BAND_ALPHA,
+    step_band(
+        ax_dipole, edges, comparison.real.zeta_hat - comparison.real.sem,
+        comparison.real.zeta_hat + comparison.real.sem, color=_COLOR_REAL, alpha=_BAND_ALPHA,
     )
-    ax_dipole.plot(
-        r, comparison.real.zeta_hat, "o-", color=_COLOR_REAL,
+    ax_dipole.stairs(
+        comparison.real.zeta_hat, edges, color=_COLOR_REAL,
         label=fr"$\hat\zeta_1^{{real}}$  (N$_c$={results.real_result.n_centers})",
     )
-    ax_dipole.plot(
-        r, comparison.real.zeta_hat_shuffle, "o--", color=_COLOR_REAL_NULL,
+    ax_dipole.stairs(
+        comparison.real.zeta_hat_shuffle, edges, color=_COLOR_REAL_NULL, linestyle="--",
         label="real null (u-shuffle)",
     )
-    ax_dipole.plot(
-        r, comparison.real.zeta_hat_gaussian, "o:", color=_COLOR_REAL_GAUSSIAN,
+    ax_dipole.stairs(
+        comparison.real.zeta_hat_gaussian, edges, color=_COLOR_REAL_GAUSSIAN, linestyle=":",
         label="real null (gaussian)",
     )
 
-    ax_dipole.fill_between(
-        r, comparison.redshift.zeta_hat - comparison.redshift.sem,
+    step_band(
+        ax_dipole, edges, comparison.redshift.zeta_hat - comparison.redshift.sem,
         comparison.redshift.zeta_hat + comparison.redshift.sem,
         color=_COLOR_REDSHIFT, alpha=_BAND_ALPHA,
     )
-    ax_dipole.plot(
-        r, comparison.redshift.zeta_hat, "s-", color=_COLOR_REDSHIFT,
+    ax_dipole.stairs(
+        comparison.redshift.zeta_hat, edges, color=_COLOR_REDSHIFT,
         label=fr"$\hat\zeta_1^{{z}}$  (N$_c$={results.redshift_result.n_centers})",
     )
-    ax_dipole.plot(
-        r, comparison.redshift.zeta_hat_shuffle, "s--", color=_COLOR_REDSHIFT_NULL,
+    ax_dipole.stairs(
+        comparison.redshift.zeta_hat_shuffle, edges, color=_COLOR_REDSHIFT_NULL, linestyle="--",
         label="redshift null (u-shuffle)",
     )
-    ax_dipole.plot(
-        r, comparison.redshift.zeta_hat_gaussian, "s:", color=_COLOR_REDSHIFT_GAUSSIAN,
+    ax_dipole.stairs(
+        comparison.redshift.zeta_hat_gaussian, edges, color=_COLOR_REDSHIFT_GAUSSIAN, linestyle=":",
         label="redshift null (gaussian)",
     )
 
     ax_dipole.axhline(0.0, color=_COLOR_ZERO_LINE, lw=_ZERO_LINE_WIDTH)
+    ax_dipole.set_xlim(left=0.0)
     ax_dipole.set_ylabel(r"$\hat\zeta_1$  [km/s]", color=_LABEL_COLOR)
+    ax_dipole.set_xlabel(r"separation $r$  [$h^{-1}$ Mpc]")
     ax_dipole.legend(fontsize="small")
     ax_dipole.grid(alpha=_GRID_ALPHA)
     ax_dipole.spines["top"].set_visible(False)
@@ -1317,32 +1324,43 @@ def make_redshift_comparison_figure(
         "uncertainty (center_standard_error)",
         fontsize=9,
     )
+    fig_dipole.tight_layout()
 
-    ax_mono.plot(r, comparison.real.monopole_norm, "o-", color=_COLOR_REAL, label="real")
-    ax_mono.plot(r, comparison.redshift.monopole_norm, "s-", color=_COLOR_REDSHIFT, label="redshift")
+    fig_mono, ax_mono = plt.subplots(figsize=_MONOPOLE_FIGSIZE)
+    ax_mono.stairs(comparison.real.monopole_norm, edges, color=_COLOR_REAL, label="real")
+    ax_mono.stairs(comparison.redshift.monopole_norm, edges, color=_COLOR_REDSHIFT, label="redshift")
+    ax_mono.set_xlim(left=0.0)
     ax_mono.set_ylabel(r"$\hat\zeta_0 \simeq \langle|u|\rangle$  [km/s]", color=_LABEL_COLOR)
     ax_mono.set_xlabel(r"separation $r$  [$h^{-1}$ Mpc]")
     ax_mono.legend(fontsize="small")
     ax_mono.grid(alpha=_GRID_ALPHA)
     ax_mono.spines["top"].set_visible(False)
     ax_mono.spines["right"].set_visible(False)
+    ax_mono.set_title(
+        "real space vs. redshift space monopole  "
+        f"(R_sub={cfg.sub_volume_radius:.0f} h$^{{-1}}$Mpc, "
+        f"{_binning_description(cfg.shells)}, "
+        f"N$_c$={results.centers.n_centers})",
+        fontsize=9,
+    )
+    fig_mono.tight_layout()
 
-    fig.tight_layout()
-    return fig
+    return DipoleFigures(dipole=fig_dipole, monopole=fig_mono)
 
 
 def make_single_center_figure(
     cfg: RedshiftSpaceRunConfig,
     results: RedshiftSpaceFrameResults,
     n_bar: float,
-) -> plt.Figure:
+) -> DipoleFigures:
     """One example center's own dipole + monopole, real vs. redshift, no band.
 
-    Same (3, 1) two-panel layout (hard rule 6). `cfg.example_center_index`
-    (a config parameter, not hardcoded) indexes the SHARED, row-aligned
-    center set (`RedshiftCenterSet`), so `results.real_result
-    .per_center_dipole[a]` and `results.redshift_result.per_center_dipole[a]`
-    describe the SAME physical halo in the two spaces.
+    Two separate figures, one statistic each (hard rule 6), returned as a
+    `DipoleFigures`. `cfg.example_center_index` (a config parameter, not
+    hardcoded) indexes the SHARED, row-aligned center set
+    (`RedshiftCenterSet`), so `results.real_result.per_center_dipole[a]` and
+    `results.redshift_result.per_center_dipole[a]` describe the SAME
+    physical halo in the two spaces.
 
     No error band: a single center has no across-center population to form
     a standard error from -- this figure is a shape/sanity read-out, not a
@@ -1372,7 +1390,7 @@ def make_single_center_figure(
 
     Returns
     -------
-    matplotlib.figure.Figure
+    DipoleFigures
 
     Raises
     ------
@@ -1387,11 +1405,8 @@ def make_single_center_figure(
             f"example_center_index ({a}) out of range for n_centers = {n_centers}."
         )
 
-    # results.real_result.shell_centers (the plain midpoint) is deliberately
-    # left alone -- r_eff, the volume-weighted radius, is the plotting
-    # abscissa; already reading .shell_edges on the next line regardless.
-    r = volume_weighted_shell_radii(results.real_result.shell_edges)
-    norm_scale = shell_dipole_norm_scale(results.real_result.shell_edges, n_bar)
+    edges = results.real_result.shell_edges
+    norm_scale = shell_dipole_norm_scale(edges, n_bar)
 
     real_dipole = results.real_result.per_center_dipole[a] * norm_scale
     redshift_dipole = results.redshift_result.per_center_dipole[a] * norm_scale
@@ -1401,14 +1416,13 @@ def make_single_center_figure(
         results.redshift_result.per_center_speed[a] * results.redshift_result.per_center_count[a]
     )
 
-    fig, (ax_dipole, ax_mono) = plt.subplots(
-        2, 1, figsize=_FIGSIZE, sharex=True, gridspec_kw={"height_ratios": _HEIGHT_RATIOS}
-    )
-
-    ax_dipole.plot(r, real_dipole, "o-", color=_COLOR_REAL, label="real")
-    ax_dipole.plot(r, redshift_dipole, "s-", color=_COLOR_REDSHIFT, label="redshift")
+    fig_dipole, ax_dipole = plt.subplots(figsize=_DIPOLE_FIGSIZE)
+    ax_dipole.stairs(real_dipole, edges, color=_COLOR_REAL, label="real")
+    ax_dipole.stairs(redshift_dipole, edges, color=_COLOR_REDSHIFT, label="redshift")
     ax_dipole.axhline(0.0, color=_COLOR_ZERO_LINE, lw=_ZERO_LINE_WIDTH)
+    ax_dipole.set_xlim(left=0.0)
     ax_dipole.set_ylabel(r"$\hat\zeta_1$ (single center)  [km/s]", color=_LABEL_COLOR)
+    ax_dipole.set_xlabel(r"separation $r$  [$h^{-1}$ Mpc]")
     ax_dipole.legend(fontsize="small")
     ax_dipole.grid(alpha=_GRID_ALPHA)
     ax_dipole.spines["top"].set_visible(False)
@@ -1418,15 +1432,23 @@ def make_single_center_figure(
         f"{_binning_description(cfg.shells)})",
         fontsize=9,
     )
+    fig_dipole.tight_layout()
 
-    ax_mono.plot(r, real_mono, "o-", color=_COLOR_REAL, label="real")
-    ax_mono.plot(r, redshift_mono, "s-", color=_COLOR_REDSHIFT, label="redshift")
+    fig_mono, ax_mono = plt.subplots(figsize=_MONOPOLE_FIGSIZE)
+    ax_mono.stairs(real_mono, edges, color=_COLOR_REAL, label="real")
+    ax_mono.stairs(redshift_mono, edges, color=_COLOR_REDSHIFT, label="redshift")
+    ax_mono.set_xlim(left=0.0)
     ax_mono.set_ylabel(r"$|u_\alpha|\, N_{\alpha,b}$  [km/s]", color=_LABEL_COLOR)
     ax_mono.set_xlabel(r"separation $r$  [$h^{-1}$ Mpc]")
     ax_mono.legend(fontsize="small")
     ax_mono.grid(alpha=_GRID_ALPHA)
     ax_mono.spines["top"].set_visible(False)
     ax_mono.spines["right"].set_visible(False)
+    ax_mono.set_title(
+        f"single-center example monopole (index {a} of {n_centers}, "
+        f"{_binning_description(cfg.shells)})",
+        fontsize=9,
+    )
+    fig_mono.tight_layout()
 
-    fig.tight_layout()
-    return fig
+    return DipoleFigures(dipole=fig_dipole, monopole=fig_mono)

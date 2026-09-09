@@ -10,19 +10,23 @@ and the answer can be checked before it is trusted on data.
 
 Read these for context before non-trivial work:
 
-- [docs/summary.md](docs/summary.md) — science context, conventions, pipeline (best overview)
-- [docs/architecture.md](docs/architecture.md) — module index and cross-module contracts;
-  it points you at the right file, the file's docstring tells you what it does
-- [docs/research_notes.md](docs/research_notes.md) — current goals; what we are working on now
-- [README.md](README.md) — science goals, frozen conventions table, full pipeline, null tests
-- [literature/tempel_cf4_velocity_correlations.pdf](literature/tempel_cf4_velocity_correlations.pdf)
-  — the project's methodological note; **the authority on every convention and sign**
-- [literature/1703.05324v2.pdf](literature/1703.05324v2.pdf) — Nusser (2017), the estimator
-  being reproduced (his eq. 23 is the shell dipole)
-- [literature/1988ApJ...332L...7G.pdf](literature/1988ApJ...332L...7G.pdf) — Górski (1988),
-  the Ψ∥/Ψ⊥ velocity-correlation formalism used in the later CF4×CF4 analysis
-- [literature/1704.04477v1.pdf](literature/1704.04477v1.pdf) — Tempel et al. (2017), the
-  group catalog
+- [docs/architecture.md](docs/architecture.md) — **the live document**: module index and
+  cross-module contracts (PBC carving, n̄, seeds, normalization, import layering). It points
+  you at the right file; the file's docstring tells you what it does.
+- [README.md](README.md) — science goals, frozen conventions table, planned data-arm
+  pipeline, null tests.
+- [docs/summary.md](docs/summary.md) and [docs/research_notes.md](docs/research_notes.md) —
+  early scaffolds, **not maintained** (they still say conventions live in `config.py`).
+  Read for orientation only; where they disagree with `architecture.md` or the code, they
+  are wrong.
+- `literature/` (gitignored — local copies only, not in the repository):
+  - `tempel_cf4_velocity_correlations.pdf` — the project's methodological note; **the
+    authority on every convention and sign**
+  - `1703.05324v2.pdf` — Nusser (2017), the estimator being reproduced (eq. 23–24 is the
+    velocity-centered shell dipole ζ; eq. 13–17 the linear-theory multipoles)
+  - `1988ApJ...332L...7G.pdf` — Górski (1988), the Ψ∥/Ψ⊥ velocity-correlation formalism
+    (implemented in `dvcorr.theory.gorski`)
+  - `1704.04477v1.pdf` — Tempel et al. (2017), the group catalog
 
 ## Code layout
 
@@ -33,23 +37,35 @@ Editable-installed package (`pip install -e .`, setuptools src layout, `pyprojec
 pyproject.toml        package metadata, deps, pytest config — the one dependency source
 src/dvcorr/
   conventions.py       frozen conventions — sign, pair orientation, observer, box, columns
-  config/              tunable settings, one dataclass per file — paths, cosmology,
-                       shell binning, selection, catalog — plus a Settings aggregator
-  geometry.py          pure geometry primitives (unit_vector, pair_separation, mu_cosine)
-  estimators/          shell_dipole.py — monopole + dipole accumulators per radial shell,
-                       group-centered (xi_Tu) and velocity-centered (zeta, Nusser eq. 23-24)
-  pipeline/            velocity_centered.py — reusable stage functions shared by the script
-                       and its notebook twin (load/carve, run, normalize, plot);
-                       catalog_conversion.py — CSV→Parquet; mass_diagnostics.py — mass funnel
-  selection/           masks, selection functions, random catalogs (empty)
-  mocks/               MDPL2 observers, halo selection, mock covariance (empty)
-tests/                 unit tests, including the spherical-infall sign gate
-notebooks/             exploration only — nothing load-bearing
+  config/              tunable settings, one dataclass per file — paths, cosmology (+ f(z),
+                       aH), shell binning, selection, catalog — plus a Settings aggregator
+  geometry.py          pure geometry primitives (unit_vector, pair_separation,
+                       radial_flow_axis, mu_cosine)
+  redshift_space.py    the redshift-space coordinate transform (displace along own LOS)
+  estimators/          shell_dipole.py — group-centered xi_Tu and velocity-centered zeta
+                       (Nusser eq. 23-24), monopole + dipole per radial shell;
+                       velocity_frame_dipole.py — observer-free variant (axis = v_hat)
+  theory/              linear-theory predictions in Nusser's velocity-centered orientation:
+                       transforms.py (one FFTLog, bessel_moment), gorski.py (Ψ∥, Ψ⊥),
+                       dipole.py (real/redshift-space dipole), wide_angle.py
+  pipeline/            velocity_centered.py — the shared base (load/carve, draw, run,
+                       normalize, nulls, plot); velocity_frame_comparison.py;
+                       redshift_space_comparison.py; dm_snapshot.py (Gadget-4 300 h⁻¹ Mpc
+                       particle box loaders); robustness.py; frame_ratios.py;
+                       galaxy_bias.py (b of the tracers, Corrfunc/CAMB, needs `[bias]`);
+                       halo_class_comparison.py; catalog_conversion.py (CSV→Parquet);
+                       mass_diagnostics.py (mass funnel)
+  selection/           masks, selection functions, random catalogs (still empty)
+  mocks/               MDPL2 observers, halo selection, mock covariance (still empty)
+tests/                 unit tests, including the spherical-infall sign gates
+notebooks/             exploration only — nothing load-bearing (04 … 10, DM_simulation)
 intuition/             pedagogical parameter-scan notebooks; consume the library, no script
                        twin, nothing imports from them
-scripts/               runnable, load-bearing scripts (e.g. plot_velocity_centered_dipole.py)
-data/                  input catalogs (gitignored, see README)
-literature/            papers and the methodological note
+scripts/               thin drivers: plot_velocity_centered_dipole, plot_velocity_frame_
+                       comparison, plot_redshift_space_comparison, plot_halo_class_
+                       comparison, convert_mdpl2_catalog
+data/                  input catalogs + DM_simulation.hdf5 (gitignored, see README)
+literature/            papers and the methodological note (gitignored, local only)
 .claude/agents/        subagent definitions with pinned models (implementer, reviewer)
 Imports from old repo/   reference code from the bulk-flow project; not importable, read only
 ```
@@ -80,23 +96,29 @@ This is what keeps the same logic from being duplicated across the two.
 
 ## Running
 
-Work inside the project virtual environment — it isolates the pinned dependencies in
-`requirements.txt` from the system Python. Create it once, then activate it for every
+Work inside the project virtual environment (`requirements.txt` is just `-e .[dev]`;
+`pyproject.toml` is the dependency source). Create it once, then activate it for every
 session; don't `pip install` into the system interpreter.
 
 ```bash
 python -m venv .venv                    # once
 source .venv/bin/activate               # every session
 pip install -e .[dev]                  # once, inside the .venv — editable install, dvcorr + pytest
+pip install -e .[bias]                 # optional: Corrfunc, colossus, camb, mcfit — needed by
+                                       # dvcorr.theory (mcfit) and pipeline.galaxy_bias; Corrfunc
+                                       # needs a shared GSL at build time (see pyproject.toml)
 
-python -m scripts.convert_mdpl2_catalog # once — CSV -> Parquet, both catalogs
-pytest                                 # geometry and sign-convention tests
+python -m scripts.convert_mdpl2_catalog # once — CSV -> Parquet, both catalogs (name one to limit)
+pytest                                 # ~1 min; tests/test_catalog_equivalence.py reads the real
+                                       # catalogs and skips when they are absent
 ```
 
-The sign-gate tests in [tests/test_geometry.py](tests/test_geometry.py) are currently
-`xfail(strict=True)` because the physics is unimplemented. When a stub lands, remove its
-marker. **Never weaken an assertion to make a test pass**; if an assertion looks wrong,
-that is a conversation about conventions, not an edit.
+The sign gates are live tests, not stubs: [tests/test_geometry.py](tests/test_geometry.py)
+(group-centered infall → negative dipole), `tests/test_shell_dipole.py`,
+`tests/test_velocity_centered_dipole.py` (joint gate: ξ_Tu,1 < 0 and ζ₁ > 0 on the same toy)
+and `tests/test_velocity_frame_dipole.py`. They must pass before any result is trusted.
+**Never weaken an assertion to make a test pass**; if an assertion looks wrong, that is a
+conversation about conventions, not an edit.
 
 Two halo catalogs are supported and **both stay available** — a run picks one with
 `RunConfig(catalog=CatalogConfig(name=...))`:
@@ -124,12 +146,6 @@ reads the column, and only from `full`. Loading it is opt-in
 
 ## Hard rules
 
-0. **Check `Imports from old repo/` before starting any task.** Before writing new code —
-   an estimator, a mask, an overdensity calculation, a data loader, geometry helpers — read
-   the corresponding reference code there first. It is the bulk-flow project's working
-   implementation and often already solves the problem (or shows the sign/PBC pitfalls).
-   Copy and adapt deliberately; never wire live imports into it. The folder is gitignored
-   and not a package.
 
 1. **Frozen conventions live in `conventions.py`, nowhere else.** The pair orientation
    `r = s_V − s_T`, the cosine `µ = n̂_T · r̂`, the CMB frame, and the observer position are
@@ -137,34 +153,49 @@ reads the column, and only from `full`. Loading it is opt-in
    a plot look right. If a convention genuinely needs to change, change `conventions.py`, say
    so explicitly, and re-run the sign gate.
 
-2. **The dipole is negative for infall.** This follows from rule 1 and is asserted by
-   `tests/test_geometry.py`. Reversing the pair vector flips all odd multipoles *silently* —
-   no exception, no NaN, just the wrong sign on the growth rate. Treat any positive dipole
-   from an infall mock as an orientation bug, not a result.
+2. **The sign of the dipole is fixed by the center, and the code checks it.** Infall gives
+   ξ_Tu,1 < 0 in the group-centered construction and ζ₁ > 0 in the velocity-centered one;
+   the two differ by Nusser's (−1)^ℓ, never by an estimator edit. Reversing the pair
+   vector or the flow axis flips every odd multipole *silently* — no exception, no NaN,
+   just the wrong sign on the growth rate. The joint gate in
+   `tests/test_velocity_centered_dipole.py` asserts both signs on the same toy
+   (`tests/test_geometry.py` covers the group-centered half alone); a dipole of the wrong
+   sign on an infall mock is an orientation bug, not a result.
 
 3. **Periodic boundary conditions everywhere simulation data is used.** The MDPL2 box is
-   1000 h⁻¹ Mpc with PBC.
-   Every spatial calculation — separations, KDTree queries, lines of sight, masks — uses the
-   minimum-image convention. A plain Euclidean difference on box coordinates is a bug.
-   Corollary: no shell may exceed `conventions.MAX_ANALYSIS_RADIUS` = BOX_SIZE/2.
-   however, none of this is relevant to the real data from CF4 or Tempel_SDSS
+   1000 h⁻¹ Mpc with PBC. Every spatial calculation — separations, KDTree queries, lines of
+   sight, masks — must respect the minimum-image convention. A plain Euclidean difference
+   on box coordinates is a bug. Corollary: no shell may exceed
+   `conventions.MAX_ANALYSIS_RADIUS` = BOX_SIZE/2. In this codebase the rule is discharged
+   once, at the carving step (see the PBC contract in `docs/architecture.md`): the
+   estimators and `geometry.py` are plain Euclidean on already-unwrapped coordinates, and
+   re-adding a minimum-image reduction there is a bug, not a fix. The 300 h⁻¹ Mpc Gadget-4
+   snapshot is also periodic; its tighter ceiling is `SnapshotBox.max_analysis_radius`.
+   The real CF4 and Tempel-SDSS data are not periodic; none of this applies to them.
 
 4. **No bare numbers.** Any numeric literal in analysis code belongs in `conventions.py` or in a
    class attribute — never inline. For each new number, ask where it belongs before writing
    the code. (Pure-mathematics constants inside a formula, like the 1/3 from ⟨µ²⟩ over a
    uniform shell, are part of the derivation and stay in the expression, with a comment.)
 
-5. **Missing velocity is missing data.** An object without a peculiar-velocity
-   measurement is dropped from the pair count. It is never entered as u = 0 — that would bias the mean toward zero and dilute the dipole.
+5. **Never fill a missing velocity with zero.** A zero enters the count without entering
+   the sum and pulls the mean toward zero. Drop the object instead. Trivially true in the
+   box, where every halo has a velocity; the rule exists to catch a `fillna(0)` after a
+   catalog merge on the data arm.
 
-6. **Monopole and dipole are reported together.** The monopole is the geometry diagnostic
-   that says whether the dipole is trustworthy (finite-distance leakage, incomplete shells,
-   residual bulk motion). Never return or plot a dipole alone.
+6. **Monopole and dipole are computed and returned together, plotted separately.** The
+   monopole is the geometry diagnostic that says whether the dipole is trustworthy
+   (finite-distance leakage, incomplete shells, residual bulk motion), so every estimator
+   result and every normalized result carries both; a function that returns a dipole alone
+   is a bug. Figures are one statistic each: the dipole figure and its monopole companion
+   are produced by the same call and saved side by side, never merged into a single
+   two-panel image — a dipole PNG must be sendable on its own. Note that with the
+   flow-signed axis the velocity-centered monopole is |u|-weighted and sits near ⟨|u|⟩,
+   not near zero; the signed leakage diagnostic is recovered from `per_center_u`.
 
-7. **Cache-and-skip for derived columns.** Derived quantities computed once, written
-   back to
-   the catalog, existence-checked before recomputation: check column → skip if present →
-   compute → save.
+7. **Cache-and-skip for derived columns.** Derived quantities computed once, written back
+   to the catalog, existence-checked before recomputation: check column → skip if present
+   → compute → save.
 
 8. **Docstrings are the definition site; `architecture.md` is an index.** A changed
    signature, shape contract, or behavior updates the **docstring** — the file you are
@@ -186,6 +217,17 @@ reads the column, and only from `full`. Loading it is opt-in
    spelling. Assume a misspelling is accidental unless I confirm otherwise. A wrong name
    cached to a catalog column (rule 7) or frozen into a public signature is expensive to
    rename later, so catch it at the point of writing.
+
+10. **Default separation range and binning: r ∈ [0, 64] h⁻¹ Mpc, log bins of ratio √2
+    from 0.5.** The default ladder is the inner bin [0, 0.5) followed by 14 geometric
+    shells 0.5 · √2ⁿ ending exactly at 64 — fifteen shells in all — built by
+    `ShellConfig(min_radius=0.5, max_radius=64.0, spacing=SPACING_LOG, n_bins=14,
+    include_zero_bin=True)`. Every figure starts at r = 0, and each bin's value is drawn
+    at the **start** of its bin as a step spanning the bin's full width (not a marker at
+    the midpoint or the volume-weighted radius). Any run that departs from this —
+    **including one the user asked for** — is confirmed with the user before it is
+    executed: state the edges you are about to use and wait for a yes. A plot that begins
+    at 1 instead of 0 is the failure this rule exists to prevent.
 
 ## Coding conventions
 
@@ -229,7 +271,13 @@ Fixed project-wide; see the README table and `conventions.py`.
 - `ξ_Tu,ℓ` — density–velocity multipoles; `Ψ∥`, `Ψ⊥` — Górski velocity–velocity functions
 - Nusser (2017) centers on the velocity object, so his multipoles relate to ours by
   `(−1)^ℓ` — see `conventions.nusser_multipole_sign`. Apply the factor explicitly when comparing;
-  never absorb it into an estimator.
+  never absorb it into an estimator. `dvcorr.theory` speaks Nusser's orientation throughout
+  (its separation is spelled `y`), so its dipole is positive for infall.
+- **Two normalizations, never mixed.** The velocity-centered ζ̂₁ divides by the *expected*
+  uniform occupancy n̄V_b (Nusser eq. 24) and carries no (2ℓ+1): its linear-theory
+  expectation is C(r)/3 = aH f b A(r)/3, the ⟨µ²⟩ = 1/3 of a uniform shell. The
+  group-centered ξ_Tu,ℓ is written with (2ℓ+1)·Σ/count. Dividing by the *realized* pair
+  count instead of n̄V_b gives Nusser's mass-weighted ζ^M, lower by (1+ξ(r)).
 
 ## Units
 
@@ -242,6 +290,10 @@ Fixed project-wide; see the README table and `conventions.py`.
 - Small-scale velocity noise: σ* ≈ 250 km/s (`ShellConfig.sigma_star`) — **not read by any
   code yet**; a placeholder for the error model, and measured on the mvir ≥ 1e12 population,
   so it needs re-measuring before first use on the full catalog
+- Gadget-4 snapshot (`data/DM_simulation.hdf5`): 300 h⁻¹ Mpc periodic box, 256³ particles,
+  z = 0, h = 0.678, Ωm = 0.308, a constrained realization (2MRS initial conditions).
+  Units are read and checked from the file (`pipeline.dm_snapshot`); stored velocities
+  carry Gadget's √a factor, exactly 1 here.
 
 ## Agent workflow
 

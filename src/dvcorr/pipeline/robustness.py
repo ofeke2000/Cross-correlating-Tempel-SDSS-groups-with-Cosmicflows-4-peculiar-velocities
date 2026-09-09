@@ -111,11 +111,13 @@ from dvcorr.estimators.shell_dipole import (
     expected_shell_occupancy,
 )
 from dvcorr.pipeline.velocity_centered import (
+    DipoleFigures,
     RunConfig,
     draw_candidates_from_arrays,
     run_estimator,
     select_shared_centers,
     shell_dipole_norm_scale,
+    step_band,
 )
 
 # Percent, not fraction -- np.percentile's units, so the conversion happens
@@ -1243,7 +1245,11 @@ _COLOR_ZERO_LINE = "0.5"
 _ZERO_LINE_WIDTH = 0.8
 _BAND_ALPHA = 0.25
 _GRID_ALPHA = 0.3
+#: The five non-monopole tests, one 3x2 sheet with the sixth cell unused
+#: (CLAUDE.md hard rule 6 -- the monopole companion is a SEPARATE figure,
+#: below, sized on its own).
 _FIGSIZE = (13.0, 13.5)
+_MONOPOLE_FIGSIZE = (8.0, 3.0)
 _TRIM_CMAP = "viridis"
 _SPLIT_CMAP = "plasma"
 _COLOR_SPAN = 0.85  # keep colormap ends off pure white/yellow
@@ -1264,12 +1270,16 @@ def _shell_axis(
     plotted on it still carry every shell, so autoscaled y-limits are set by
     the whole range and a zoomed panel stays on the same y-scale as an
     untrimmed one.
+
+    The left edge is always pinned to r = 0 (CLAUDE.md hard rule 10 -- every
+    figure starts at r = 0), independent of `max_radius`; passing
+    `right=None` when `max_radius` is None leaves the autoscaled upper bound
+    untouched.
     """
     ax.axhline(0.0, color=_COLOR_ZERO_LINE, lw=_ZERO_LINE_WIDTH)
     ax.set_xlabel(xlabel)
     ax.grid(alpha=_GRID_ALPHA)
-    if max_radius is not None:
-        ax.set_xlim(left=0.0, right=max_radius)
+    ax.set_xlim(left=0.0, right=max_radius)
 
 
 def make_robustness_figure(
@@ -1280,10 +1290,15 @@ def make_robustness_figure(
     trim: TrimLadder,
     repeats: SeedRepeats,
     split: PropertySplit,
-) -> plt.Figure:
-    """All five tests, plus the monopole companion, on one 3x2 sheet.
+) -> DipoleFigures:
+    """The five tests on one sheet, plus the monopole companion as its own figure.
 
-    Panels, reading across then down:
+    Returned as a `DipoleFigures` (CLAUDE.md hard rule 6): `.dipole` is the
+    5-panel sheet below (all five tests overlay or diagnose the DIPOLE, so
+    they stay one figure together -- the rule requires only that the
+    monopole not be merged into it), `.monopole` is panel 6, alone.
+
+    Panels, reading across then down (`.dipole`):
 
     1. Precision ladder -- across-draw spread and mean internal SEM in the
        ranked shell against N_c, with the 1/sqrt(N_c) reference. LOG-LOG:
@@ -1297,7 +1312,17 @@ def make_robustness_figure(
        band.
     5. Mechanism split -- per-group mean contribution in the ranked shell,
        with each group's share of the stack annotated.
+
+    `.monopole`:
+
     6. Monopole (hard rule 6) -- the geometry companion of panel 2.
+
+    Panels 2-4 and 6 are STEPS (`ax.stairs`), held flat across each bin's
+    full width from `stack.shell_edges[0]` (0.0 under the default binning)
+    -- CLAUDE.md hard rule 10 -- rather than a point at the shell midpoint;
+    `anchor_dipole_at_origin` is therefore not needed here either. Panels 1
+    and 5 are not radial (N_c and group index respectively) and are
+    unaffected.
 
     Parameters
     ----------
@@ -1308,9 +1333,9 @@ def make_robustness_figure(
 
     Returns
     -------
-    matplotlib.figure.Figure
+    DipoleFigures
     """
-    r = stack.shell_centers
+    edges = stack.shell_edges
     b = cfg.trim_rank_shell
     shell_text = (
         f"[{stack.shell_edges[b]:g}, {stack.shell_edges[b + 1]:g}) "
@@ -1318,7 +1343,8 @@ def make_robustness_figure(
     )
 
     fig, axes = plt.subplots(3, 2, figsize=_FIGSIZE)
-    ax_ladder, ax_boot, ax_trim, ax_seed, ax_split, ax_mono = axes.ravel()
+    ax_ladder, ax_boot, ax_trim, ax_seed, ax_split, ax_unused = axes.ravel()
+    fig.delaxes(ax_unused)
 
     # --- 1: precision ladder -------------------------------------------------
     # The full rung's across-draw spread is EXACTLY zero by construction
@@ -1363,24 +1389,20 @@ def make_robustness_figure(
     ax_ladder.legend(fontsize="small")
 
     # --- 2: bootstrap interval ----------------------------------------------
-    ax_boot.fill_between(
-        r,
-        interval.zeta_hat - interval.sem,
-        interval.zeta_hat + interval.sem,
-        color=_COLOR_SEM,
-        alpha=_BAND_ALPHA,
-        label="Gaussian SEM",
+    # Panels 2, 3, 4 and the monopole panel below are all STEPS (`ax.stairs`),
+    # held flat across each bin's full width from `edges[0]` (0.0 under the
+    # default binning) -- CLAUDE.md hard rule 10 -- so the curve already
+    # starts at the exact origin without a separate anchor.
+    step_band(
+        ax_boot, edges, interval.zeta_hat - interval.sem, interval.zeta_hat + interval.sem,
+        color=_COLOR_SEM, alpha=_BAND_ALPHA, label="Gaussian SEM",
     )
-    ax_boot.fill_between(
-        r,
-        interval.low,
-        interval.high,
-        color=_COLOR_SIGNAL,
-        alpha=_BAND_ALPHA,
-        label=f"{interval.confidence:.0%} bootstrap "
-        f"({interval.n_resamples} resamples)",
+    step_band(
+        ax_boot, edges, interval.low, interval.high,
+        color=_COLOR_SIGNAL, alpha=_BAND_ALPHA,
+        label=f"{interval.confidence:.0%} bootstrap ({interval.n_resamples} resamples)",
     )
-    ax_boot.plot(r, interval.zeta_hat, "o-", color=_COLOR_SIGNAL, label=r"$\hat\zeta_1$")
+    ax_boot.stairs(interval.zeta_hat, edges, color=_COLOR_SIGNAL, label=r"$\hat\zeta_1$")
     _shell_axis(ax_boot, cfg.figure_max_radius)
     ax_boot.set_ylabel(r"$\hat\zeta_1(r)$  [km/s]")
     ax_boot.set_title(f"2 - bootstrap interval, $N_c$ = {stack.n_centers}")
@@ -1391,11 +1413,8 @@ def make_robustness_figure(
         np.linspace(0.0, _COLOR_SPAN, trim.trim_counts.size)
     )
     for i, k in enumerate(trim.trim_counts):
-        ax_trim.plot(
-            r,
-            trim.zeta_hat[i],
-            "o-",
-            color=trim_colors[i],
+        ax_trim.stairs(
+            trim.zeta_hat[i], edges, color=trim_colors[i],
             label=f"drop top {k}" if k else "untrimmed",
         )
     _shell_axis(ax_trim, cfg.figure_max_radius)
@@ -1413,24 +1432,16 @@ def make_robustness_figure(
     ax_trim.legend(fontsize="small")
 
     # --- 4: seed repeats -----------------------------------------------------
-    ax_seed.fill_between(
-        r,
-        repeats.mean - repeats.spread,
-        repeats.mean + repeats.spread,
-        color=_COLOR_SIGNAL,
-        alpha=_BAND_ALPHA,
-        label="across-seed spread",
+    step_band(
+        ax_seed, edges, repeats.mean - repeats.spread, repeats.mean + repeats.spread,
+        color=_COLOR_SIGNAL, alpha=_BAND_ALPHA, label="across-seed spread",
     )
     for i in range(repeats.seeds.size):
-        ax_seed.plot(
-            r,
-            repeats.zeta_hat[i],
-            "-",
-            lw=1.0,
-            alpha=0.8,
+        ax_seed.stairs(
+            repeats.zeta_hat[i], edges, lw=1.0, alpha=0.8,
             label=f"$N_c$ = {repeats.n_centers[i]}",
         )
-    ax_seed.plot(r, repeats.mean, "o-", color=_COLOR_SIGNAL, label="across-seed mean")
+    ax_seed.stairs(repeats.mean, edges, color=_COLOR_SIGNAL, label="across-seed mean")
     _shell_axis(ax_seed, cfg.figure_max_radius)
     ax_seed.set_ylabel(r"$\hat\zeta_1(r)$  [km/s]")
     ax_seed.set_title(f"4 - {repeats.seeds.size} independent center draws")
@@ -1475,12 +1486,15 @@ def make_robustness_figure(
     ax_split.set_title(f"5 - mechanism split in {shell_text}")
     ax_split.grid(alpha=_GRID_ALPHA, axis="y")
 
-    # --- 6: the monopole companion (hard rule 6) ----------------------------
+    fig.tight_layout()
+
+    # --- 6: the monopole companion (hard rule 6), its own figure ------------
     full = restack(stack)
-    ax_mono.plot(r, full.monopole_norm, "o-", color=_COLOR_MONOPOLE)
+    fig_mono, ax_mono = plt.subplots(figsize=_MONOPOLE_FIGSIZE)
+    ax_mono.stairs(full.monopole_norm, edges, color=_COLOR_MONOPOLE)
     _shell_axis(ax_mono, cfg.figure_max_radius)
     ax_mono.set_ylabel(r"normalized monopole  [km/s]")
     ax_mono.set_title("6 - monopole companion (hard rule 6)")
+    fig_mono.tight_layout()
 
-    fig.tight_layout()
-    return fig
+    return DipoleFigures(dipole=fig, monopole=fig_mono)

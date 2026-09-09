@@ -12,7 +12,8 @@ identical toy configuration -- the two frames must never disagree in sign,
 since they coincide exactly in the pure-radial-flow limit (see
 `dvcorr.estimators.velocity_frame_dipole`'s module docstring). The rest pin:
 the frame-agreement limit for purely radial flow (both outbound and
-inbound); the pipeline's degenerate-center handling
+inbound); the isotropic frame ratio -- dipole 3, monopole 2, measured on one
+shared center set; the pipeline's degenerate-center handling
 (`select_shared_centers`'s speed floor, and the estimator's own zero-speed
 `ValueError`); that `run_both_frames` hands the two estimators the identical
 center set, row-aligned; the null tests for both frames (an uncorrelated
@@ -128,30 +129,28 @@ def test_sign_gate_velocity_frame_dipole_is_positive_and_agrees_with_observer_fr
     A = sqrt(3/4pi) * 1 > 0, and the scalar |v_alpha| > 0, so every center
     contributes positively and the stacked dipole is positive.
 
-    Magnitude note -- this is where this test deliberately departs from a
-    NAIVE transplant of the observer-frame gate's recovery formula, and why:
-    the observer-frame joint gate (test_velocity_centered_dipole.py) reads
-    off 3 * dipole[0] / (y10_norm * pair_count[0]) and recovers -V_INFALL to
-    a LOOSE (rel=0.1) tolerance. That "3" undoes the <mu^2> = 1/3 dilution
-    that occurs there because the observer-frame axis n_hat_V,alpha is
-    fixed by each member's POSITION and is only approximately aligned with
-    -r_hat_alpha (exactly so only in the distant-observer limit) -- the
-    "3" is a shell-averaging correction, and the recovery is only
-    approximate because of the finite-R leakage that correction is
-    compensating for.
+    Magnitude note -- the recovery formula is the SAME one the observer-frame
+    joint gate (test_velocity_centered_dipole.py) uses, dipole[0] / (y10_norm
+    * pair_count[0]), the raw L_1 moment per pair with no (2*ell + 1)
+    prefactor. What differs is the answer: that gate recovers -V_INFALL / 3,
+    to a LOOSE (rel=0.1) tolerance, while this one recovers -V_INFALL
+    exactly. The 1/3 there is the <mu^2> dilution of a uniform shell -- the
+    observer-frame axis n_hat_V,alpha is fixed by each member's POSITION and
+    is only approximately aligned with -r_hat_alpha (exactly so only for flow
+    along the observer's line of sight) -- and the recovery there is only
+    approximate because of the finite-R leakage riding along with it. That
+    factor of 3 between the two frames on one toy is not a property of the
+    toy: it is the isotropic frame ratio, pinned in general by
+    `test_isotropic_frame_ratio_is_three` below.
     Neither applies here. The velocity frame's axis z_hat_alpha comes from
     v_alpha, i.e. from the SAME r_hat_alpha that also places the tracer --
     the construction is exactly SELF-ALIGNED (see
     `dvcorr.pipeline.velocity_frame_comparison.run_random_axis_null`'s
     docstring for the general statement of this property), so cos_theta is
     identically 1 for every member with NO shell-averaging and NO
-    finite-distance approximation anywhere in this toy. Multiplying by 3
-    here would not undo a dilution that never happened -- it would introduce
-    a spurious factor of 3. The correct, and now EXACT (not merely loose),
-    recovery formula is therefore the L_0-style ratio without the L_1
-    prefactor: dipole[0] / (y10_norm * pair_count[0]) == -V_INFALL, checked
-    to a tight tolerance since there is no approximation left to be loose
-    about.
+    finite-distance approximation anywhere in this toy -- which is why the
+    same formula returns the undiluted -V_INFALL here, EXACTLY rather than
+    merely loosely, with no approximation left to be loose about.
     """
     shell_edges = np.array([0.5 * R_SHELL, 1.5 * R_SHELL])
 
@@ -304,7 +303,134 @@ def test_frame_agreement_for_purely_radial_flow_outbound_and_inbound():
 
 
 # ---------------------------------------------------------------------------
-# 3. Degenerate centers -- pipeline level
+# 3. The isotropic frame ratio: dipole 3, monopole 2
+# ---------------------------------------------------------------------------
+#
+# Section 2 pinned the one geometry where the two frames COINCIDE (flow along
+# the observer's line of sight). This pins the opposite, generic case: an
+# isotropic flow, where the observer frame sees a fixed fraction of what the
+# velocity frame does. That fraction is a pure number, and it is a DIFFERENT
+# number for the dipole than for the monopole -- which is the confusion this
+# section exists to make impossible to repeat.
+#
+# Derivation. Linear theory gives the density-velocity correlation only one
+# vector to point along, the separation, so
+#
+#     <delta(x + r) v_j(x)> = C(r) * r_hat_j .
+#
+# The velocity frame's per-pair contribution is |v| * (v_hat . n_hat_i) =
+# v . r_hat, whose expectation is C(r).
+# The observer frame's is |u| * sign(u) * (n_hat_V . n_hat_i) = (v . n_hat_V) *
+# (n_hat_V . r_hat), whose expectation is C(r) * (n_hat_V . r_hat)**2, and
+# averaging over the shell's directions leaves C(r) * <mu^2> = C(r) / 3.
+# The DIPOLE ratio is therefore exactly 3, for any isotropic velocity field and
+# at any observer distance -- no distant-observer limit is taken anywhere above.
+#
+# The MONOPOLE ratio is 2, not 3, and for an unrelated reason: both monopoles
+# are sums of a positive-definite speed, so the ratio is <|v|>/<|u|> =
+# 1 / <|cos theta|> = 2 for isotropic directions. Reading the monopole's 2 as
+# the dipole's baseline understates the projection loss by 3/2 and makes a
+# correctly-behaving estimator look like it is drifting with scale (see
+# `dvcorr.pipeline.frame_ratios`' module docstring).
+#
+# The construction below realizes <delta v_j> = C(r) r_hat_j directly and with
+# no approximation: each center gets ONE tracer at a fixed separation in an
+# isotropic random direction d_hat, and a velocity SPEED * d_hat pointing at
+# it. Centers are drawn uniformly in a ball around the observer, so d_hat is
+# independent of n_hat_V by construction -- the isotropy the derivation
+# assumes is imposed, not hoped for.
+
+_FR_N_CENTERS = 8192       # sets the sampling error on <mu^2>; see _FR_RATIO_RTOL
+_FR_BALL_RADIUS = 300.0    # h^-1 Mpc, centers uniform in this ball around the observer
+_FR_SEPARATION = 1.0       # h^-1 Mpc, center -> its own tracer
+_FR_SHELL_EDGES = np.array([0.5 * _FR_SEPARATION, 1.5 * _FR_SEPARATION])
+_FR_SPEED = 250.0          # km/s, |v_alpha|, identical for every center
+_FR_SUB_VOLUME_RADIUS = 400.0  # clears _FR_BALL_RADIUS + _FR_SEPARATION + core margin
+_FR_SEED = 20260906
+#: <mu^2> = 1/3 has variance 4/45 per center, so its standard error over
+#: _FR_N_CENTERS is 0.0033 -- 1.0% of the mean. 5% is a ~5-sigma band: wide
+#: enough never to flake, far too tight to admit the monopole's 2.
+_FR_RATIO_RTOL = 0.05
+#: The velocity frame's own recovery is exact up to the handful of stray pairs
+#: from neighbouring centers (~8 in 8200 at this density), so it gets a
+#: tolerance that admits those and nothing else.
+_FR_SELF_ALIGNED_RTOL = 1e-2
+
+
+def _isotropic_frame_ratio_toy(
+    rng: np.random.Generator,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Centers uniform in a ball, each with one tracer at `_FR_SEPARATION` in
+    an isotropic direction and a velocity of `_FR_SPEED` pointing AT it.
+
+    Returns (s_centers, v_centers, s_tracers) with shapes (N, 3), (N, 3),
+    (N, 3).
+    """
+    s_centers = _sample_ball(rng, _FR_N_CENTERS, _FR_BALL_RADIUS)
+    d_hat = unit_vector(rng.normal(size=(_FR_N_CENTERS, 3)))
+    s_tracers = s_centers + _FR_SEPARATION * d_hat
+    v_centers = _FR_SPEED * d_hat
+    return s_centers, v_centers, s_tracers
+
+
+def test_isotropic_frame_ratio_is_three():
+    """Velocity-frame dipole / observer-frame dipole == 3 on the SAME centers.
+
+    A null-free check of both estimators at once: the two frames run on one
+    center set, one tracer set and one binning, so the ratio cancels the
+    normalization entirely (the y_10 factor, the pair count, n_bar V_b -- none
+    of them appear) and tests only what the two constructions do differently.
+    A ratio near 2 here would mean the observer frame is being credited with
+    the monopole's projection factor; a ratio near 1 would mean the axis
+    rotation is not happening at all.
+
+    The monopole ratio is asserted alongside it (CLAUDE.md hard rule 6) and
+    must come out at 2, not 3 -- the two numbers are different and this test
+    is where that is written down on real numbers.
+    """
+    rng = np.random.default_rng(_FR_SEED)
+    s_centers, v_centers, s_tracers = _isotropic_frame_ratio_toy(rng)
+
+    # Every center clears the core cut, so the two frames see identical stacks.
+    assert _FR_BALL_RADIUS + _FR_SEPARATION <= _FR_SUB_VOLUME_RADIUS - _FR_SHELL_EDGES[-1]
+
+    common = dict(
+        s_centers=s_centers,
+        v_centers=v_centers,
+        s_tracers=s_tracers,
+        shell_edges=_FR_SHELL_EDGES,
+        sub_volume_radius=_FR_SUB_VOLUME_RADIUS,
+    )
+    vf_result = velocity_frame_shell_dipole(**common)
+    obs_result = velocity_centered_shell_dipole(**common)
+
+    # Same centers, same pairs -- the ratio below is not comparing two
+    # different stacks that happen to share a plot.
+    assert vf_result.n_centers == obs_result.n_centers == _FR_N_CENTERS
+    np.testing.assert_array_equal(vf_result.pair_count, obs_result.pair_count)
+
+    y10_norm = np.sqrt(3.0 / (4.0 * np.pi))
+    recovered_vf = vf_result.dipole[0] / (y10_norm * vf_result.pair_count[0])
+    recovered_obs = obs_result.dipole[0] / (y10_norm * obs_result.pair_count[0])
+
+    # The velocity frame is fully self-aligned: cos_theta == 1 for every
+    # center, so it reads back the imposed speed itself.
+    assert recovered_vf == pytest.approx(_FR_SPEED, rel=_FR_SELF_ALIGNED_RTOL)
+    # The observer frame keeps <mu^2> = 1/3 of it...
+    assert recovered_obs == pytest.approx(_FR_SPEED / 3.0, rel=_FR_RATIO_RTOL)
+    # ...which is the whole content of the ratio.
+    assert recovered_vf / recovered_obs == pytest.approx(3.0, rel=_FR_RATIO_RTOL)
+
+    # Hard rule 6: the monopole travels with the dipole -- and lands on 2,
+    # because <|u|>/<|v|> = <|cos theta|> = 1/2 has nothing to do with <mu^2>.
+    monopole_vf = vf_result.monopole[0] / vf_result.pair_count[0]
+    monopole_obs = obs_result.monopole[0] / obs_result.pair_count[0]
+    assert monopole_vf == pytest.approx(_FR_SPEED, rel=_FR_SELF_ALIGNED_RTOL)
+    assert monopole_vf / monopole_obs == pytest.approx(2.0, rel=_FR_RATIO_RTOL)
+
+
+# ---------------------------------------------------------------------------
+# 4. Degenerate centers -- pipeline level
 # ---------------------------------------------------------------------------
 
 
@@ -442,7 +568,7 @@ def test_select_shared_centers_raises_runtime_error_not_zero_division_on_empty_i
 
 
 # ---------------------------------------------------------------------------
-# 4. Same center set for both frames
+# 5. Same center set for both frames
 # ---------------------------------------------------------------------------
 
 _RB_N_CANDIDATES = 40
@@ -489,7 +615,7 @@ def test_run_both_frames_shares_the_same_center_set():
 
 
 # ---------------------------------------------------------------------------
-# 5. Null tests
+# 6. Null tests
 # ---------------------------------------------------------------------------
 
 _NULL_N_CENTERS = 10
@@ -852,7 +978,7 @@ def test_per_center_direction_sum_projects_onto_the_amplitude():
 
 
 # ---------------------------------------------------------------------------
-# 6. Mechanical contracts: binning, empty/degenerate inputs, validation
+# 7. Mechanical contracts: binning, empty/degenerate inputs, validation
 # ---------------------------------------------------------------------------
 
 
@@ -1063,7 +1189,7 @@ class TestValidation:
 
 
 # ---------------------------------------------------------------------------
-# 7. per_center_axis_angle contract
+# 8. per_center_axis_angle contract
 # ---------------------------------------------------------------------------
 
 

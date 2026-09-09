@@ -198,7 +198,11 @@ none contain algorithmic content (see Cross-cutting contracts below).
   `(3D/obs)·(obs/z) = 3D/z`, the shell-edge-mismatch refusal, the pole guard and its
   unguarded counterpart, the sign-branch split, and the figure's linear axes, legend means
   and broken-at-a-pole connecting line.
-- `test_plot_wiring.py` **[done]** — pins the log/linear axis-scale wiring.
+- `test_plot_wiring.py` **[done]** — pins the log/linear axis-scale wiring, the
+  `DipoleFigures` dipole/monopole split (hard rule 6), and the step-rendering,
+  starts-at-r=0 contract (hard rule 10).
+- `test_default_shells.py` **[done]** — pins the default radial binning (hard rule 10)
+  on `RunConfig().shells.shell_edges`.
 - `__init__.py` — present so `from tests.test_geometry import …` resolves.
 
 ### `notebooks/` — exploration only; nothing load-bearing

@@ -3,8 +3,9 @@ plot_velocity_centered_dipole.py
 ----------------------------------
 Runnable script: measure the velocity-centered zeta_1 dipole
 (`dvcorr.estimators.shell_dipole.velocity_centered_shell_dipole`) on real
-MDPL2 halos and plot it, alongside its monopole companion (CLAUDE.md hard
-rule 6) and a velocity-shuffle null.
+MDPL2 halos and plot it, alongside its monopole companion and a
+velocity-shuffle null. The two are built by the same `make_figure` call
+(`DipoleFigures`) but saved as two separate PNGs (CLAUDE.md hard rule 6).
 
 Thin driver only: the actual stage functions (`load_and_carve`,
 `draw_candidates`, `run_estimator`, `box_number_density`,
@@ -46,6 +47,7 @@ from dvcorr.config import PathsConfig, add_catalog_arguments, catalog_from_args
 from dvcorr.pipeline.mass_diagnostics import mass_funnel, print_mass_funnel
 from dvcorr.pipeline.velocity_centered import (
     RunConfig,
+    dipole_and_monopole_paths,
     draw_candidates,
     box_number_density,
     load_and_carve,
@@ -99,12 +101,14 @@ def main() -> None:
         cfg.n_null_realizations,
     )
 
-    fig = make_figure(cfg, result, normalized)
+    figures = make_figure(cfg, result, normalized)
 
     paths.ensure_output_dir()
-    out_path = paths.output_dir / cfg.output_name
-    fig.savefig(out_path, dpi=cfg.dpi, bbox_inches="tight")
-    print(f"wrote {out_path}")
+    dipole_path, monopole_path = dipole_and_monopole_paths(paths.output_dir, cfg.output_name)
+    figures.dipole.savefig(dipole_path, dpi=cfg.dpi, bbox_inches="tight")
+    figures.monopole.savefig(monopole_path, dpi=cfg.dpi, bbox_inches="tight")
+    print(f"wrote {dipole_path}")
+    print(f"wrote {monopole_path}")
 
 
 if __name__ == "__main__":

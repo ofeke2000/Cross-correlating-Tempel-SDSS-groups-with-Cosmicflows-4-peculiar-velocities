@@ -33,11 +33,12 @@ import matplotlib
 
 matplotlib.use("Agg")
 
+import matplotlib.patches
 import numpy as np
 import pytest
 
 from dvcorr import conventions
-from dvcorr.config import CATALOG_MVIR12, CatalogConfig, ShellConfig
+from dvcorr.config import CATALOG_MVIR12, SPACING_LOG, CatalogConfig, ShellConfig
 from dvcorr.pipeline.catalog_conversion import NUM_OF_SUBHALOS_UNKNOWN
 from dvcorr.pipeline.halo_class_comparison import (
     CENTER_CLASS_PARENT,
@@ -401,29 +402,103 @@ class TestEndToEnd:
 
     def test_frame_contrast_figure_builds_with_cartesian_axes(self) -> None:
         """Same axis contract `test_plot_wiring.py` pins for every other figure:
-        the BINNING may be logarithmic, the AXES are not."""
+        the BINNING may be logarithmic, the AXES are not. CLAUDE.md hard rule
+        6: dipole and monopole are two separate Figures, not two panels of
+        one -- `.dipole` carries the single dipole axis, `.monopole` carries
+        the twinned pair (obs left, vel right)."""
         cfg = _tiny_cfg()
-        fig = make_frame_class_contrast_figure(cfg, self._frame_runs(cfg))
-        for ax in fig.axes:
-            assert ax.get_xscale() == "linear"
-            assert ax.get_yscale() == "linear"
-        # dipole + monopole + the monopole panel's twin
-        assert len(fig.axes) == 3
+        figures = make_frame_class_contrast_figure(cfg, self._frame_runs(cfg))
+        assert figures.dipole is not figures.monopole
+        for fig in (figures.dipole, figures.monopole):
+            for ax in fig.axes:
+                assert ax.get_xscale() == "linear"
+                assert ax.get_yscale() == "linear"
+        assert len(figures.dipole.axes) == 1
+        assert len(figures.monopole.axes) == 2  # obs axis + its vel twin
 
     def test_redshift_contrast_figure_builds_with_cartesian_axes(self) -> None:
         cfg = _tiny_cfg()
-        fig = make_redshift_class_contrast_figure(cfg, self._redshift_runs(cfg))
-        for ax in fig.axes:
-            assert ax.get_xscale() == "linear"
-            assert ax.get_yscale() == "linear"
-        assert len(fig.axes) == 2  # single shared monopole axis, no twin
+        figures = make_redshift_class_contrast_figure(cfg, self._redshift_runs(cfg))
+        assert figures.dipole is not figures.monopole
+        for fig in (figures.dipole, figures.monopole):
+            for ax in fig.axes:
+                assert ax.get_xscale() == "linear"
+                assert ax.get_yscale() == "linear"
+        assert len(figures.dipole.axes) == 1
+        assert len(figures.monopole.axes) == 1  # single shared monopole axis, no twin
+
+    @staticmethod
+    def _zero_bin_cfg(**overrides) -> HaloClassRunConfig:
+        """`_tiny_cfg`, but with the `[0, min_radius)` bin included, so a
+        step's `edges[0] == 0.0` is actually exercised."""
+        params = dict(
+            shells=ShellConfig(
+                min_radius=2.0, max_radius=10.0, n_bins=4,
+                spacing=SPACING_LOG, include_zero_bin=True,
+            )
+        )
+        params.update(overrides)
+        return _tiny_cfg(**params)
+
+    def test_frame_contrast_figure_draws_steps_from_each_bins_lower_edge(self) -> None:
+        """CLAUDE.md hard rule 10: every per-class curve is a STEP
+        (`ax.stairs`), held flat across each bin's full width from
+        `edges[0]` (0.0 under a zero-bin binning) -- not a point-to-point
+        line at the volume-weighted radius. The class marker moves with it,
+        to each bin's own LOWER edge rather than `shell_centers` -- two
+        abscissae on one panel is exactly the failure the step removes.
+        """
+        cfg = self._zero_bin_cfg()
+        figures = make_frame_class_contrast_figure(cfg, self._frame_runs(cfg))
+        ax_dipole = figures.dipole.axes[0]
+
+        steps = [
+            p for p in ax_dipole.patches if isinstance(p, matplotlib.patches.StepPatch)
+        ]
+        assert len(steps) == 2 * len(cfg.center_classes)  # {obs, vel} x classes
+        edges = cfg.shells.shell_edges
+        assert edges[0] == 0.0
+        for step in steps:
+            np.testing.assert_array_equal(step.get_data().edges, edges)
+
+        lower_edges = edges[:-1]
+        marker_lines = [
+            line for line in ax_dipole.get_lines()
+            if line.get_linestyle() == "None" and len(line.get_xdata()) > 0
+        ]
+        assert marker_lines, "expected at least one class-marker series"
+        for line in marker_lines:
+            np.testing.assert_array_equal(np.sort(line.get_xdata()), np.sort(lower_edges))
+
+    def test_redshift_contrast_figure_draws_steps_from_each_bins_lower_edge(self) -> None:
+        cfg = self._zero_bin_cfg()
+        figures = make_redshift_class_contrast_figure(cfg, self._redshift_runs(cfg))
+        ax_dipole = figures.dipole.axes[0]
+
+        steps = [
+            p for p in ax_dipole.patches if isinstance(p, matplotlib.patches.StepPatch)
+        ]
+        assert len(steps) == 2 * len(cfg.center_classes)  # {real, redshift} x classes
+        edges = cfg.shells.shell_edges
+        assert edges[0] == 0.0
+        for step in steps:
+            np.testing.assert_array_equal(step.get_data().edges, edges)
+
+        lower_edges = edges[:-1]
+        marker_lines = [
+            line for line in ax_dipole.get_lines()
+            if line.get_linestyle() == "None" and len(line.get_xdata()) > 0
+        ]
+        assert marker_lines, "expected at least one class-marker series"
+        for line in marker_lines:
+            np.testing.assert_array_equal(np.sort(line.get_xdata()), np.sort(lower_edges))
 
     def test_contrast_figures_plot_one_curve_per_class_and_series(self) -> None:
         """Four dipole curves: {two series} x {two classes}."""
         cfg = _tiny_cfg()
-        fig = make_frame_class_contrast_figure(cfg, self._frame_runs(cfg))
+        figures = make_frame_class_contrast_figure(cfg, self._frame_runs(cfg))
         labels = [
-            text.get_text() for text in fig.axes[0].get_legend().get_texts()
+            text.get_text() for text in figures.dipole.axes[0].get_legend().get_texts()
         ]
         assert len(labels) == 2 * len(cfg.center_classes)
         for center_class in cfg.center_classes:
@@ -440,8 +515,8 @@ class TestEndToEnd:
         """`center_classes` with one entry must work -- the contrast figure
         degenerates to two curves rather than failing."""
         cfg = _tiny_cfg(center_classes=(CENTER_CLASS_PARENT,))
-        fig = make_frame_class_contrast_figure(cfg, self._frame_runs(cfg))
-        assert len(fig.axes[0].get_legend().get_texts()) == 2
+        figures = make_frame_class_contrast_figure(cfg, self._frame_runs(cfg))
+        assert len(figures.dipole.axes[0].get_legend().get_texts()) == 2
 
 
 def test_every_named_class_has_a_marker_and_a_fill() -> None:

@@ -46,7 +46,6 @@ from dataclasses import dataclass
 import matplotlib.pyplot as plt
 import numpy as np
 
-from dvcorr.config import volume_weighted_shell_radii
 from dvcorr.estimators.shell_dipole import (
     VelocityCenteredShellDipoleResult,
     velocity_centered_shell_dipole,
@@ -61,18 +60,19 @@ from dvcorr.geometry import unit_vector
 # observer-frame pipeline. _COLOR_SIGNAL is imported as `_COLOR_OBS` (below)
 # so the obs-frame curve in this comparison figure is the visually identical
 # blue used for zeta_hat in the single-frame figure; the neutral styling
-# constants (_BAND_ALPHA, _COLOR_ZERO_LINE, _GRID_ALPHA, _HEIGHT_RATIOS,
-# _LABEL_COLOR, _ZERO_LINE_WIDTH, _FIGSIZE) are reused the same way. Only the
-# velocity-frame color and the two "null" tints (defined below) are new to
-# this module.
+# constants (_BAND_ALPHA, _COLOR_ZERO_LINE, _GRID_ALPHA, _DIPOLE_FIGSIZE,
+# _MONOPOLE_FIGSIZE, _LABEL_COLOR, _ZERO_LINE_WIDTH) are reused the same way.
+# Only the velocity-frame color and the two "null" tints (defined below) are
+# new to this module.
 from dvcorr.pipeline.velocity_centered import (
     _BAND_ALPHA,
     _COLOR_ZERO_LINE,
-    _FIGSIZE,
+    _DIPOLE_FIGSIZE,
     _GRID_ALPHA,
-    _HEIGHT_RATIOS,
     _LABEL_COLOR,
+    _MONOPOLE_FIGSIZE,
     _ZERO_LINE_WIDTH,
+    DipoleFigures,
     NormalizedDipole,
     RunConfig,
     SharedCenterSet,
@@ -83,6 +83,7 @@ from dvcorr.pipeline.velocity_centered import (
     normalize_stacked_dipole,
     select_shared_centers,
     shell_dipole_norm_scale,
+    step_band,
 )
 from dvcorr.pipeline.velocity_centered import _COLOR_SIGNAL as _COLOR_OBS
 
@@ -617,7 +618,7 @@ def normalize_comparison(
     linear to log spacing. What DOES change is the INTERPRETATION: an
     unweighted mean over the shell INDEX b is a mean "uniform in r" under the
     old linear spacing, and becomes a mean "uniform in log r" once
-    `cfg.shells.spacing == dvcorr.config.SPACING_LOG` -- five of twelve bins
+    `cfg.shells.spacing == dvcorr.config.SPACING_LOG` -- seven of fourteen bins
     then sit below 5.66 h^-1 Mpc, so this per-center frame-gap summary becomes
     noticeably more sensitive to the one-halo/exclusion regime than it was
     under the old linear default.
@@ -686,13 +687,19 @@ def make_comparison_figure(
     cfg: ComparisonRunConfig,
     results: FrameRunResults,
     comparison: FrameComparison,
-) -> plt.Figure:
-    """The main deliverable: two panels comparing the observer and velocity frames.
+) -> DipoleFigures:
+    """The main deliverable: two figures comparing the observer and velocity frames.
 
-    Two panels sharing the x-axis (separation r), height ratios (3, 1) --
-    identical layout convention to
-    `dvcorr.pipeline.velocity_centered.make_figure`. Builder only: never
-    saves, never calls `plt.show`.
+    Two separate figures (CLAUDE.md hard rule 6 -- a dipole PNG must be
+    sendable on its own), returned together as a `DipoleFigures` --
+    `dvcorr.pipeline.velocity_centered.make_figure`'s return type, reused
+    here rather than a second definition, since both pipelines hand back
+    exactly "a dipole figure plus its monopole companion". Every curve is a
+    STEP (`ax.stairs`), held flat across each bin's full width from
+    `results.obs_result.shell_edges[0]` (0.0 under the default binning) --
+    CLAUDE.md hard rule 10 -- rather than a point at the volume-weighted
+    radius; `anchor_dipole_at_origin` is therefore not needed here either.
+    Builder only: never saves, never calls `plt.show`.
 
     TOP panel: `zeta_hat_obs` and `zeta_hat_vel` overlaid, each with its
     across-center standard-error band (`fill_between`) and each with its OWN
@@ -787,77 +794,75 @@ def make_comparison_figure(
 
     Returns
     -------
-    matplotlib.figure.Figure
+    DipoleFigures
     """
-    fig, (ax_dipole, ax_mono_obs) = plt.subplots(
-        2, 1, figsize=_FIGSIZE, sharex=True, gridspec_kw={"height_ratios": _HEIGHT_RATIOS}
-    )
+    edges = results.obs_result.shell_edges
 
-    # comparison.shell_centers (the plain midpoint) is deliberately left
-    # alone -- r_eff, the volume-weighted radius, is the plotting abscissa.
-    r = volume_weighted_shell_radii(results.obs_result.shell_edges)
+    fig_dipole, ax_dipole = plt.subplots(figsize=_DIPOLE_FIGSIZE)
 
-    # --- top panel: the two dipoles, each with its SEM band and its two nulls
-    ax_dipole.fill_between(
-        r, comparison.obs.zeta_hat - comparison.obs.sem, comparison.obs.zeta_hat + comparison.obs.sem,
-        color=_COLOR_OBS, alpha=_BAND_ALPHA,
+    # --- the two dipoles, each with its SEM band and its two nulls, as steps
+    step_band(
+        ax_dipole, edges, comparison.obs.zeta_hat - comparison.obs.sem,
+        comparison.obs.zeta_hat + comparison.obs.sem, color=_COLOR_OBS, alpha=_BAND_ALPHA,
     )
-    ax_dipole.plot(
-        r, comparison.obs.zeta_hat, "o-", color=_COLOR_OBS,
+    ax_dipole.stairs(
+        comparison.obs.zeta_hat, edges, color=_COLOR_OBS,
         label=fr"$\hat\zeta_1^{{obs}}$  (N$_c$={results.obs_result.n_centers})",
     )
-    ax_dipole.fill_between(
-        r,
+    step_band(
+        ax_dipole, edges,
         comparison.obs.zeta_hat_shuffle - comparison.obs.null_spread_shuffle,
         comparison.obs.zeta_hat_shuffle + comparison.obs.null_spread_shuffle,
         color=_COLOR_OBS_NULL, alpha=_BAND_ALPHA,
     )
-    ax_dipole.plot(
-        r, comparison.obs.zeta_hat_shuffle, "o--", color=_COLOR_OBS_NULL,
+    ax_dipole.stairs(
+        comparison.obs.zeta_hat_shuffle, edges, color=_COLOR_OBS_NULL, linestyle="--",
         label="obs null (u-shuffle)",
     )
-    ax_dipole.fill_between(
-        r,
+    step_band(
+        ax_dipole, edges,
         comparison.obs.zeta_hat_gaussian - comparison.obs.null_spread_gaussian,
         comparison.obs.zeta_hat_gaussian + comparison.obs.null_spread_gaussian,
         color=_COLOR_OBS_GAUSSIAN, alpha=_BAND_ALPHA,
     )
-    ax_dipole.plot(
-        r, comparison.obs.zeta_hat_gaussian, "o:", color=_COLOR_OBS_GAUSSIAN,
+    ax_dipole.stairs(
+        comparison.obs.zeta_hat_gaussian, edges, color=_COLOR_OBS_GAUSSIAN, linestyle=":",
         label="obs null (gaussian)",
     )
 
-    ax_dipole.fill_between(
-        r, comparison.vel.zeta_hat - comparison.vel.sem, comparison.vel.zeta_hat + comparison.vel.sem,
-        color=_COLOR_VEL, alpha=_BAND_ALPHA,
+    step_band(
+        ax_dipole, edges, comparison.vel.zeta_hat - comparison.vel.sem,
+        comparison.vel.zeta_hat + comparison.vel.sem, color=_COLOR_VEL, alpha=_BAND_ALPHA,
     )
-    ax_dipole.plot(
-        r, comparison.vel.zeta_hat, "s-", color=_COLOR_VEL,
+    ax_dipole.stairs(
+        comparison.vel.zeta_hat, edges, color=_COLOR_VEL,
         label=fr"$\hat\zeta_1^{{vel}}$  (N$_c$={results.vel_result.n_centers})",
     )
-    ax_dipole.fill_between(
-        r,
+    step_band(
+        ax_dipole, edges,
         comparison.vel.zeta_hat_shuffle - comparison.vel.null_spread_shuffle,
         comparison.vel.zeta_hat_shuffle + comparison.vel.null_spread_shuffle,
         color=_COLOR_VEL_NULL, alpha=_BAND_ALPHA,
     )
-    ax_dipole.plot(
-        r, comparison.vel.zeta_hat_shuffle, "s--", color=_COLOR_VEL_NULL,
+    ax_dipole.stairs(
+        comparison.vel.zeta_hat_shuffle, edges, color=_COLOR_VEL_NULL, linestyle="--",
         label="vel null (random-axis)",
     )
-    ax_dipole.fill_between(
-        r,
+    step_band(
+        ax_dipole, edges,
         comparison.vel.zeta_hat_gaussian - comparison.vel.null_spread_gaussian,
         comparison.vel.zeta_hat_gaussian + comparison.vel.null_spread_gaussian,
         color=_COLOR_VEL_GAUSSIAN, alpha=_BAND_ALPHA,
     )
-    ax_dipole.plot(
-        r, comparison.vel.zeta_hat_gaussian, "s:", color=_COLOR_VEL_GAUSSIAN,
+    ax_dipole.stairs(
+        comparison.vel.zeta_hat_gaussian, edges, color=_COLOR_VEL_GAUSSIAN, linestyle=":",
         label="vel null (gaussian)",
     )
 
     ax_dipole.axhline(0.0, color=_COLOR_ZERO_LINE, lw=_ZERO_LINE_WIDTH)
+    ax_dipole.set_xlim(left=0.0)
     ax_dipole.set_ylabel(r"$\hat\zeta_1$  [km/s]", color=_LABEL_COLOR)
+    ax_dipole.set_xlabel(r"separation $r$  [$h^{-1}$ Mpc]")
     ax_dipole.legend(fontsize="small")
     ax_dipole.grid(alpha=_GRID_ALPHA)
     ax_dipole.spines["top"].set_visible(False)
@@ -871,26 +876,36 @@ def make_comparison_figure(
         "uncertainty (center_standard_error)",
         fontsize=9,
     )
+    fig_dipole.tight_layout()
 
-    # --- bottom panel: the two monopoles, twin y-axis (see docstring) ------
+    # --- the two monopoles, twin y-axis (see docstring), same separate figure
+    fig_mono, ax_mono_obs = plt.subplots(figsize=_MONOPOLE_FIGSIZE)
     ax_mono_vel = ax_mono_obs.twinx()
 
     # No zero reference line: with the |u_alpha| weight the obs-frame
     # monopole sits near <|u|>, not near zero (see this function's docstring).
-    ax_mono_obs.plot(r, comparison.obs.monopole_norm, "o-", color=_COLOR_OBS)
+    ax_mono_obs.stairs(comparison.obs.monopole_norm, edges, color=_COLOR_OBS)
     ax_mono_obs.set_ylabel(r"$\hat\zeta_0^{obs} \simeq \langle|u|\rangle$  [km/s]", color=_COLOR_OBS)
     ax_mono_obs.tick_params(axis="y", labelcolor=_COLOR_OBS)
     ax_mono_obs.set_xlabel(r"separation $r$  [$h^{-1}$ Mpc]")
+    ax_mono_obs.set_xlim(left=0.0)
     ax_mono_obs.grid(alpha=_GRID_ALPHA)
     ax_mono_obs.spines["top"].set_visible(False)
 
-    ax_mono_vel.plot(r, comparison.vel.monopole_norm, "s-", color=_COLOR_VEL)
+    ax_mono_vel.stairs(comparison.vel.monopole_norm, edges, color=_COLOR_VEL)
     ax_mono_vel.set_ylabel(r"$\hat\zeta_0^{vel}$  [km/s]", color=_COLOR_VEL)
     ax_mono_vel.tick_params(axis="y", labelcolor=_COLOR_VEL)
     ax_mono_vel.spines["top"].set_visible(False)
+    ax_mono_obs.set_title(
+        "observer frame vs. velocity frame monopole  "
+        f"(R_sub={cfg.sub_volume_radius:.0f} h$^{{-1}}$Mpc, "
+        f"{_binning_description(cfg.shells)}, "
+        f"N$_c$={results.centers.n_centers})",
+        fontsize=9,
+    )
+    fig_mono.tight_layout()
 
-    fig.tight_layout()
-    return fig
+    return DipoleFigures(dipole=fig_dipole, monopole=fig_mono)
 
 
 def make_angle_diagnostic_figure(
@@ -951,7 +966,7 @@ def make_angle_diagnostic_figure(
     one -- see that function's docstring for why the weighting cannot change
     without breaking the `mean_alpha(summary_alpha) == mean_b(zeta_hat_b)`
     identity this figure's top panel implicitly relies on). Under the log
-    default, five of twelve shells sit below 5.66 h^-1 Mpc, where a center's
+    default, seven of fourteen shells sit below 5.66 h^-1 Mpc, where a center's
     expected occupancy is tiny (~0.02 pairs per center in the innermost
     bins), so the unweighted mean is now dominated by shot noise from those
     few bins rather than by the bulk of each center's shell range. Measured

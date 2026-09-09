@@ -5,9 +5,10 @@ Reusable pipeline stage functions for measuring the velocity-centered zeta_1
 dipole (`dvcorr.estimators.shell_dipole.velocity_centered_shell_dipole`) on
 real MDPL2 halos: load-and-carve, candidate drawing, running the estimator,
 normalizing the raw result (including two nulls -- a velocity shuffle and a
-matched-Gaussian draw, `normalize_result`), and building
-the two-panel figure (the dipole alongside its monopole companion, CLAUDE.md
-hard rule 6).
+matched-Gaussian draw, `normalize_result`), and building the dipole figure
+and its separate monopole companion (`DipoleFigures`, CLAUDE.md hard rule 6),
+each drawn as a step spanning every bin's full width from r = 0 (hard rule
+10).
 
 This is the single source of truth for that pipeline (CLAUDE.md's "one
 library, two thin consumers" model). Two consumers call these stage functions
@@ -49,6 +50,7 @@ whatever backend (e.g. an inline one) it already has.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from pathlib import Path
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -61,7 +63,6 @@ from dvcorr.config import (
     CatalogConfig,
     PathsConfig,
     ShellConfig,
-    volume_weighted_shell_radii,
 )
 from dvcorr.pipeline.catalog_conversion import IS_DISTINCT_COLUMN, NUM_OF_SUBHALOS_COLUMN
 from dvcorr.estimators.shell_dipole import (
@@ -72,40 +73,46 @@ from dvcorr.estimators.shell_dipole import (
     velocity_centered_shell_dipole,
 )
 
-# Default radial binning for this run: log spacing, min_radius = 1.0,
-# max_radius = 64.0, n_bins = 12, plus the [0, 1) inner bin -- edges
-# 0, 1, sqrt2, 2, 2sqrt2, 4, ... 64 (a ratio of exactly sqrt(2) between
-# consecutive LOG edges: exact powers of two and their halves), so B = 13
-# shells. Five of the twelve log bins sit below 5.66 h^-1 Mpc, which is the
-# whole point of the change: the r ~ 5 regime, previously discarded by the
-# old radii_step=5.0 linear default, is now resolved into several bins rather
-# than folded into one.
+# Default radial binning for this run (CLAUDE.md hard rule 10): log spacing,
+# min_radius = 0.5, max_radius = 64.0, n_bins = 14, plus the [0, 0.5) inner
+# bin -- edges 0, 0.5, 0.5sqrt2, 1, sqrt2, 2, 2sqrt2, 4, ... 64 (a ratio of
+# exactly sqrt(2) between consecutive LOG edges: exact powers of two and
+# their halves), so B = 15 shells. Seven of the fourteen log bins sit below
+# 5.66 h^-1 Mpc, which is the whole point of the change: the r ~ 5 regime,
+# previously discarded by the old radii_step=5.0 linear default, is now
+# resolved into several bins rather than folded into one.
 #
-# Why the [0, 1) inner bin (`include_zero_bin`), given that min_radius = 1.0
+# Why the [0, 0.5) inner bin (`include_zero_bin`), given that min_radius = 0.5
 # is justified below as a floor: the floor says where the estimator is
 # TRUSTWORTHY, not where it should be blind. A log ladder cannot reach zero,
-# so without this bin the r < 1 region -- the one-halo regime -- is not
+# so without this bin the r < 0.5 region -- the one-halo regime -- is not
 # merely noisy, it is unmeasured, and the innermost log bin has nothing to be
 # read against. One linear bin covers it, and the monopole panel (hard rule
-# 6) is where it earns its place: measured on the default catalog, that bin's
-# realized occupancy is ~9x the uniform expectation, the top of the 1 + xi(r)
-# rise. It is the only non-geometric shell in the array and its point on a
-# figure is the only one whose horizontal extent does not scale with r --
-# read it as a bracket over [0, 1), not as a measurement at r_eff = 0.75.
+# 6) is where it earns its place: measured on the default catalog with the
+# former [0, 1) bin, realized occupancy there was ~9x the uniform
+# expectation, the top of the 1 + xi(r) rise; not remeasured for this
+# narrower bin, but the same one-halo excess is expected, if anything more
+# concentrated. It is the only non-geometric shell in the array and its
+# point on a figure is the only one whose horizontal extent does not scale
+# with r -- read it as a bracket over [0, 0.5), not as a measurement at
+# r_eff = 0.375.
 #
 # The r = 0 self-pair. Candidates are subsampled from the tracer array
 # (`draw_candidates`), so every center is its own tracer at exactly zero
-# separation: exactly N_c self-pairs, all of them in [0, 1). Their weight
+# separation: exactly N_c self-pairs, all of them in [0, 0.5). Their weight
 # depends entirely on the catalog, and on BOTH supported catalogs it is too
 # large to admit:
-#   full  (n_bar = 0.127 (h^-1 Mpc)^-3, the default) -- 4126 expected uniform
-#         pairs at N_c = 7726, ~9x that realized, so N_c self-pairs would be
-#         ~20% of the innermost bin: a 20% inflation of pair_count[0] and of
-#         monopole[0].
-#   mvir12 (n_bar ~ 4e-3) -- ~0.017 * N_c expected uniform pairs, so the
-#         self-pairs would OUTNUMBER the real ones by more than an order of
-#         magnitude and the innermost monopole would be essentially pure
-#         self-correlation.
+#   full  (n_bar = 0.127 (h^-1 Mpc)^-3, the default) -- ~516 expected uniform
+#         pairs over the stack (the old comment quoted ~4126 for the wider
+#         [0, 1) bin; scale by (0.5)**3 for the narrower one) against
+#         N_c = 7726 self-pairs alone -- ~15x the expected uniform count
+#         before any real pair is counted, so the self-pair contamination is
+#         if anything worse here than in the old [0, 1) bin, not milder.
+#   mvir12 (n_bar ~ 4e-3) -- expected uniform pairs scale the same way, to
+#         ~16 over the whole stack (the old comment's ~0.017 * N_c for
+#         [0, 1), scaled by (0.5)**3, at N_c = 7726), so self-pairs (N_c of
+#         them) outnumber the real ones by orders of magnitude and the
+#         innermost monopole would be essentially pure self-correlation.
 # The dipole is untouched either way (a directionless separation carries
 # cos_theta = 0), which is precisely why this is worth a comment: the damage
 # is confined to the monopole -- the diagnostic hard rule 6 has us judge the
@@ -119,30 +126,37 @@ from dvcorr.estimators.shell_dipole import (
 # for binnings that happen to start above zero, and no config change can undo
 # it.
 #
-# Why min_radius = 1.0. Statistically it is not binding on the default
-# catalog: at n_bar = 0.127 (h^-1 Mpc)^-3 even [0, 1) holds ~4126 expected
-# uniform pairs over the stack. It binds on `mvir12` (n_bar ~ 4e-3), where
-# requiring >= 50 expected pairs gives r1 >= 0.94 -- which is where the 1.0
-# came from and why it stays a sensible floor for the LOG ladder across both
-# catalogs.
+# Why min_radius = 0.5. This is no longer derived from a per-catalog
+# expected-pair floor the way 1.0 was (that number came from requiring
+# >= 50 expected uniform pairs on `mvir12`, which gave r1 >= 0.94). 0.5 is
+# instead CLAUDE.md's project-wide default (hard rule 10), applied the same
+# way on both catalogs, and the two catalogs sit on opposite sides of that
+# old 50-pair floor: on `full` (n_bar = 0.127) the [0, 0.5) bin still holds
+# ~516 expected uniform pairs over the stack (see the self-pair paragraph
+# above for the scaling), an order of magnitude above the floor, so the
+# bin stays statistically meaningful there; on `mvir12` (n_bar ~ 4e-3) it
+# holds ~16 over the whole stack (same scaling, see above), below the floor
+# though not by orders of magnitude, so that bin is noise, not signal, on
+# that catalog and should be read as such.
 #
-# Physically, what min_radius = 1.0 marks depends on the catalog, and the
+# Physically, what min_radius = 0.5 marks depends on the catalog, and the
 # default changed underneath this number:
 #   mvir12 is pid = -1 (distinct halos only), so every center carries a hard
 #     exclusion hole of R_vir(host) -- 0.20 h^-1 Mpc at 1e12 Msun/h, 0.94 at
 #     1e14, 2.0 at 1e15 -- and the massive centers, which dominate the
-#     |u|-weighted stack, have the LARGEST holes. There, r < 1 is genuinely
-#     an exclusion hole.
+#     |u|-weighted stack, have the LARGEST holes, well above 0.5. There,
+#     r < 0.5 is genuinely an exclusion hole.
 #   full (the default) INCLUDES subhalos, which sit inside their hosts'
-#     virial radii, so there is no exclusion hole: the [0, 1) bin is
+#     virial radii, so there is no exclusion hole: the [0, 0.5) bin is
 #     populated, and populated by host-subhalo pairs whose velocities are
 #     virial rather than infall. Its steep monopole is the one-halo term, not
 #     a cosmological signal.
 # In neither case is MDPL2's force softening (5 h^-1 kpc) or mass resolution
-# the limit; both sit ~100x below. The [0, 1) bin and the one or two log bins
-# above it are the one-halo regime, deliberately SHOWN (alongside their
-# monopole companion, hard rule 6) rather than hidden behind a single wide
-# bin -- and on the default catalog they need reading as virial physics.
+# the limit; both sit ~100x below (500 h^-1 kpc / 5 h^-1 kpc). The
+# [0, 0.5) bin and the several log bins above it are the one-halo regime,
+# deliberately SHOWN (alongside their monopole companion, hard rule 6)
+# rather than hidden behind a single wide bin -- and on the default catalog
+# they need reading as virial physics.
 #
 # Why max_radius = 64.0, not 60.0 (cost, paid deliberately): r_max 60 -> 64
 # grows every `query_ball_point(s_alpha, edges[-1])` ball by (64/60)**3 ~=
@@ -154,21 +168,22 @@ from dvcorr.estimators.shell_dipole import (
 # 16000 candidates, the carve itself keeping 14418601 of 127388160 halos
 # within R_sub = 300. Worth stating explicitly because it moves the N_c printed
 # in every figure title. Runtime is independent of bin COUNT
-# (`np.bincount` is O(pairs)), so 12 log bins cost the same as the old 11
+# (`np.bincount` is O(pairs)), so 14 log bins cost the same as the old 11
 # linear ones -- the cost above is entirely from r_max, not from n_bins.
 _DEFAULT_SPACING = SPACING_LOG
-_DEFAULT_MIN_RADIUS = 1.0
+_DEFAULT_MIN_RADIUS = 0.5
 _DEFAULT_MAX_RADIUS = 64.0
-_DEFAULT_N_BINS = 12
+_DEFAULT_N_BINS = 14
 _DEFAULT_INCLUDE_ZERO_BIN = True
 
 
 def _default_shells() -> ShellConfig:
-    """`RunConfig.shells`'s default_factory: log, 1 to 64 h^-1 Mpc, 12 bins + [0, 1).
+    """`RunConfig.shells`'s default_factory: log, 0.5 to 64 h^-1 Mpc, 14 bins + [0, 0.5).
 
-    Thirteen shells, not twelve: `include_zero_bin` prepends `[0, min_radius)`
-    to the geometric ladder, so `shell_edges` starts at 0.0 exactly. See the
-    module-level comment block above `_DEFAULT_SPACING` for why.
+    CLAUDE.md hard rule 10's project-wide default. Fifteen shells, not
+    fourteen: `include_zero_bin` prepends `[0, min_radius)` to the geometric
+    ladder, so `shell_edges` starts at 0.0 exactly. See the module-level
+    comment block above `_DEFAULT_SPACING` for why.
 
     `radii_step` is left at `ShellConfig`'s own class default (10.0) -- it is
     inert under `spacing=SPACING_LOG` (only read for `SPACING_LINEAR`,
@@ -217,7 +232,8 @@ class RunConfig:
     shells : ShellConfig
         Radial shell binning; see `_default_shells` (and its module-level
         comment block above `_DEFAULT_SPACING`) for why the default
-        `min_radius` is `1.0` -- the exclusion-radius floor -- and why the
+        `min_radius` is `0.5` (CLAUDE.md hard rule 10's project-wide default,
+        not a per-catalog exclusion-radius derivation) -- and why the
         `[0, min_radius)` bin is nonetheless measured and shown rather than
         dropped. `radii_step` (the old linear default's rationale) is inert
         under `SPACING_LOG` and not read here.
@@ -279,7 +295,12 @@ class RunConfig:
         never a second estimator pass -- so this is bounded by memory, not
         runtime. Must be >= 2: a standard deviation needs two samples.
     output_name : str
-        Output figure filename, written under `PathsConfig().output_dir`.
+        Base figure filename, written under `PathsConfig().output_dir`. Split
+        into two actual files by `dipole_and_monopole_paths` (CLAUDE.md hard
+        rule 6 -- `make_figure` returns a `DipoleFigures`, two separate
+        PNGs, never one merged image): the dipole PNG keeps this name (or
+        this name with a trailing "_dipole" stripped and re-added, a no-op
+        for the default), the monopole PNG is the same stem with "_monopole".
     dpi : int
         Figure resolution.
     min_center_speed : float
@@ -354,8 +375,135 @@ _LABEL_COLOR = "#111111"
 _ZERO_LINE_WIDTH = 0.8
 _BAND_ALPHA = 0.2
 _GRID_ALPHA = 0.3
-_FIGSIZE = (8.0, 8.0)
-_HEIGHT_RATIOS = (3, 1)
+#: One statistic per figure (CLAUDE.md hard rule 6): the dipole figure is
+#: wider than it is tall (it carries a legend for up to three curves), the
+#: monopole figure is the same width but shorter (one curve, no legend).
+#: There is no shared height-ratio constant any more -- each figure sizes
+#: itself.
+_DIPOLE_FIGSIZE = (8.0, 6.0)
+_MONOPOLE_FIGSIZE = (8.0, 3.0)
+
+
+@dataclass(frozen=True)
+class DipoleFigures:
+    """The dipole figure and its monopole companion, built by one call.
+
+    CLAUDE.md hard rule 6: monopole and dipole are computed and returned
+    together but plotted as two SEPARATE figures, never merged into one
+    two-panel image -- a dipole PNG must be sendable on its own. This is the
+    return type of every figure-builder in this pipeline family that draws a
+    zeta_1 curve alongside its zeta_0 companion (`make_figure` here;
+    `dvcorr.pipeline.velocity_frame_comparison.make_comparison_figure`;
+    `dvcorr.pipeline.redshift_space_comparison
+    .make_redshift_comparison_figure` and `.make_single_center_figure`;
+    `dvcorr.pipeline.frame_ratios.make_frame_ratio_figure`; the two
+    class-contrast figures in `dvcorr.pipeline.halo_class_comparison`) --
+    one return type, so a caller that saves both PNGs writes that logic once.
+
+    Attributes
+    ----------
+    dipole : matplotlib.figure.Figure
+    monopole : matplotlib.figure.Figure
+    """
+
+    dipole: plt.Figure
+    monopole: plt.Figure
+
+
+def step_band(
+    ax: plt.Axes, edges: np.ndarray, low: np.ndarray, high: np.ndarray, **kwargs
+) -> None:
+    """Draw a +/- band that is FLAT across each bin, matching a step curve.
+
+    CLAUDE.md hard rule 10: a bin's value -- and here, its spread -- is drawn
+    held from the bin's start to its end, not narrowing to a point at a
+    midpoint or volume-weighted radius. Pairs with `ax.stairs(values, edges,
+    ...)` for the curve itself, which already has this shape by construction;
+    this function gives `fill_between` the same shape, since `fill_between`
+    has no `edges`-based mode of its own.
+
+    Implementation: `fill_between(..., step="post")` holds `y[i]` from `x[i]`
+    to `x[i+1]`, so it needs one more x than "one value per bin" naturally
+    supplies for the FINAL bin to be drawn out to its own right edge; `low`
+    and `high` are therefore extended by repeating their last entry once
+    before the call, matching `edges`'s length exactly.
+
+    Parameters
+    ----------
+    ax : matplotlib.axes.Axes
+    edges : ndarray, shape (B + 1,)
+        Shell edges, h^-1 Mpc -- `result.shell_edges` directly, not
+        `volume_weighted_shell_radii(result.shell_edges)`.
+    low, high : ndarray, shape (B,)
+        Band boundaries per bin, e.g. `zeta_hat -+ sem`.
+    **kwargs
+        Forwarded to `fill_between` (`color`, `alpha`, ...).
+
+    Raises
+    ------
+    ValueError
+        If `edges` has fewer than two entries (B = 0, no bin to draw) --
+        `low[-1]` / `high[-1]` on an empty array would otherwise raise an
+        opaque `IndexError`. Matches
+        `dvcorr.estimators.shell_dipole`'s own "shell_edges must be 1-D
+        with at least two entries" guard on the same malformed input.
+    """
+    edges = np.asarray(edges, dtype=float)
+    low = np.asarray(low, dtype=float)
+    high = np.asarray(high, dtype=float)
+    if edges.size < 2:
+        raise ValueError(
+            f"step_band: edges must have at least two entries (one bin), got "
+            f"{edges.size}."
+        )
+    ax.fill_between(
+        edges,
+        np.append(low, low[-1]),
+        np.append(high, high[-1]),
+        step="post",
+        **kwargs,
+    )
+
+
+def dipole_and_monopole_paths(output_dir: Path, output_name: str) -> tuple[Path, Path]:
+    """Split one figure filename into `(dipole_path, monopole_path)`.
+
+    CLAUDE.md hard rule 6: `make_figure` (and every other figure builder that
+    returns a `DipoleFigures`) hands back two `Figure` objects that must be
+    saved as two separate PNGs next to each other, never merged into one
+    image. Every `RunConfig`-like dataclass in this pipeline family still
+    names a single `output_name` (e.g. "velocity_centered_dipole.png") --
+    this is the one place that turns it into the two actual paths, so the
+    "_dipole" / "_monopole" naming convention lives in one function rather
+    than being re-typed at every script's `main()`.
+
+    A stem that already ends in "_dipole" (the existing convention) has that
+    suffix stripped before both are re-appended, so the dipole file keeps its
+    current name exactly and only the monopole file is new, rather than
+    doubling up as "..._dipole_dipole.png".
+
+    Parameters
+    ----------
+    output_dir : Path
+    output_name : str
+        A single figure filename, as stored on a `RunConfig`-like dataclass's
+        `output_name` field (or equivalent, e.g.
+        `RedshiftSpaceRunConfig.comparison_output_name`).
+
+    Returns
+    -------
+    tuple of Path
+        `(dipole_path, monopole_path)`, both under `output_dir`.
+    """
+    name = Path(output_name)
+    stem = name.stem
+    if stem.endswith("_dipole"):
+        stem = stem[: -len("_dipole")]
+    return (
+        output_dir / f"{stem}_dipole{name.suffix}",
+        output_dir / f"{stem}_monopole{name.suffix}",
+    )
+
 
 def _binning_description(shells: ShellConfig) -> str:
     """One-line summary of the shell binning, for a figure title.
@@ -1726,19 +1874,31 @@ def make_figure(
     cfg: RunConfig,
     result: VelocityCenteredShellDipoleResult,
     normalized: NormalizedDipole,
-) -> plt.Figure:
-    """Build the two-panel figure. Does NOT save it -- the caller (a script's
-    `main()` or a notebook cell) does, so this stays a pure builder callable
-    from a notebook that wants to display the figure inline instead of / as
-    well as writing a PNG.
+) -> DipoleFigures:
+    """Build the dipole figure and its monopole companion. Does NOT save
+    them -- the caller (a script's `main()` or a notebook cell) does, so this
+    stays a pure builder callable from a notebook that wants to display the
+    figures inline instead of / as well as writing PNGs.
 
-    Two panels sharing the x-axis (CLAUDE.md hard rule 6 -- the dipole is
-    never plotted alone): the normalized zeta_hat_1(r) with its SEM band and
-    BOTH nulls, each with its own band, on top; the normalized monopole
-    companion below. The two nulls (`normalize_result`: the u-shuffle, dashed,
-    and the matched Gaussian, dotted) share their first two moments by
-    construction, so the gap between the two dashed/dotted curves -- not
-    either one's distance from zero -- is what carries information.
+    Two figures, not two panels of one (CLAUDE.md hard rule 6 -- a dipole PNG
+    must be sendable on its own): the normalized zeta_hat_1(r) with its SEM
+    band and BOTH nulls, each with its own band, in `DipoleFigures.dipole`;
+    the normalized monopole companion, alone, in `DipoleFigures.monopole`.
+    The two nulls (`normalize_result`: the u-shuffle, dashed, and the matched
+    Gaussian, dotted) share their first two moments by construction, so the
+    gap between the two dashed/dotted curves -- not either one's distance
+    from zero -- is what carries information.
+
+    Every curve is a STEP, not a point-to-point line (CLAUDE.md hard rule
+    10): `ax.stairs(values, result.shell_edges, ...)` holds each bin's value
+    flat across the bin's full width, drawn from `result.shell_edges[0]`
+    (0.0 under the default `include_zero_bin=True` binning) rather than from
+    `volume_weighted_shell_radii`'s first abscissa. With the zero bin present
+    by default, the dipole curve therefore already starts at the exact origin
+    without an anchor -- `anchor_dipole_at_origin` and `mark_zero_separation`
+    are gone; see the module's git history for the point-plus-anchor
+    rendering they implemented. Both axes are set to start at r = 0
+    explicitly (`ax.set_xlim(left=0.0)`), independent of the binning.
 
     The two bands are DIFFERENT quantities and are read differently. The
     signal's is an across-CENTER standard error: how noisy this stack is.
@@ -1756,66 +1916,73 @@ def make_figure(
 
     Returns
     -------
-    matplotlib.figure.Figure
+    DipoleFigures
     """
-    fig, (ax_dipole, ax_mono) = plt.subplots(
-        2, 1, figsize=_FIGSIZE, sharex=True, gridspec_kw={"height_ratios": _HEIGHT_RATIOS}
+    edges = result.shell_edges
+    title_info = (
+        f"R_sub={cfg.sub_volume_radius:.0f} h$^{{-1}}$Mpc, "
+        f"{_binning_description(cfg.shells)}, N_c={result.n_centers}"
     )
 
-    # result.shell_centers (the plain midpoint) is deliberately left alone --
-    # r_eff, the volume-weighted radius, is the plotting abscissa.
-    r = volume_weighted_shell_radii(result.shell_edges)
-
-    ax_dipole.fill_between(
-        r, normalized.zeta_hat - normalized.sem, normalized.zeta_hat + normalized.sem,
+    fig_dipole, ax_dipole = plt.subplots(figsize=_DIPOLE_FIGSIZE)
+    step_band(
+        ax_dipole, edges, normalized.zeta_hat - normalized.sem, normalized.zeta_hat + normalized.sem,
         color=_COLOR_SIGNAL, alpha=_BAND_ALPHA,
     )
-    ax_dipole.plot(
-        r, normalized.zeta_hat, "o-", color=_COLOR_SIGNAL,
+    ax_dipole.stairs(
+        normalized.zeta_hat, edges, color=_COLOR_SIGNAL,
         label=fr"$\hat\zeta_1$  (N$_c$={result.n_centers})",
     )
-    ax_dipole.fill_between(
-        r, normalized.zeta_hat_shuffle - normalized.null_spread_shuffle,
+    step_band(
+        ax_dipole, edges,
+        normalized.zeta_hat_shuffle - normalized.null_spread_shuffle,
         normalized.zeta_hat_shuffle + normalized.null_spread_shuffle,
         color=_COLOR_NULL, alpha=_BAND_ALPHA,
     )
-    ax_dipole.plot(r, normalized.zeta_hat_shuffle, "s--", color=_COLOR_NULL, label="shuffle null")
+    ax_dipole.stairs(
+        normalized.zeta_hat_shuffle, edges, color=_COLOR_NULL, linestyle="--",
+        label="shuffle null",
+    )
     # Second null, matched to the same first two moments as the shuffle
-    # (`normalize_result`), so the two dashed curves are read against EACH
-    # OTHER: their separation is the non-Gaussianity of the u distribution.
-    # All-NaN when the caller normalized without one -- matplotlib then draws
-    # nothing, and the legend entry is the only trace, which is the intended
-    # visible-absence behavior (`normalize_stacked_dipole`).
-    ax_dipole.fill_between(
-        r, normalized.zeta_hat_gaussian - normalized.null_spread_gaussian,
+    # (`normalize_result`), so the two dashed/dotted curves are read against
+    # EACH OTHER: their separation is the non-Gaussianity of the u
+    # distribution. All-NaN when the caller normalized without one --
+    # `ax.stairs` then draws nothing, and the legend entry is the only trace,
+    # which is the intended visible-absence behavior
+    # (`normalize_stacked_dipole`).
+    step_band(
+        ax_dipole, edges,
+        normalized.zeta_hat_gaussian - normalized.null_spread_gaussian,
         normalized.zeta_hat_gaussian + normalized.null_spread_gaussian,
         color=_COLOR_GAUSSIAN_NULL, alpha=_BAND_ALPHA,
     )
-    ax_dipole.plot(
-        r, normalized.zeta_hat_gaussian, "^:", color=_COLOR_GAUSSIAN_NULL,
+    ax_dipole.stairs(
+        normalized.zeta_hat_gaussian, edges, color=_COLOR_GAUSSIAN_NULL, linestyle=":",
         label="gaussian null",
     )
     ax_dipole.axhline(0.0, color=_COLOR_ZERO_LINE, lw=_ZERO_LINE_WIDTH)
+    ax_dipole.set_xlim(left=0.0)
     ax_dipole.set_ylabel(r"$\hat\zeta_1$  [km/s]", color=_LABEL_COLOR)
+    ax_dipole.set_xlabel(r"separation $r$  [$h^{-1}$ Mpc]")
     ax_dipole.legend()
     ax_dipole.grid(alpha=_GRID_ALPHA)
     ax_dipole.spines["top"].set_visible(False)
     ax_dipole.spines["right"].set_visible(False)
-    ax_dipole.set_title(
-        f"velocity-centered dipole  "
-        f"(R_sub={cfg.sub_volume_radius:.0f} h$^{{-1}}$Mpc, "
-        f"{_binning_description(cfg.shells)}, N_c={result.n_centers})"
-    )
+    ax_dipole.set_title(f"velocity-centered dipole  ({title_info})")
+    fig_dipole.tight_layout()
 
     # No zero reference line here: with the |u_alpha| weight the monopole sits
     # near <|u|>, not near zero (NormalizedDipole.monopole_norm), so a y=0 line
     # would only compress the axis and imply a reference that no longer applies.
-    ax_mono.plot(r, normalized.monopole_norm, "o-", color=_COLOR_MONOPOLE)
+    fig_mono, ax_mono = plt.subplots(figsize=_MONOPOLE_FIGSIZE)
+    ax_mono.stairs(normalized.monopole_norm, edges, color=_COLOR_MONOPOLE)
+    ax_mono.set_xlim(left=0.0)
     ax_mono.set_ylabel(r"$\hat\zeta_0 \simeq \langle|u|\rangle$  [km/s]", color=_LABEL_COLOR)
     ax_mono.set_xlabel(r"separation $r$  [$h^{-1}$ Mpc]")
     ax_mono.grid(alpha=_GRID_ALPHA)
     ax_mono.spines["top"].set_visible(False)
     ax_mono.spines["right"].set_visible(False)
+    ax_mono.set_title(f"velocity-centered monopole  ({title_info})")
+    fig_mono.tight_layout()
 
-    fig.tight_layout()
-    return fig
+    return DipoleFigures(dipole=fig_dipole, monopole=fig_mono)

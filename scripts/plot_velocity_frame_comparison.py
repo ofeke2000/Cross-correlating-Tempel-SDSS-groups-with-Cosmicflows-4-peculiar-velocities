@@ -5,9 +5,11 @@ Runnable script: compare the observer-frame velocity-centered zeta_1 dipole
 (`dvcorr.estimators.shell_dipole.velocity_centered_shell_dipole`) against the
 observer-free velocity-frame dipole
 (`dvcorr.estimators.velocity_frame_dipole.velocity_frame_shell_dipole`) on
-the SAME shared set of MDPL2 halo centers, and plot both: the two-panel
-comparison figure (dipole + monopole, CLAUDE.md hard rule 6, one panel each,
-for both frames) and the axis-rotation-angle diagnostic figure.
+the SAME shared set of MDPL2 halo centers, and plot it: the comparison
+dipole figure and its separate monopole companion (both frames overlaid on
+each, CLAUDE.md hard rule 6 -- `make_comparison_figure` returns a
+`DipoleFigures`, two PNGs, never one merged image) plus the
+axis-rotation-angle diagnostic figure.
 
 Thin driver only: the actual stage functions (`select_shared_centers`,
 `run_both_frames`, `normalize_comparison`, `make_comparison_figure`,
@@ -49,6 +51,7 @@ from dvcorr import conventions
 from dvcorr.config import PathsConfig, add_catalog_arguments, catalog_from_args
 from dvcorr.pipeline.mass_diagnostics import mass_funnel, print_mass_funnel
 from dvcorr.pipeline.velocity_centered import (
+    dipole_and_monopole_paths,
     draw_candidates,
     box_number_density,
     load_and_carve,
@@ -97,15 +100,19 @@ def main() -> None:
     n_bar = box_number_density(carved.n_total)
     comparison = normalize_comparison(cfg, results, n_bar)
 
-    comparison_fig = make_comparison_figure(cfg, results, comparison)
+    comparison_figs = make_comparison_figure(cfg, results, comparison)
     angle_fig = make_angle_diagnostic_figure(cfg, comparison)
 
     paths.ensure_output_dir()
-    comparison_path = paths.output_dir / cfg.comparison_output_name
+    dipole_path, monopole_path = dipole_and_monopole_paths(
+        paths.output_dir, cfg.comparison_output_name
+    )
     angle_path = paths.output_dir / cfg.angle_diagnostic_output_name
-    comparison_fig.savefig(comparison_path, dpi=cfg.dpi, bbox_inches="tight")
+    comparison_figs.dipole.savefig(dipole_path, dpi=cfg.dpi, bbox_inches="tight")
+    comparison_figs.monopole.savefig(monopole_path, dpi=cfg.dpi, bbox_inches="tight")
     angle_fig.savefig(angle_path, dpi=cfg.dpi, bbox_inches="tight")
-    print(f"wrote {comparison_path}")
+    print(f"wrote {dipole_path}")
+    print(f"wrote {monopole_path}")
     print(f"wrote {angle_path}")
 
 

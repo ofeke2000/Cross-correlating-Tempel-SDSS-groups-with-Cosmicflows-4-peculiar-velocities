@@ -284,7 +284,7 @@ class SnapshotBox:
         It is far coarser than the force softening (0.2 h^-1 Mpc here), so it,
         not the softening, is the binding constraint: at 1.17 h^-1 Mpc it sits
         ABOVE `dvcorr.pipeline.velocity_centered`'s default
-        `shells.min_radius` of 1.0, which is why a run in this box must raise
+        `shells.min_radius` of 0.5, which is why a run in this box must raise
         that floor rather than inherit it.
         """
         return self.box_size / self.n_particles ** (1.0 / 3.0)

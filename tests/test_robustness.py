@@ -514,12 +514,12 @@ def test_figure_max_radius_trims_the_view_not_the_measurement():
     is_distinct = np.ones(s_pool.shape[0], dtype=bool)
 
     interval = bootstrap_confidence(cfg, stack)
-    fig = make_robustness_figure(
+    figures = make_robustness_figure(
         cfg, stack, precision_ladder(cfg, stack), interval, trim_ladder(cfg, stack),
         seed_repeats(cfg, s_pool, v_pool, mvir, is_distinct, s_tracers, _OBSERVER, _N_BAR),
         crowding_split(cfg, stack),
     )
-    ax_boot = fig.get_axes()[1]
+    ax_boot = figures.dipole.get_axes()[1]
     assert ax_boot.get_xlim() == (0.0, 3.0)
     # the measurement is untouched -- all B shells still present
     assert interval.zeta_hat.shape == stack.shell_centers.shape
@@ -612,7 +612,9 @@ def test_robustness_figure_builds_with_cartesian_shell_axes():
     Log binning never implies log axes in this package
     (`tests/test_plot_wiring.py`). The precision-ladder panel is the
     deliberate exception -- its x-axis is N_c, not r -- so it is checked to
-    be log while the four shell panels are checked to be linear.
+    be log while the shell panels (on `.dipole`) and the monopole figure
+    (`.monopole`, CLAUDE.md hard rule 6 -- a separate Figure, not a sixth
+    panel) are checked to be linear.
     """
     cfg = _config(n_bootstrap=32, n_subset_draws=3, n_seed_repeats=2, n_candidate_centers=80)
     _, stack = _stack_and_result(cfg)
@@ -621,7 +623,7 @@ def test_robustness_figure_builds_with_cartesian_shell_axes():
     mvir = np.full(s_pool.shape[0], conventions.PARTICLE_MASS)
     is_distinct = np.ones(s_pool.shape[0], dtype=bool)
 
-    fig = make_robustness_figure(
+    figures = make_robustness_figure(
         cfg,
         stack,
         precision_ladder(cfg, stack),
@@ -633,14 +635,19 @@ def test_robustness_figure_builds_with_cartesian_shell_axes():
         crowding_split(cfg, stack),
     )
 
-    axes = fig.get_axes()
-    assert len(axes) == 6
+    assert figures.dipole is not figures.monopole
+    axes = figures.dipole.get_axes()
+    assert len(axes) == 5
     ax_ladder = axes[0]
     assert ax_ladder.get_xscale() == "log"
     assert ax_ladder.get_yscale() == "log"
-    for ax in (axes[1], axes[2], axes[3], axes[5]):
+    for ax in (axes[1], axes[2], axes[3]):
         assert ax.get_xscale() == "linear"
         assert ax.get_yscale() == "linear"
+
+    ax_mono = figures.monopole.get_axes()[0]
+    assert ax_mono.get_xscale() == "linear"
+    assert ax_mono.get_yscale() == "linear"
 
 
 def test_robustness_figure_labels_negative_split_bars_below_the_axis():
@@ -663,13 +670,13 @@ def test_robustness_figure_labels_negative_split_bars_below_the_axis():
     mvir = np.full(s_pool.shape[0], conventions.PARTICLE_MASS)
     is_distinct = np.ones(s_pool.shape[0], dtype=bool)
     split = crowding_split(cfg, stack)
-    fig = make_robustness_figure(
+    figures = make_robustness_figure(
         cfg, stack, precision_ladder(cfg, stack), bootstrap_confidence(cfg, stack),
         trim_ladder(cfg, stack),
         seed_repeats(cfg, s_pool, v_pool, mvir, is_distinct, s_tracers, _OBSERVER, _N_BAR),
         split,
     )
-    ax_split = fig.get_axes()[4]
+    ax_split = figures.dipole.get_axes()[4]
     values = split.mean_contribution[:, cfg.trim_rank_shell]
     assert values.min() < 0.0, "test setup failed to produce a negative group"
     # Zero is inside the view, and both extremes have room for their labels.

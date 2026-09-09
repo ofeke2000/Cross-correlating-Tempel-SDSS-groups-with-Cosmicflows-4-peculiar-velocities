@@ -44,11 +44,21 @@ for two regimes.
 
 WHAT THE RATIO IS NOT.  It is not a correction factor. The three curves are not
 independent measurements of one quantity; ``obs`` is a projection of ``3D`` and
-carries a geometric factor (isotropy alone predicts ``<|u|>/<|v|> = 1/2``), so a
-``3D/obs`` ratio near 2 is the geometry, not a signal. What is worth reading is
-the ratio's RUN WITH SCALE: a flat ratio means the loss is a constant factor
-that a model can divide out, a sloped one means it is scale-dependent and
-cannot.
+carries a geometric factor before any physics, so a ``3D/obs`` DIPOLE ratio
+near 3 is the geometry, not a signal. Three, not two: for an isotropic velocity
+field the observer frame keeps ``<mu^2> = 1/3`` of the velocity frame's dipole
+-- one cosine from the scalar (``|u| = |v| |cos theta|``), one from projecting
+the axis -- at any observer distance and with no distant-observer limit taken
+(the derivation is in `dvcorr.estimators.velocity_frame_dipole`'s module
+docstring; the number is pinned on one shared center set by
+tests/test_velocity_frame_dipole.py::test_isotropic_frame_ratio_is_three). The
+familiar ``<|u|>/<|v|> = 1/2`` belongs to the MONOPOLE panel below, where both
+curves are sums of a positive-definite speed; reading its 2 as the dipole's
+baseline understates the projection loss by 3/2 and turns a
+correctly-behaving pair of estimators into a spurious scale-dependent drift.
+What is worth reading is the ratio's RUN WITH SCALE relative to 3: a flat ratio
+means the loss is a constant factor that a model can divide out, a sloped one
+means it is scale-dependent and cannot.
 
 MONOPOLES TRAVEL TOO (CLAUDE.md hard rule 6).  Every ratio carries the matching
 ratio of monopoles, drawn in the lower panel. The monopole ratio is the part of
@@ -79,11 +89,12 @@ from dvcorr.config import volume_weighted_shell_radii
 from dvcorr.pipeline.velocity_centered import (
     NormalizedDipole,
     _COLOR_ZERO_LINE,
-    _FIGSIZE,
+    _DIPOLE_FIGSIZE,
     _GRID_ALPHA,
-    _HEIGHT_RATIOS,
     _LABEL_COLOR,
+    _MONOPOLE_FIGSIZE,
     _ZERO_LINE_WIDTH,
+    DipoleFigures,
 )
 
 # One color per RATIO (not per frame): the figure's lines are ratios, and there
@@ -208,9 +219,18 @@ class FrameRatio:
     label : str
         ``"<numerator>/<denominator>"``.
     numerator_label, denominator_label : str
+    shell_edges : ndarray, shape (B + 1,)
+        The numerator's and denominator's shared edges (`frame_ratio` checks
+        they match before this is built) -- the plotting abscissa for the
+        STEP rendering (CLAUDE.md hard rule 10), never assumed to be any
+        other ratio's or curve's edges: different `FrameRatio`s in one
+        `frame_ratios()` tuple can legitimately sit on different ladders
+        (e.g. a redshift-space curve built from a different `ShellConfig`
+        than the real-space ones it is not paired against).
     shell_centers : ndarray, shape (B,)
-        `volume_weighted_shell_radii` -- the same abscissa every other figure
-        in the package plots against.
+        `volume_weighted_shell_radii` -- retained for callers that still want
+        a point abscissa (e.g. a printed table); the figure now plots
+        against `shell_edges` instead.
     ratio : ndarray, shape (B,)
         ``zeta_hat_num / zeta_hat_den``, every shell, poles included.
     monopole_ratio : ndarray, shape (B,)
@@ -237,6 +257,7 @@ class FrameRatio:
     label: str
     numerator_label: str
     denominator_label: str
+    shell_edges: np.ndarray
     shell_centers: np.ndarray
     ratio: np.ndarray
     monopole_ratio: np.ndarray
@@ -310,6 +331,7 @@ def frame_ratio(
         label=f"{numerator.label}/{denominator.label}",
         numerator_label=numerator.label,
         denominator_label=denominator.label,
+        shell_edges=denominator.shell_edges,
         shell_centers=volume_weighted_shell_radii(denominator.shell_edges),
         ratio=ratio,
         monopole_ratio=monopole_ratio,
@@ -414,56 +436,80 @@ def make_frame_ratio_figure(
     cfg: FrameRatioConfig,
     curves: tuple[FrameCurve, ...],
     ratios: tuple[FrameRatio, ...],
-) -> plt.Figure:
-    """Two stacked panels: dipole ratios above, monopole ratios below.
+) -> DipoleFigures:
+    """Two separate figures: dipole ratios, and their monopole companion.
 
-    Same layout convention as every other comparison figure in the package --
-    shared x-axis, height ratios (3, 1), dipole on top and its monopole
-    underneath (CLAUDE.md hard rule 6). The x-axis is LINEAR in r even though
-    the binning is logarithmic: log binning is a binning choice and never
-    implies a log axis (house style, pinned by `tests/test_plot_wiring.py`).
+    Returned together as a `DipoleFigures` (CLAUDE.md hard rule 6 -- the
+    dipole ratio figure and its monopole companion are produced by this one
+    call but are two separate images, never one merged two-panel figure).
+    The x-axis is LINEAR in r even though the binning is logarithmic: log
+    binning is a binning choice and never implies a log axis (house style,
+    pinned by `tests/test_plot_wiring.py`).
 
-    TOP: one line per ratio, filled markers on shells that enter the mean and
-    OPEN markers on shells excluded by the pole guard, with the mean printed
-    in the legend. The dotted line at 1 is where the two frames agree; the
-    y-limits span the usable shells only, so points at a pole clip off-scale
-    rather than compressing everything else (`_usable_ylim`).
+    Every ratio curve is a STEP (`ax.stairs`), held flat across each bin's
+    full width from its OWN `ratio.shell_edges[0]` (0.0 under the default
+    binning) -- CLAUDE.md hard rule 10 -- rather than a line joining points
+    at the volume-weighted radius. Different `FrameRatio`s in `ratios` are
+    NOT assumed to share one edge array (`frame_ratio` only checks a match
+    within one numerator/denominator pair, never across ratios), so each is
+    drawn against its own `shell_edges`, never a borrowed one. The connecting
+    step still BREAKS at a pole rather than running through it (a NaN in the
+    `stairs` value array leaves that one step undrawn, the same gap the old
+    line left): a step drawn to an off-scale value is a vertical stripe
+    across the panel that reads as structure and is nothing but the excluded
+    bin. Markers sit at each bin's own LOWER edge (`ratio.shell_edges[:-1]`,
+    not `ratio.shell_centers`'s volume-weighted radius) -- one abscissa per
+    panel, matching the step's own start -- and carry no additional value of
+    their own (the step already draws the value), only the categorical
+    usable-vs-pole distinction (filled vs open), which is not a measurement
+    rule 10 governs.
 
-    BOTTOM: the matching monopole ratios, on the same colors. This is the
-    "how much of the top panel is just the weight?" panel: the monopole is
-    ``<|u|>`` times the shell occupancy, so where a dipole ratio tracks its
-    monopole ratio the frames differ only in how much velocity they see, and
-    where it departs, the difference is in the anisotropy itself.
+    DIPOLE figure: one step per ratio, with its own filled markers on shells
+    that enter the mean and OPEN markers on shells excluded by the pole
+    guard, the mean printed in the legend. The dotted line at 1 is where the
+    two frames agree; the y-limits span the usable shells only, so points at
+    a pole clip off-scale rather than compressing everything else
+    (`_usable_ylim`).
+
+    MONOPOLE figure: the matching monopole ratios, on the same colors. This
+    is the "how much of the dipole figure is just the weight?" figure: the
+    monopole is ``<|u|>`` times the shell occupancy, so where a dipole ratio
+    tracks its monopole ratio the frames differ only in how much velocity
+    they see, and where it departs, the difference is in the anisotropy
+    itself.
 
     Parameters
     ----------
     cfg : FrameRatioConfig
     curves : tuple of FrameCurve
-        Only for the title's center counts; the lines come from `ratios`.
+        Only for the title's center counts; every plotted value and its
+        abscissa come from `ratios` (each carrying its own `shell_edges`).
+        May be empty (paired with an empty `ratios`) -- this function never
+        indexes into `curves` directly.
     ratios : tuple of FrameRatio
 
     Returns
     -------
-    matplotlib.figure.Figure
+    DipoleFigures
     """
-    fig, (ax_ratio, ax_mono) = plt.subplots(
-        2, 1, figsize=_FIGSIZE, sharex=True, gridspec_kw={"height_ratios": _HEIGHT_RATIOS}
-    )
+    fig_ratio, ax_ratio = plt.subplots(figsize=_DIPOLE_FIGSIZE)
+    fig_mono, ax_mono = plt.subplots(figsize=_MONOPOLE_FIGSIZE)
 
     for i, ratio in enumerate(ratios):
         color = _RATIO_COLORS[i % len(_RATIO_COLORS)]
         marker = _MARKERS[i % len(_MARKERS)]
-        r = ratio.shell_centers
+        edges = ratio.shell_edges
+        lower_edges = edges[:-1]
 
-        # The connecting line BREAKS at a pole rather than spiking through it: a
-        # segment drawn to an off-scale point is a vertical stripe across the
+        # The connecting step BREAKS at a pole rather than spiking through it: a
+        # step drawn to an off-scale value is a vertical stripe across the
         # panel that reads as structure and is nothing but the excluded bin.
         joined = np.where(ratio.usable, ratio.ratio, np.nan)
-        ax_ratio.plot(r, joined, "-", color=color, alpha=_LINE_ALPHA, zorder=2)
+        ax_ratio.stairs(joined, edges, color=color, alpha=_LINE_ALPHA, zorder=2)
         for mask, fill in ((ratio.usable, _USABLE_FILL), (~ratio.usable, _UNUSABLE_FILL)):
             if mask.any():
                 ax_ratio.plot(
-                    r[mask], ratio.ratio[mask], marker, color=color,
+                    lower_edges[mask], ratio.ratio[mask], marker, color=color,
                     fillstyle=fill, ms=_MARKER_SIZE, ls="none", zorder=3,
                 )
         # The legend entry carries the number the ratio exists to produce --
@@ -477,29 +523,40 @@ def make_frame_ratio_figure(
             text = (f"{ratio.label}   mean = {ratio.mean_ratio:.2f}  "
                     f"({ratio.n_used}/{ratio.n_shells} shells)")
         ax_ratio.plot([], [], marker + "-", color=color, ms=_MARKER_SIZE, label=text)
-        ax_mono.plot(r, ratio.monopole_ratio, marker + "-", color=color,
-                     ms=_MARKER_SIZE, label=ratio.label)
+        ax_mono.stairs(ratio.monopole_ratio, edges, color=color, label=ratio.label)
 
     for ax in (ax_ratio, ax_mono):
         ax.axhline(_UNITY, color=_COLOR_ZERO_LINE, lw=_ZERO_LINE_WIDTH, ls=_UNITY_LINE_STYLE)
+        ax.set_xlim(left=0.0)
+        ax.set_xlabel(r"separation $r$  [$h^{-1}$ Mpc]")
         ax.grid(alpha=_GRID_ALPHA)
         ax.spines["top"].set_visible(False)
         ax.spines["right"].set_visible(False)
 
+    title_info = (
+        "(" + ", ".join(f"{c.label}: N$_c$={c.n_centers:,}" for c in curves) + ")"
+    )
+
     ax_ratio.set_ylim(*_usable_ylim(ratios, "ratio"))
     ax_ratio.set_ylabel(r"$\hat\zeta_1$ ratio", color=_LABEL_COLOR)
-    ax_ratio.legend(fontsize="small")
     ax_ratio.set_title(
-        "frame-to-frame ratios of the velocity-centered dipole   ("
-        + ", ".join(f"{c.label}: N$_c$={c.n_centers:,}" for c in curves)
-        + f")\nopen markers: denominator below {cfg.min_denominator_sigma:g}$\\sigma$ "
+        f"frame-to-frame ratios of the velocity-centered dipole   {title_info}\n"
+        f"open markers: denominator below {cfg.min_denominator_sigma:g}$\\sigma$ "
         "-- a pole, plotted but not averaged",
         fontsize=9,
     )
-
     ax_mono.set_ylabel(r"$\hat\zeta_0$ ratio", color=_LABEL_COLOR)
-    ax_mono.set_xlabel(r"separation $r$  [$h^{-1}$ Mpc]")
-    ax_mono.legend(fontsize="small", ncol=len(ratios))
+    ax_mono.set_title(
+        f"frame-to-frame ratios of the monopole   {title_info}", fontsize=9,
+    )
+    # An empty `ratios` (paired with empty `curves`) has nothing to put in a
+    # legend -- `ncol=len(ratios)` would be `ncol=0`, which matplotlib
+    # refuses unconditionally. Skip both legends rather than pass a
+    # nonsensical column count for a figure with no curves on it.
+    if ratios:
+        ax_ratio.legend(fontsize="small")
+        ax_mono.legend(fontsize="small", ncol=len(ratios))
+    fig_ratio.tight_layout()
+    fig_mono.tight_layout()
 
-    fig.tight_layout()
-    return fig
+    return DipoleFigures(dipole=fig_ratio, monopole=fig_mono)

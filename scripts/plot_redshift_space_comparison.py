@@ -6,8 +6,10 @@ against the redshift-space run of the SAME estimator
 (`dvcorr.estimators.shell_dipole.velocity_centered_shell_dipole`, unchanged --
 only the tracer/center positions differ, via
 `dvcorr.redshift_space.to_redshift_space`) on a SHARED set of MDPL2 halo
-centers, and plot both: the center-averaged two-panel comparison figure
-(dipole + monopole, CLAUDE.md hard rule 6) and a single-example-center figure.
+centers, and plot both: the center-averaged comparison (dipole and its
+separate monopole companion, CLAUDE.md hard rule 6 --
+`make_redshift_comparison_figure` returns a `DipoleFigures`, two PNGs) and
+the single-example-center figure (likewise a `DipoleFigures`).
 
 Thin driver only: the actual stage functions (`load_and_carve_buffered`,
 `build_tracer_spaces`, `select_redshift_shared_centers`, `run_both_spaces`,
@@ -49,7 +51,11 @@ import numpy as np
 from dvcorr import conventions
 from dvcorr.config import PathsConfig, add_catalog_arguments, catalog_from_args
 from dvcorr.pipeline.mass_diagnostics import mass_funnel, print_mass_funnel
-from dvcorr.pipeline.velocity_centered import box_number_density, draw_candidates_from_arrays
+from dvcorr.pipeline.velocity_centered import (
+    box_number_density,
+    dipole_and_monopole_paths,
+    draw_candidates_from_arrays,
+)
 from dvcorr.pipeline.redshift_space_comparison import (
     RedshiftSpaceRunConfig,
     build_tracer_spaces,
@@ -107,16 +113,26 @@ def main() -> None:
     n_bar = box_number_density(buffer.n_total)
     comparison = normalize_redshift_comparison(cfg, results, n_bar)
 
-    comparison_fig = make_redshift_comparison_figure(cfg, results, comparison)
-    single_center_fig = make_single_center_figure(cfg, results, comparison.n_bar)
+    comparison_figs = make_redshift_comparison_figure(cfg, results, comparison)
+    single_center_figs = make_single_center_figure(cfg, results, comparison.n_bar)
 
     paths.ensure_output_dir()
-    comparison_path = paths.output_dir / cfg.comparison_output_name
-    single_center_path = paths.output_dir / cfg.single_center_output_name
-    comparison_fig.savefig(comparison_path, dpi=cfg.dpi, bbox_inches="tight")
-    single_center_fig.savefig(single_center_path, dpi=cfg.dpi, bbox_inches="tight")
-    print(f"wrote {comparison_path}")
-    print(f"wrote {single_center_path}")
+    comparison_dipole_path, comparison_monopole_path = dipole_and_monopole_paths(
+        paths.output_dir, cfg.comparison_output_name
+    )
+    single_center_dipole_path, single_center_monopole_path = dipole_and_monopole_paths(
+        paths.output_dir, cfg.single_center_output_name
+    )
+    comparison_figs.dipole.savefig(comparison_dipole_path, dpi=cfg.dpi, bbox_inches="tight")
+    comparison_figs.monopole.savefig(comparison_monopole_path, dpi=cfg.dpi, bbox_inches="tight")
+    single_center_figs.dipole.savefig(single_center_dipole_path, dpi=cfg.dpi, bbox_inches="tight")
+    single_center_figs.monopole.savefig(
+        single_center_monopole_path, dpi=cfg.dpi, bbox_inches="tight"
+    )
+    print(f"wrote {comparison_dipole_path}")
+    print(f"wrote {comparison_monopole_path}")
+    print(f"wrote {single_center_dipole_path}")
+    print(f"wrote {single_center_monopole_path}")
 
 
 if __name__ == "__main__":

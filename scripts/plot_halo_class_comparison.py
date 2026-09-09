@@ -6,14 +6,17 @@ frame, and real space vs. redshift space -- twice over, once with the centers
 restricted to SUBHALOS and once with them restricted to PARENT halos, and write
 every figure.
 
-Seven PNGs: the two per-class figures each comparison already knows how to draw
-(`make_comparison_figure`, `make_redshift_comparison_figure`, called once per
-class, nulls and all), the two class-CONTRAST figures that are new here
-(`make_frame_class_contrast_figure`, `make_redshift_class_contrast_figure`),
-and the sub-h^-1-Mpc occupancy histogram (`make_class_occupancy_figure`) that
-says how much collapsed structure each class's centers sit in. Per-class
-filenames are prefixed with the class so the two runs never overwrite each
-other.
+Thirteen PNGs. Six calls return a `DipoleFigures` -- a separate dipole PNG
+and monopole PNG, never one merged image (CLAUDE.md hard rule 6) --
+`make_comparison_figure` and `make_redshift_comparison_figure`, each called
+once per center class (2 comparisons x 2 classes = 4 calls), plus the two
+class-CONTRAST figures that are new here (`make_frame_class_contrast_figure`,
+`make_redshift_class_contrast_figure`, 2 more calls): 6 calls x 2 PNGs = 12.
+The thirteenth is the sub-h^-1-Mpc occupancy histogram
+(`make_class_occupancy_figure`, still a single `Figure`) that says how much
+collapsed structure each class's centers sit in. Per-class filenames are
+prefixed with the class so the two runs never overwrite each other;
+`dipole_and_monopole_paths` then appends "_dipole" / "_monopole" to each.
 
 Thin driver only: every stage function lives in
 `dvcorr.pipeline.halo_class_comparison`, the single source of truth, which in
@@ -76,7 +79,7 @@ from dvcorr.pipeline.redshift_space_comparison import (
     load_and_carve_buffered,
     make_redshift_comparison_figure,
 )
-from dvcorr.pipeline.velocity_centered import box_number_density
+from dvcorr.pipeline.velocity_centered import box_number_density, dipole_and_monopole_paths
 from dvcorr.pipeline.velocity_frame_comparison import make_comparison_figure
 
 
@@ -116,19 +119,27 @@ def main() -> None:
         fig.savefig(path, dpi=cfg.dpi, bbox_inches="tight")
         print(f"wrote {path}")
 
+    def _save_figures(figures, name: str) -> None:
+        """Save a `DipoleFigures` as its two separate PNGs (CLAUDE.md hard rule 6)."""
+        dipole_path, monopole_path = dipole_and_monopole_paths(paths.output_dir, name)
+        _save(figures.dipole, dipole_path.name)
+        _save(figures.monopole, monopole_path.name)
+
     for center_class, run in frame_runs.items():
-        _save(
+        _save_figures(
             make_comparison_figure(cfg, run.results, run.comparison),
             class_output_name(center_class, cfg.frame_output_name),
         )
     for center_class, run in redshift_runs.items():
-        _save(
+        _save_figures(
             make_redshift_comparison_figure(cfg, run.results, run.comparison),
             class_output_name(center_class, cfg.redshift_output_name),
         )
 
-    _save(make_frame_class_contrast_figure(cfg, frame_runs), cfg.frame_contrast_output_name)
-    _save(
+    _save_figures(
+        make_frame_class_contrast_figure(cfg, frame_runs), cfg.frame_contrast_output_name
+    )
+    _save_figures(
         make_redshift_class_contrast_figure(cfg, redshift_runs),
         cfg.redshift_contrast_output_name,
     )

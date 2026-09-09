@@ -28,13 +28,15 @@ frame's radial speed |u_alpha|. The two frames are therefore the SAME
 construction -- axis along the motion, weight the speed along that axis --
 differing only in whether the motion is the full 3-vector or its radial
 projection. Comparing them quantifies exactly what is lost by having a
-finite-distance observer restricted to radial velocities: in the ideal
-spherical-infall, distant-observer limit the two coincide, because a purely
-radial flow has v_hat_alpha -> sign(u_alpha) n_hat_V,alpha and |v_alpha| ->
-|u_alpha| (see tests/test_velocity_frame_dipole.py's frame-agreement test,
-item 2, which pins this on real numbers -- INCLUDING for an inbound flow,
-where both axes point back toward the observer together). Away from that
-limit, the divergence between the frames measures projection geometry -- the
+finite-distance observer restricted to radial velocities: for a flow along
+the observer's OWN line of sight the two coincide exactly, since
+v_alpha = |v_alpha| sign(u_alpha) n_hat_V,alpha makes v_hat_alpha =
+sign(u_alpha) n_hat_V,alpha and |v_alpha| = |u_alpha| (see
+tests/test_velocity_frame_dipole.py's frame-agreement test, item 2, which
+pins this on real numbers -- INCLUDING for an inbound flow, where both axes
+point back toward the observer together). Note the condition: radial about
+the OBSERVER, not spherical infall onto some other center, which in general
+points v_alpha somewhere else entirely. Away from that limit, the divergence between the frames measures projection geometry -- the
 TRANSVERSE component of v_alpha, invisible to the observer frame -- plus the
 center's own bulk motion.
 
@@ -47,37 +49,55 @@ amplitude difference is partly that magnitude effect and not purely a rotation
 of the axis -- do not attribute the whole gap to axis geometry without checking
 the speed-vs-radial-speed piece first.
 
-A THIRD contributor, often the largest of the three, and easy to miss because
-neither of the two above names it: this estimator is FULLY SELF-ALIGNED, and
-the observer frame is only PARTIALLY so. Both axes now derive something from
-the center's own velocity -- but the velocity frame takes the whole direction
-from it, while the observer frame takes only a SIGN (sign(u_alpha)) and gets
-the rest, the line n_hat_V,alpha, from the center's POSITION. That remaining
-positional dependence is the dilution: the observer-frame axis coincides with
-the true flow direction only in the distant-observer limit. Concretely: stack
-the amplitude A_alpha,b over many centers whose true flow direction is
-uncorrelated with n_hat_V,alpha, and the observer frame's per-center cos_theta
-values are effectively drawn from a distribution with <cos_theta^2> ~= 1/3
-(the same shell-averaging dilution `geometry.mu_cosine`'s docstring describes
-for mu), while the velocity frame's cos_theta is 1 for EVERY center, by
-construction -- no averaging, no dilution, because the tracer that sits at a
-given angle relative to z_hat_alpha is being measured with the SAME vector
-that defines z_hat_alpha. On tests/test_velocity_frame_dipole.py's sign-gate
-toy (where this effect is not diluted by anything else) this alone is worth a
-factor of 3 in the raw per-center amplitude -- see that test's docstring for
-the full derivation. This is NOT the frame-agreement limit (which concerns
-whether the two axes literally coincide) and NOT the |v| vs. |u| effect (which
-concerns the scalar, not the amplitude) -- it is a THIRD, independent
-enhancement of the velocity frame's amplitude relative to the observer
-frame's, present even when the two axes are only loosely correlated. `random_axis_null_dipoles`
+THE EXPECTED RATIO BETWEEN THE FRAMES IS 3 -- ONE number, not two effects to
+be multiplied together. Self-alignment is the reason, and it is tempting to
+price it separately from the |v| vs. |u| scalar above and stack the two; that
+double-counts. Linear theory gives the density-velocity correlation only one
+vector to point along, the separation, so <delta(x + r) v_j(x)> =
+C(r) r_hat_j, and each frame's per-pair contribution collapses to a single
+expectation:
+
+    velocity frame   |v_alpha| (v_hat_alpha . n_hat_i) = v_alpha . r_hat
+                     -> C(r)
+
+    observer frame   |u_alpha| sign(u_alpha) (n_hat_V,alpha . n_hat_i)
+                     = (v_alpha . n_hat_V,alpha) (n_hat_V,alpha . r_hat)
+                     -> C(r) (n_hat_V,alpha . r_hat)^2 -> C(r) <mu^2> = C(r)/3
+
+so for ANY isotropic velocity field, at ANY observer distance, with no
+distant-observer limit taken anywhere,
+
+    zeta_1,velframe / zeta_1,obsframe = 3    exactly.
+
+The two cosines inside that <mu^2> ARE the two effects: one is the scalar
+(|u_alpha| = |v_alpha| |cos theta|), the other the axis projection, which is
+why they must not be counted twice. This is what FULLY SELF-ALIGNED buys the
+velocity frame -- its cos_theta is 1 for EVERY center, no averaging and no
+dilution, because the tracer sitting at a given angle relative to z_hat_alpha
+is measured with the SAME vector that defines z_hat_alpha -- while the
+observer frame is only PARTIALLY self-aligned, keeping a SIGN (sign(u_alpha))
+from v_alpha and taking the rest, the line n_hat_V,alpha, from the center's
+POSITION. That residual positional dependence is the whole 1/3, and it is the
+same <mu^2> = 1/3 that `geometry.mu_cosine`'s docstring describes for mu.
+
+The MONOPOLE ratio is 2, not 3, for an unrelated reason: both monopoles are
+sums of a positive-definite speed, so their ratio is <|v|>/<|u|> =
+1 / <|cos theta|> = 2 for isotropic directions. Do not carry the monopole's 2
+over to the dipole -- it understates the projection loss by 3/2 and makes a
+correctly-behaving estimator look as though its frame ratio drifts with scale
+(see `dvcorr.pipeline.frame_ratios`). Both numbers are pinned side by side on
+one shared center set in
+tests/test_velocity_frame_dipole.py::test_isotropic_frame_ratio_is_three.
+
+The practical consequence, unchanged from the two paragraphs above: a
+velocity-frame amplitude three times the observer frame's is the
+CONSTRUCTION, not a physically larger signal. `random_axis_null_dipoles`
 (`dvcorr.pipeline.velocity_frame_comparison`) measures the NULL floor of this
 statistic (what the amplitude looks like with no axis-density correlation at
-all) but does not, by itself, isolate this enhancement from a genuine
-finite-distance effect -- when comparing the two frames' normalized dipole
-amplitudes side by side (`dvcorr.pipeline.velocity_frame_comparison
-.make_comparison_figure`), do not read a larger velocity-frame amplitude as
-automatically meaning a physically larger signal; check whether it survives
-after accounting for this construction-level difference.
+all) but does not, by itself, separate the construction's factor of 3 from a
+genuine finite-distance effect -- when comparing the two frames' normalized
+dipole amplitudes side by side (`dvcorr.pipeline.velocity_frame_comparison
+.make_comparison_figure`), the baseline to measure a gap against is 3, not 1.
 
 HARD RULE 0 AUDIT (performed before writing this module; recorded here for
 the next time it is touched)
