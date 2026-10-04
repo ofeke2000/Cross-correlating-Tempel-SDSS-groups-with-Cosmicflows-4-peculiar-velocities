@@ -7,8 +7,8 @@ real MDPL2 halos: load-and-carve, candidate drawing, running the estimator,
 normalizing the raw result (including two nulls -- a velocity shuffle and a
 matched-Gaussian draw, `normalize_result`), and building the dipole figure
 and its separate monopole companion (`DipoleFigures`, CLAUDE.md hard rule 6),
-each drawn as a step spanning every bin's full width from r = 0 (hard rule
-10).
+each a line through one point per shell at the volume-weighted radius, on an
+axis that starts at r = 0 (hard rule 10).
 
 This is the single source of truth for that pipeline (CLAUDE.md's "one
 library, two thin consumers" model). Two consumers call these stage functions
@@ -65,6 +65,7 @@ from dvcorr.config import (
     ShellConfig,
 )
 from dvcorr.pipeline.catalog_conversion import IS_DISTINCT_COLUMN, NUM_OF_SUBHALOS_COLUMN
+from dvcorr.pipeline.shell_plotting import draw_shell_series, finish_shell_axis
 from dvcorr.estimators.shell_dipole import (
     VelocityCenteredShellDipoleResult,
     center_standard_error,
@@ -408,61 +409,6 @@ class DipoleFigures:
 
     dipole: plt.Figure
     monopole: plt.Figure
-
-
-def step_band(
-    ax: plt.Axes, edges: np.ndarray, low: np.ndarray, high: np.ndarray, **kwargs
-) -> None:
-    """Draw a +/- band that is FLAT across each bin, matching a step curve.
-
-    CLAUDE.md hard rule 10: a bin's value -- and here, its spread -- is drawn
-    held from the bin's start to its end, not narrowing to a point at a
-    midpoint or volume-weighted radius. Pairs with `ax.stairs(values, edges,
-    ...)` for the curve itself, which already has this shape by construction;
-    this function gives `fill_between` the same shape, since `fill_between`
-    has no `edges`-based mode of its own.
-
-    Implementation: `fill_between(..., step="post")` holds `y[i]` from `x[i]`
-    to `x[i+1]`, so it needs one more x than "one value per bin" naturally
-    supplies for the FINAL bin to be drawn out to its own right edge; `low`
-    and `high` are therefore extended by repeating their last entry once
-    before the call, matching `edges`'s length exactly.
-
-    Parameters
-    ----------
-    ax : matplotlib.axes.Axes
-    edges : ndarray, shape (B + 1,)
-        Shell edges, h^-1 Mpc -- `result.shell_edges` directly, not
-        `volume_weighted_shell_radii(result.shell_edges)`.
-    low, high : ndarray, shape (B,)
-        Band boundaries per bin, e.g. `zeta_hat -+ sem`.
-    **kwargs
-        Forwarded to `fill_between` (`color`, `alpha`, ...).
-
-    Raises
-    ------
-    ValueError
-        If `edges` has fewer than two entries (B = 0, no bin to draw) --
-        `low[-1]` / `high[-1]` on an empty array would otherwise raise an
-        opaque `IndexError`. Matches
-        `dvcorr.estimators.shell_dipole`'s own "shell_edges must be 1-D
-        with at least two entries" guard on the same malformed input.
-    """
-    edges = np.asarray(edges, dtype=float)
-    low = np.asarray(low, dtype=float)
-    high = np.asarray(high, dtype=float)
-    if edges.size < 2:
-        raise ValueError(
-            f"step_band: edges must have at least two entries (one bin), got "
-            f"{edges.size}."
-        )
-    ax.fill_between(
-        edges,
-        np.append(low, low[-1]),
-        np.append(high, high[-1]),
-        step="post",
-        **kwargs,
-    )
 
 
 def dipole_and_monopole_paths(output_dir: Path, output_name: str) -> tuple[Path, Path]:
@@ -1874,6 +1820,8 @@ def make_figure(
     cfg: RunConfig,
     result: VelocityCenteredShellDipoleResult,
     normalized: NormalizedDipole,
+    *,
+    binned: bool = False,
 ) -> DipoleFigures:
     """Build the dipole figure and its monopole companion. Does NOT save
     them -- the caller (a script's `main()` or a notebook cell) does, so this
@@ -1889,16 +1837,21 @@ def make_figure(
     gap between the two dashed/dotted curves -- not either one's distance
     from zero -- is what carries information.
 
-    Every curve is a STEP, not a point-to-point line (CLAUDE.md hard rule
-    10): `ax.stairs(values, result.shell_edges, ...)` holds each bin's value
-    flat across the bin's full width, drawn from `result.shell_edges[0]`
-    (0.0 under the default `include_zero_bin=True` binning) rather than from
-    `volume_weighted_shell_radii`'s first abscissa. With the zero bin present
-    by default, the dipole curve therefore already starts at the exact origin
-    without an anchor -- `anchor_dipole_at_origin` and `mark_zero_separation`
-    are gone; see the module's git history for the point-plus-anchor
-    rendering they implemented. Both axes are set to start at r = 0
-    explicitly (`ax.set_xlim(left=0.0)`), independent of the binning.
+    Every curve is a LINE through one point per shell (CLAUDE.md hard rule
+    10): the binning is how the estimator accumulates, not how the figure is
+    drawn. Each shell's value sits at its volume-weighted radius
+    (`volume_weighted_shell_radii(result.shell_edges)`, 3R/4 for the [0, R)
+    inner bin) and the points are joined -- never a step held flat across
+    the bin. Both axes start at r = 0 explicitly (`ax.set_xlim(left=0.0)`),
+    independent of where the innermost abscissa falls.
+
+    `binned=True` builds the binned COMPANION pair instead (hard rule 10):
+    the same arrays, each shell drawn flat across its own edges with the
+    r_eff point marked and the shell edges as faint guides
+    (`dvcorr.pipeline.shell_plotting`), so a point on the line figure can be
+    looked up -- which shell, what value. Call once with each value to get
+    both pairs; every series goes through `draw_shell_series`, so the two
+    cannot disagree on the data.
 
     The two bands are DIFFERENT quantities and are read differently. The
     signal's is an across-CENTER standard error: how noisy this stack is.
@@ -1913,76 +1866,75 @@ def make_figure(
     cfg : RunConfig
     result : VelocityCenteredShellDipoleResult
     normalized : NormalizedDipole
+    binned : bool, default False
+        False: the line view. True: the binned lookup companion.
 
     Returns
     -------
     DipoleFigures
     """
     edges = result.shell_edges
+    view = " -- binned" if binned else ""
     title_info = (
         f"R_sub={cfg.sub_volume_radius:.0f} h$^{{-1}}$Mpc, "
         f"{_binning_description(cfg.shells)}, N_c={result.n_centers}"
     )
 
     fig_dipole, ax_dipole = plt.subplots(figsize=_DIPOLE_FIGSIZE)
-    step_band(
-        ax_dipole, edges, normalized.zeta_hat - normalized.sem, normalized.zeta_hat + normalized.sem,
-        color=_COLOR_SIGNAL, alpha=_BAND_ALPHA,
-    )
-    ax_dipole.stairs(
-        normalized.zeta_hat, edges, color=_COLOR_SIGNAL,
+    draw_shell_series(
+        ax_dipole, edges, normalized.zeta_hat, binned=binned,
+        lower=normalized.zeta_hat - normalized.sem,
+        upper=normalized.zeta_hat + normalized.sem,
+        color=_COLOR_SIGNAL, marker="o", linestyle="-", band_alpha=_BAND_ALPHA,
         label=fr"$\hat\zeta_1$  (N$_c$={result.n_centers})",
     )
-    step_band(
-        ax_dipole, edges,
-        normalized.zeta_hat_shuffle - normalized.null_spread_shuffle,
-        normalized.zeta_hat_shuffle + normalized.null_spread_shuffle,
-        color=_COLOR_NULL, alpha=_BAND_ALPHA,
-    )
-    ax_dipole.stairs(
-        normalized.zeta_hat_shuffle, edges, color=_COLOR_NULL, linestyle="--",
+    draw_shell_series(
+        ax_dipole, edges, normalized.zeta_hat_shuffle, binned=binned,
+        lower=normalized.zeta_hat_shuffle - normalized.null_spread_shuffle,
+        upper=normalized.zeta_hat_shuffle + normalized.null_spread_shuffle,
+        color=_COLOR_NULL, marker="s", linestyle="--", band_alpha=_BAND_ALPHA,
         label="shuffle null",
     )
     # Second null, matched to the same first two moments as the shuffle
     # (`normalize_result`), so the two dashed/dotted curves are read against
     # EACH OTHER: their separation is the non-Gaussianity of the u
     # distribution. All-NaN when the caller normalized without one --
-    # `ax.stairs` then draws nothing, and the legend entry is the only trace,
+    # matplotlib then draws nothing, and the legend entry is the only trace,
     # which is the intended visible-absence behavior
     # (`normalize_stacked_dipole`).
-    step_band(
-        ax_dipole, edges,
-        normalized.zeta_hat_gaussian - normalized.null_spread_gaussian,
-        normalized.zeta_hat_gaussian + normalized.null_spread_gaussian,
-        color=_COLOR_GAUSSIAN_NULL, alpha=_BAND_ALPHA,
-    )
-    ax_dipole.stairs(
-        normalized.zeta_hat_gaussian, edges, color=_COLOR_GAUSSIAN_NULL, linestyle=":",
+    draw_shell_series(
+        ax_dipole, edges, normalized.zeta_hat_gaussian, binned=binned,
+        lower=normalized.zeta_hat_gaussian - normalized.null_spread_gaussian,
+        upper=normalized.zeta_hat_gaussian + normalized.null_spread_gaussian,
+        color=_COLOR_GAUSSIAN_NULL, marker="^", linestyle=":", band_alpha=_BAND_ALPHA,
         label="gaussian null",
     )
     ax_dipole.axhline(0.0, color=_COLOR_ZERO_LINE, lw=_ZERO_LINE_WIDTH)
-    ax_dipole.set_xlim(left=0.0)
+    finish_shell_axis(ax_dipole, edges, binned=binned)
     ax_dipole.set_ylabel(r"$\hat\zeta_1$  [km/s]", color=_LABEL_COLOR)
     ax_dipole.set_xlabel(r"separation $r$  [$h^{-1}$ Mpc]")
     ax_dipole.legend()
     ax_dipole.grid(alpha=_GRID_ALPHA)
     ax_dipole.spines["top"].set_visible(False)
     ax_dipole.spines["right"].set_visible(False)
-    ax_dipole.set_title(f"velocity-centered dipole  ({title_info})")
+    ax_dipole.set_title(f"velocity-centered dipole{view}  ({title_info})")
     fig_dipole.tight_layout()
 
     # No zero reference line here: with the |u_alpha| weight the monopole sits
     # near <|u|>, not near zero (NormalizedDipole.monopole_norm), so a y=0 line
     # would only compress the axis and imply a reference that no longer applies.
     fig_mono, ax_mono = plt.subplots(figsize=_MONOPOLE_FIGSIZE)
-    ax_mono.stairs(normalized.monopole_norm, edges, color=_COLOR_MONOPOLE)
-    ax_mono.set_xlim(left=0.0)
+    draw_shell_series(
+        ax_mono, edges, normalized.monopole_norm, binned=binned,
+        color=_COLOR_MONOPOLE, marker="o", linestyle="-", band_alpha=_BAND_ALPHA,
+    )
+    finish_shell_axis(ax_mono, edges, binned=binned)
     ax_mono.set_ylabel(r"$\hat\zeta_0 \simeq \langle|u|\rangle$  [km/s]", color=_LABEL_COLOR)
     ax_mono.set_xlabel(r"separation $r$  [$h^{-1}$ Mpc]")
     ax_mono.grid(alpha=_GRID_ALPHA)
     ax_mono.spines["top"].set_visible(False)
     ax_mono.spines["right"].set_visible(False)
-    ax_mono.set_title(f"velocity-centered monopole  ({title_info})")
+    ax_mono.set_title(f"velocity-centered monopole{view}  ({title_info})")
     fig_mono.tight_layout()
 
     return DipoleFigures(dipole=fig_dipole, monopole=fig_mono)

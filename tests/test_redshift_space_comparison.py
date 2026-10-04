@@ -18,21 +18,35 @@ velocity limit, displacement direction, n_hat invariance, the
 through-observer flip guard) and `tests/test_velocity_centered_dipole.py`
 for the redshift-space sign gate and epsilon-continuity (both extend the
 project's shared infall toy directly).
+
+Backend discipline: `matplotlib.use("Agg")` here, before any pipeline
+import -- `dvcorr.pipeline.velocity_centered` (imported below) pulls in
+`matplotlib.pyplot`, so the backend must be pinned before that import runs,
+exactly as `tests/test_shell_plotting.py` does.
 """
 
 from __future__ import annotations
 
+import matplotlib
+
+matplotlib.use("Agg")
+
+import matplotlib.pyplot as plt
 import numpy as np
 import pytest
+from matplotlib.collections import LineCollection
 
 from dvcorr import conventions
 from dvcorr.redshift_space import radial_velocity, to_redshift_space, v_margin_from_statistic
-from dvcorr.pipeline.velocity_centered import draw_candidates_from_arrays
+from dvcorr.pipeline.velocity_centered import box_number_density, draw_candidates_from_arrays
 from dvcorr.pipeline.redshift_space_comparison import (
     BufferedCarve,
     RedshiftSpaceRunConfig,
     build_tracer_spaces,
+    make_redshift_comparison_figure,
+    make_single_center_figure,
     membership_diagnostics,
+    normalize_redshift_comparison,
     run_both_spaces,
     select_redshift_shared_centers,
 )
@@ -289,3 +303,98 @@ def test_membership_diagnostics_uses_stable_ids_not_positional_indices():
     assert diagnostics.churn_only_real[0] == 1
     assert diagnostics.churn_only_redshift[0] == 1
     assert diagnostics.net_change[0] == 0.0   # 2 - 2, despite full churn underneath
+
+
+# ---------------------------------------------------------------------------
+# Figures -- binned companion (CLAUDE.md hard rule 10)
+# ---------------------------------------------------------------------------
+
+
+def _small_comparison_results(seed: int):
+    """A small end-to-end real-vs-redshift run, for the figure tests below.
+
+    Mirrors `test_run_both_spaces_preserves_n_centers_and_does_not_raise`'s
+    setup, carried one stage further through `normalize_redshift_comparison`
+    so both figure builders have real `RedshiftSpaceFrameResults` /
+    `RedshiftSpaceComparison` objects to draw, without touching the real
+    MDPL2 catalog.
+    """
+    buffer, cfg = _synthetic_buffer(n=5000, sub_volume_radius=200.0, seed=seed)
+    tracers = build_tracer_spaces(cfg, buffer, _OBSERVER)
+    candidates = draw_candidates_from_arrays(
+        cfg, buffer.pos_core, buffer.vel_core, buffer.mvir_core, buffer.is_distinct_core
+    )
+    centers = select_redshift_shared_centers(
+        cfg, candidates.s, candidates.v, _OBSERVER, buffer.v_margin_kms, buffer.v_margin_mpc
+    )
+    results = run_both_spaces(cfg, centers, tracers, _OBSERVER)
+    n_bar = box_number_density(buffer.n_total)
+    comparison = normalize_redshift_comparison(cfg, results, n_bar)
+    return cfg, results, comparison, n_bar
+
+
+def _shell_segments(ax: plt.Axes) -> list[np.ndarray]:
+    """Every non-empty horizontal segment on `ax`, as (2, 2) arrays -- one
+    per finite shell value, mirroring `tests/test_shell_plotting.py`'s
+    helper of the same purpose."""
+    return [
+        seg
+        for coll in ax.collections
+        if isinstance(coll, LineCollection)
+        for seg in coll.get_segments()
+        if np.size(seg)
+    ]
+
+
+def _assert_binned_matches_line(line_fig, bin_fig, n_bins: int) -> None:
+    """The binned figure is the line figure with the geometry changed: same
+    number of figures/axes, and every drawn segment's height equals the line
+    view's y-value for that shell (NaN shells are a gap in both, never
+    compared). Also checks the x-axis starts at r = 0 in the binned view --
+    CLAUDE.md hard rule 10."""
+    assert line_fig is not bin_fig
+    line_ax, bin_ax = line_fig.axes[0], bin_fig.axes[0]
+    assert len(line_fig.axes) == len(bin_fig.axes) == 1
+
+    curves = [l for l in line_ax.get_lines() if len(l.get_xdata()) == n_bins]
+    segment_groups = [
+        [seg for seg in coll.get_segments() if np.size(seg)]
+        for coll in bin_ax.collections
+        if isinstance(coll, LineCollection)
+    ]
+    segment_groups = [g for g in segment_groups if g]
+    assert len(segment_groups) == len(curves) > 0
+    for curve, segs in zip(curves, segment_groups):
+        y = np.asarray(curve.get_ydata())
+        finite = np.isfinite(y)
+        assert len(segs) == finite.sum()
+        np.testing.assert_allclose([seg[0, 1] for seg in segs], y[finite])
+
+    assert bin_ax.get_xlim()[0] == 0.0
+    assert line_ax.get_xlim()[0] == 0.0
+
+
+def test_make_redshift_comparison_figure_binned_matches_line_view():
+    cfg, results, comparison, _ = _small_comparison_results(seed=10)
+    n_bins = results.real_result.shell_edges.size - 1
+
+    lines = make_redshift_comparison_figure(cfg, results, comparison)
+    bins = make_redshift_comparison_figure(cfg, results, comparison, binned=True)
+
+    assert bins.dipole is not bins.monopole
+    _assert_binned_matches_line(lines.dipole, bins.dipole, n_bins)
+    _assert_binned_matches_line(lines.monopole, bins.monopole, n_bins)
+    plt.close("all")
+
+
+def test_make_single_center_figure_binned_matches_line_view():
+    cfg, results, comparison, n_bar = _small_comparison_results(seed=11)
+    n_bins = results.real_result.shell_edges.size - 1
+
+    lines = make_single_center_figure(cfg, results, n_bar)
+    bins = make_single_center_figure(cfg, results, n_bar, binned=True)
+
+    assert bins.dipole is not bins.monopole
+    _assert_binned_matches_line(lines.dipole, bins.dipole, n_bins)
+    _assert_binned_matches_line(lines.monopole, bins.monopole, n_bins)
+    plt.close("all")

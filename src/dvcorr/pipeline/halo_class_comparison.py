@@ -118,6 +118,7 @@ from dvcorr.pipeline.redshift_space_comparison import (
     select_redshift_shared_centers,
 )
 from dvcorr.pipeline.redshift_space_comparison import _COLOR_REAL as _COLOR_REAL_SPACE
+from dvcorr.pipeline.shell_plotting import draw_shell_series, finish_shell_axis
 from dvcorr.pipeline.velocity_centered import (
     _BAND_ALPHA,
     _COLOR_ZERO_LINE,
@@ -132,7 +133,6 @@ from dvcorr.pipeline.velocity_centered import (
     _binning_description,
     draw_candidates_from_arrays,
     select_shared_centers,
-    step_band,
 )
 from dvcorr.pipeline.velocity_frame_comparison import (
     _COLOR_OBS,
@@ -162,12 +162,9 @@ VALID_CENTER_CLASSES: frozenset[str] = frozenset({CENTER_CLASS_SUBHALO, CENTER_C
 #: fill, never by linestyle: dashed and dotted already mean "null curve"
 #: everywhere else in this project (see `velocity_frame_comparison
 #: .make_comparison_figure`), and reusing them for a signal curve here would
-#: make the two figure families contradict each other. That is also why the
-#: switch to STEP curves (CLAUDE.md hard rule 10) keeps the marker channel
-#: rather than moving class onto linestyle: the markers move from the
-#: volume-weighted `shell_centers` to each bin's own LOWER edge
-#: (`_plot_class_curves`), matching the step's own start rather than
-#: introducing a second abscissa on the same panel.
+#: make the two figure families contradict each other. The markers sit at
+#: each shell's volume-weighted radius, the same abscissa as the line
+#: through them (`_plot_class_curves`, CLAUDE.md hard rule 10).
 _CLASS_MARKER: dict[str, str] = {CENTER_CLASS_PARENT: "o", CENTER_CLASS_SUBHALO: "^"}
 
 #: Marker fill per class: parents solid, subhalos hollow. `None` means "use the
@@ -994,36 +991,37 @@ def _plot_class_curves(
     color: str,
     series_label: str,
     *,
+    binned: bool = False,
     with_sem: bool = True,
 ) -> None:
-    """Draw one series (a frame, or a space) for every class on one axis, as a step.
+    """Draw one series (a frame, or a space) for every class on one axis.
 
     Factored out because the two contrast figures draw the identical four
     curves with only the attribute name and color changing; two copies of this
     loop is exactly the duplication CLAUDE.md's graduation rule exists to
     prevent.
 
-    Every curve is a STEP (`ax.stairs`), held flat across each bin's full
-    width from `edges[0]` (0.0 under the default binning) -- CLAUDE.md hard
-    rule 10 -- rather than a point-to-point line at the volume-weighted
-    radius. Its +/- SEM is a matching `step_band` (`fill_between(...,
-    step="post")`) rather than the errorbar caps the earlier point rendering
-    used: four overlapping translucent bands in two colors are still kept
-    readable by the same low `_BAND_ALPHA` the errorbar version used.
+    Every curve goes through `dvcorr.pipeline.shell_plotting.draw_shell_series`
+    (CLAUDE.md hard rule 10), so the line view (`binned=False`, one point per
+    shell at the volume-weighted radius, joined) and the binned view
+    (`binned=True`, each shell a flat segment over its own edges, the shell
+    edges drawn as guides by the caller's `finish_shell_axis`) are drawn from
+    the SAME arrays, never a step held flat across the bin. Its +/- SEM is the
+    band `draw_shell_series` fills: `fill_between` in the line view, one box
+    per shell in the binned view -- four overlapping bands in two colors are
+    kept readable by the low `_BAND_ALPHA`.
 
-    Class is carried by MARKER and fill (`_CLASS_MARKER`, `_CLASS_FACECOLOR`,
-    drawn at each bin's own LOWER edge, `edges[:-1]` -- matching the step's
-    own start, never `shell_centers`'s volume-weighted radius, which would be
-    a second abscissa on the same panel), series by color, so a reader
-    separates "which frame" from "which halos" without consulting the legend
-    twice. Class is deliberately NOT carried by linestyle: dashed and dotted
-    already mean "null curve" everywhere else in this project
-    (`velocity_frame_comparison.make_comparison_figure`), and reusing them
-    for a signal curve here would make the two figure families contradict
-    each other. The legend entry is a separate zero-length proxy line
-    (marker + solid linestyle, matching `frame_ratios.make_frame_ratio_figure`'s
-    pole-marker convention) since neither the stairs patch nor the bare
-    marker scatter alone carries both channels for the swatch.
+    Class is carried by MARKER and fill (`_CLASS_MARKER`, `_CLASS_FACECOLOR`),
+    series by color, so a reader separates "which frame" from "which halos"
+    without consulting the legend twice. Class is deliberately NOT carried by
+    linestyle: dashed and dotted already mean "null curve" everywhere else in
+    this project (`velocity_frame_comparison.make_comparison_figure`), and
+    reusing them for a signal curve here would make the two figure families
+    contradict each other.
+
+    The heavier `_CONTRAST_LINEWIDTH` and the hollow subhalo marker are two
+    styling channels specific to this module, passed straight through
+    `draw_shell_series`'s `linewidth`/`markerfacecolor` keywords.
 
     Parameters
     ----------
@@ -1039,36 +1037,33 @@ def _plot_class_curves(
     color : str
     series_label : str
         Human-readable series name for the legend, e.g. "obs".
+    binned : bool, keyword-only, default False
+        False: the line view. True: the binned lookup companion (CLAUDE.md
+        hard rule 10) -- flat segments over each shell's own edges.
     with_sem : bool, keyword-only
-        Draw the across-center standard error as a `step_band`. False for
-        the monopole panel, where `NormalizedDipole` carries no monopole SEM.
+        Draw the across-center standard error as a band.
+        False for the monopole panel, where `NormalizedDipole` carries no
+        monopole SEM.
     """
-    lower_edges = edges[:-1]
     for center_class, run in runs.items():
         normalized = getattr(run.comparison, curve)
         marker = _CLASS_MARKER[center_class]
         facecolor = _CLASS_FACECOLOR[center_class]
         label = f"{series_label} · {center_class} (N$_c$={run.centers.n_centers})"
         values = normalized.zeta_hat if with_sem else normalized.monopole_norm
-        if with_sem:
-            step_band(
-                ax, edges, values - normalized.sem, values + normalized.sem,
-                color=color, alpha=_BAND_ALPHA,
-            )
-        ax.stairs(values, edges, color=color, lw=_CONTRAST_LINEWIDTH)
-        ax.plot(
-            lower_edges, values, marker, color=color, markerfacecolor=facecolor,
-            ls="none",
+        lower = values - normalized.sem if with_sem else None
+        upper = values + normalized.sem if with_sem else None
+
+        draw_shell_series(
+            ax, edges, values, binned=binned, lower=lower, upper=upper,
+            color=color, marker=marker, linestyle="-", label=label,
+            band_alpha=_BAND_ALPHA, linewidth=_CONTRAST_LINEWIDTH,
+            markerfacecolor=facecolor,
         )
-        # Zero-length proxy carrying BOTH channels (marker + line) for the
-        # legend swatch -- the visible curve above is split across two
-        # labelless artists (the stairs, the markers) that neither alone
-        # shows both.
-        ax.plot([], [], marker + "-", color=color, markerfacecolor=facecolor, label=label)
 
 
 def make_frame_class_contrast_figure(
-    cfg: HaloClassRunConfig, runs: dict[str, ClassFrameRun]
+    cfg: HaloClassRunConfig, runs: dict[str, ClassFrameRun], *, binned: bool = False
 ) -> DipoleFigures:
     """Subhalo-centered vs. parent-centered, in both velocity frames.
 
@@ -1077,7 +1072,7 @@ def make_frame_class_contrast_figure(
     two are two images, never one merged panel pair.
 
     DIPOLE figure: four zeta_hat curves, {obs, vel} x {parent, subhalo}, each with
-    its across-center SEM step_band. Color is the FRAME (blue observer, purple
+    its across-center SEM band. Color is the FRAME (blue observer, purple
     velocity -- the identical hues `velocity_frame_comparison
     .make_comparison_figure` uses, so the two figures read as one family) and
     marker is the CLASS (filled circle parent, hollow triangle subhalo).
@@ -1122,6 +1117,13 @@ def make_frame_class_contrast_figure(
     live in denser environments and will show the higher monopole regardless of
     velocities.
 
+    `binned=True` builds the binned COMPANION pair instead (CLAUDE.md hard
+    rule 10): the same four curves, each shell drawn flat across its own
+    edges with the volume-weighted point marked and the shell edges as faint
+    guides (`dvcorr.pipeline.shell_plotting`), so a point on the line figure
+    can be looked up -- which shell, what value. `binned=False` output is
+    unchanged from before this flag existed.
+
     Builder only: never saves, never calls `plt.show`.
 
     Parameters
@@ -1130,6 +1132,8 @@ def make_frame_class_contrast_figure(
     runs : dict of str -> ClassFrameRun
         Keyed by center class, in plot order. Every value must have been run
         on the same `shell_edges` -- guaranteed when they share one `cfg`.
+    binned : bool, keyword-only, default False
+        False: the line view. True: the binned lookup companion.
 
     Returns
     -------
@@ -1145,14 +1149,15 @@ def make_frame_class_contrast_figure(
 
     any_run = next(iter(runs.values()))
     edges = any_run.results.obs_result.shell_edges
+    view = " -- binned" if binned else ""
 
     fig_dipole, ax_dipole = plt.subplots(figsize=_DIPOLE_FIGSIZE)
 
-    _plot_class_curves(ax_dipole, edges, runs, "obs", _COLOR_OBS, "obs")
-    _plot_class_curves(ax_dipole, edges, runs, "vel", _COLOR_VEL, "vel")
+    _plot_class_curves(ax_dipole, edges, runs, "obs", _COLOR_OBS, "obs", binned=binned)
+    _plot_class_curves(ax_dipole, edges, runs, "vel", _COLOR_VEL, "vel", binned=binned)
 
     ax_dipole.axhline(0.0, color=_COLOR_ZERO_LINE, lw=_ZERO_LINE_WIDTH)
-    ax_dipole.set_xlim(left=0.0)
+    finish_shell_axis(ax_dipole, edges, binned=binned)
     ax_dipole.set_ylabel(r"$\hat\zeta_1$  [km/s]", color=_LABEL_COLOR)
     ax_dipole.set_xlabel(r"separation $r$  [$h^{-1}$ Mpc]")
     ax_dipole.legend(fontsize="small")
@@ -1160,7 +1165,7 @@ def make_frame_class_contrast_figure(
     ax_dipole.spines["top"].set_visible(False)
     ax_dipole.spines["right"].set_visible(False)
     ax_dipole.set_title(
-        "center halo class: subhalo vs. parent, both frames  "
+        f"center halo class: subhalo vs. parent, both frames{view}  "
         f"(R_sub={cfg.sub_volume_radius:.0f} h$^{{-1}}$Mpc, "
         f"{_binning_description(cfg.shells)}, "
         f"parent = distinct with $\\geq${cfg.min_num_of_subhalos} subhalo)\n"
@@ -1172,15 +1177,19 @@ def make_frame_class_contrast_figure(
 
     fig_mono, ax_mono_obs = plt.subplots(figsize=_MONOPOLE_FIGSIZE)
     ax_mono_vel = ax_mono_obs.twinx()
-    _plot_class_curves(ax_mono_obs, edges, runs, "obs", _COLOR_OBS, "obs", with_sem=False)
-    _plot_class_curves(ax_mono_vel, edges, runs, "vel", _COLOR_VEL, "vel", with_sem=False)
+    _plot_class_curves(
+        ax_mono_obs, edges, runs, "obs", _COLOR_OBS, "obs", binned=binned, with_sem=False
+    )
+    _plot_class_curves(
+        ax_mono_vel, edges, runs, "vel", _COLOR_VEL, "vel", binned=binned, with_sem=False
+    )
 
     ax_mono_obs.set_ylabel(
         r"$\hat\zeta_0^{obs} \simeq \langle|u|\rangle$  [km/s]", color=_COLOR_OBS
     )
     ax_mono_obs.tick_params(axis="y", labelcolor=_COLOR_OBS)
     ax_mono_obs.set_xlabel(r"separation $r$  [$h^{-1}$ Mpc]")
-    ax_mono_obs.set_xlim(left=0.0)
+    finish_shell_axis(ax_mono_obs, edges, binned=binned)
     ax_mono_obs.grid(alpha=_GRID_ALPHA)
     ax_mono_obs.spines["top"].set_visible(False)
 
@@ -1188,7 +1197,7 @@ def make_frame_class_contrast_figure(
     ax_mono_vel.tick_params(axis="y", labelcolor=_COLOR_VEL)
     ax_mono_vel.spines["top"].set_visible(False)
     ax_mono_obs.set_title(
-        "center halo class monopole: subhalo vs. parent, both frames  "
+        f"center halo class monopole: subhalo vs. parent, both frames{view}  "
         f"(R_sub={cfg.sub_volume_radius:.0f} h$^{{-1}}$Mpc, "
         f"{_binning_description(cfg.shells)})",
         fontsize=9,
@@ -1199,7 +1208,7 @@ def make_frame_class_contrast_figure(
 
 
 def make_redshift_class_contrast_figure(
-    cfg: HaloClassRunConfig, runs: dict[str, ClassRedshiftRun]
+    cfg: HaloClassRunConfig, runs: dict[str, ClassRedshiftRun], *, binned: bool = False
 ) -> DipoleFigures:
     """Subhalo-centered vs. parent-centered, in real and redshift space.
 
@@ -1211,7 +1220,7 @@ def make_redshift_class_contrast_figure(
     rule 6).
 
     DIPOLE figure: four zeta_hat curves, {real, redshift} x {parent, subhalo}, with
-    SEM step_bands. The quantity of interest is a RATIO OF RATIOS -- how much
+    SEM bands. The quantity of interest is a RATIO OF RATIOS -- how much
     redshift-space distortion costs each class -- rather than any single curve:
     if the redshift/real gap is wider for subhalos than for parents, the extra
     loss is the satellites' own orbital velocity smearing them along the line
@@ -1227,6 +1236,13 @@ def make_redshift_class_contrast_figure(
     difference here is occupancy alone, which is exactly the redshift-space
     trust diagnostic.
 
+    `binned=True` builds the binned COMPANION pair instead (CLAUDE.md hard
+    rule 10): the same four curves, each shell drawn flat across its own
+    edges with the volume-weighted point marked and the shell edges as faint
+    guides (`dvcorr.pipeline.shell_plotting`), so a point on the line figure
+    can be looked up -- which shell, what value. `binned=False` output is
+    unchanged from before this flag existed.
+
     Builder only: never saves, never calls `plt.show`.
 
     Parameters
@@ -1234,6 +1250,8 @@ def make_redshift_class_contrast_figure(
     cfg : HaloClassRunConfig
     runs : dict of str -> ClassRedshiftRun
         Keyed by center class, in plot order.
+    binned : bool, keyword-only, default False
+        False: the line view. True: the binned lookup companion.
 
     Returns
     -------
@@ -1249,14 +1267,17 @@ def make_redshift_class_contrast_figure(
 
     any_run = next(iter(runs.values()))
     edges = any_run.results.real_result.shell_edges
+    view = " -- binned" if binned else ""
 
     fig_dipole, ax_dipole = plt.subplots(figsize=_DIPOLE_FIGSIZE)
 
-    _plot_class_curves(ax_dipole, edges, runs, "real", _COLOR_REAL_SPACE, "real")
-    _plot_class_curves(ax_dipole, edges, runs, "redshift", _COLOR_REDSHIFT, "redshift")
+    _plot_class_curves(ax_dipole, edges, runs, "real", _COLOR_REAL_SPACE, "real", binned=binned)
+    _plot_class_curves(
+        ax_dipole, edges, runs, "redshift", _COLOR_REDSHIFT, "redshift", binned=binned
+    )
 
     ax_dipole.axhline(0.0, color=_COLOR_ZERO_LINE, lw=_ZERO_LINE_WIDTH)
-    ax_dipole.set_xlim(left=0.0)
+    finish_shell_axis(ax_dipole, edges, binned=binned)
     ax_dipole.set_ylabel(r"$\hat\zeta_1$  [km/s]", color=_LABEL_COLOR)
     ax_dipole.set_xlabel(r"separation $r$  [$h^{-1}$ Mpc]")
     ax_dipole.legend(fontsize="small")
@@ -1264,7 +1285,7 @@ def make_redshift_class_contrast_figure(
     ax_dipole.spines["top"].set_visible(False)
     ax_dipole.spines["right"].set_visible(False)
     ax_dipole.set_title(
-        "center halo class: subhalo vs. parent, real vs. redshift space  "
+        f"center halo class: subhalo vs. parent, real vs. redshift space{view}  "
         f"(R_sub={cfg.sub_volume_radius:.0f} h$^{{-1}}$Mpc, "
         f"{_binning_description(cfg.shells)}, "
         f"v_margin={any_run.centers.v_margin_kms:.0f} km/s)\n"
@@ -1275,12 +1296,15 @@ def make_redshift_class_contrast_figure(
     fig_dipole.tight_layout()
 
     fig_mono, ax_mono = plt.subplots(figsize=_MONOPOLE_FIGSIZE)
-    _plot_class_curves(ax_mono, edges, runs, "real", _COLOR_REAL_SPACE, "real", with_sem=False)
     _plot_class_curves(
-        ax_mono, edges, runs, "redshift", _COLOR_REDSHIFT, "redshift", with_sem=False
+        ax_mono, edges, runs, "real", _COLOR_REAL_SPACE, "real", binned=binned, with_sem=False
+    )
+    _plot_class_curves(
+        ax_mono, edges, runs, "redshift", _COLOR_REDSHIFT, "redshift",
+        binned=binned, with_sem=False,
     )
 
-    ax_mono.set_xlim(left=0.0)
+    finish_shell_axis(ax_mono, edges, binned=binned)
     ax_mono.set_ylabel(r"$\hat\zeta_0 \simeq \langle|u|\rangle$  [km/s]", color=_LABEL_COLOR)
     ax_mono.set_xlabel(r"separation $r$  [$h^{-1}$ Mpc]")
     ax_mono.legend(fontsize="small")
@@ -1288,7 +1312,7 @@ def make_redshift_class_contrast_figure(
     ax_mono.spines["top"].set_visible(False)
     ax_mono.spines["right"].set_visible(False)
     ax_mono.set_title(
-        "center halo class monopole: subhalo vs. parent, real vs. redshift space  "
+        f"center halo class monopole: subhalo vs. parent, real vs. redshift space{view}  "
         f"(R_sub={cfg.sub_volume_radius:.0f} h$^{{-1}}$Mpc, "
         f"{_binning_description(cfg.shells)})",
         fontsize=9,

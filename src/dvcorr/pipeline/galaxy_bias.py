@@ -114,6 +114,7 @@ from dvcorr.config import (
     scale_factor_hubble,
 )
 from dvcorr.config.catalog import CATALOG_FULL
+from dvcorr.pipeline.shell_plotting import draw_shell_series, finish_shell_axis
 
 # ---------------------------------------------------------------------------
 # Frozen-ish analysis constants (CLAUDE.md hard rule 4)
@@ -1707,6 +1708,10 @@ class AmplitudeRatioTest:
     bias_ratio : float
         `b_A / b_B` from the independent (clustering or mass-function) route.
     label_a, label_b : str
+    shell_edges : ndarray, shape (B + 1,), or None
+        Edges of the `zeta_1` shells `r` belongs to. Needed only by the
+        binned view of `make_amplitude_ratio_figure`: these are the DIPOLE
+        shells, not the correlation-function bins `BiasRunConfig.bins`.
     """
 
     r: np.ndarray
@@ -1716,6 +1721,7 @@ class AmplitudeRatioTest:
     bias_ratio: float
     label_a: str
     label_b: str
+    shell_edges: np.ndarray | None = None
 
     @property
     def discrepancy(self) -> float:
@@ -1748,6 +1754,7 @@ def zeta_amplitude_ratio(
     label_b: str,
     r_min: float = FIT_MIN_RADIUS,
     r_max: float = FIT_MAX_RADIUS,
+    shell_edges: np.ndarray | None = None,
 ) -> AmplitudeRatioTest:
     """Build the `zeta_1` amplitude-ratio test; see `AmplitudeRatioTest`.
 
@@ -1765,6 +1772,9 @@ def zeta_amplitude_ratio(
     label_a, label_b : str
     r_min, r_max : float
         Fit window, h^-1 Mpc.
+    shell_edges : ndarray, shape (B + 1,), optional
+        Edges of the shells `r` belongs to (the zeta runs' own
+        `ShellConfig.shell_edges`); stored for the binned figure.
 
     Returns
     -------
@@ -1778,6 +1788,13 @@ def zeta_amplitude_ratio(
         raise ValueError(
             f"zeta_amplitude_ratio: r, zeta and sem arrays must share one shape, got {shapes}."
         )
+    if shell_edges is not None:
+        shell_edges = np.asarray(shell_edges, dtype=float)
+        if shell_edges.shape != (r.size + 1,):
+            raise ValueError(
+                f"zeta_amplitude_ratio: shell_edges must have shape ({r.size + 1},) "
+                f"for {r.size} shells, got {shell_edges.shape}."
+            )
     with np.errstate(divide="ignore", invalid="ignore"):
         ratio = zeta_a / zeta_b
         rel = np.sqrt(
@@ -1792,6 +1809,7 @@ def zeta_amplitude_ratio(
         bias_ratio=float(bias_ratio),
         label_a=label_a,
         label_b=label_b,
+        shell_edges=shell_edges,
     )
 
 
@@ -1799,11 +1817,26 @@ def zeta_amplitude_ratio(
 # Figures
 # ---------------------------------------------------------------------------
 
+#: Band opacity for the binned view's box bands (CLAUDE.md hard rule 10,
+#: amended to add a binned companion to every per-shell figure). Matches
+#: `dvcorr.pipeline.shell_plotting.draw_shell_series`'s own binned styling
+#: for everything else -- segment width, marker, edge guides -- which this
+#: module now calls directly, pointed at its own pair-weighted `r_eff` via
+#: `draw_shell_series`'s `points=` argument.
+_BINNED_BAND_ALPHA: float = 0.15
+#: Marker size of the measured xi(r) points, both views.
+_CORRELATION_MARKER_SIZE: float = 3.0
+#: Marker size of the measured bias, r_cc and amplitude-ratio points, both
+#: views -- shared so a binned point is the same size as its line-view twin.
+_BIAS_MARKER_SIZE: float = 4.0
+
 
 def make_correlation_figure(
     curves: list[CorrelationFunction],
     cfg: BiasRunConfig,
     theory: tuple[np.ndarray, np.ndarray, str] | None = None,
+    *,
+    binned: bool = False,
 ):
     """`r**2 xi(r)` for every measured correlation function, one panel.
 
@@ -1812,13 +1845,27 @@ def make_correlation_figure(
     this module is fitted -- is legible rather than crushed against zero.
     Cartesian axes with a log abscissa, matching the project's plotting habit.
 
+    `binned=True` builds the binned lookup companion (CLAUDE.md hard rule 10):
+    each measured curve drawn as a flat segment over its own bin instead of a
+    line through `r_eff`, via `shell_plotting.draw_shell_series(..., points=
+    curve.r_eff)` -- this module's abscissa is the pair-weighted
+    `CorrelationFunction.r_eff`, not `volume_weighted_shell_radii`, so every
+    binned call passes it explicitly. The continuous THEORY curve is
+    evaluated on a fine grid, not binned, and is drawn identically in both
+    views. The x-axis stays log in both views -- unlike the r = 0 cartesian
+    default rule 10 sets elsewhere, zero cannot sit on a log axis -- so
+    `finish_shell_axis(..., start_at_zero=False)` adds only the per-bin
+    shell-edge guides.
+
     Parameters
     ----------
     curves : list of CorrelationFunction
     cfg : BiasRunConfig
-        Supplies the shaded fit window.
+        Supplies the shaded fit window and (`cfg.bins`) the shell-edge guides.
     theory : (r, xi, label), optional
         A theory curve to overlay, e.g. the CAMB placeholder `xi_mm`.
+    binned : bool, default False
+        False: the line view (unchanged). True: the binned companion.
 
     Returns
     -------
@@ -1827,28 +1874,60 @@ def make_correlation_figure(
     import matplotlib.pyplot as plt
 
     fig, ax = plt.subplots(figsize=(8.0, 5.5))
-    for curve in curves:
-        ax.plot(curve.r_eff, curve.r_eff**2 * curve.xi, marker="o", ms=3, label=curve.label)
+    for i, curve in enumerate(curves):
+        color = f"C{i}"
+        r2_xi = curve.r_eff**2 * curve.xi
+        if binned:
+            draw_shell_series(
+                ax, curve.edges, r2_xi, binned=True, points=curve.r_eff,
+                color=color, marker="o", markersize=_CORRELATION_MARKER_SIZE, label=curve.label,
+            )
+        else:
+            ax.plot(
+                curve.r_eff, r2_xi, marker="o", ms=_CORRELATION_MARKER_SIZE, color=color,
+                label=curve.label,
+            )
     if theory is not None:
         r_theory, xi_theory, theory_label = theory
         ax.plot(r_theory, r_theory**2 * xi_theory, ls="--", color="k", lw=1.2, label=theory_label)
     ax.axvspan(cfg.fit_min_radius, cfg.fit_max_radius, color="0.85", zorder=0, label="fit range")
     ax.axhline(0.0, color="0.5", lw=0.8)
     ax.set_xscale("log")
+    if binned:
+        finish_shell_axis(ax, cfg.bins, binned=True, start_at_zero=False)
     ax.set_xlabel(r"$r$  [$h^{-1}$ Mpc]")
     ax.set_ylabel(r"$r^{2}\,\xi(r)$  [$(h^{-1}\,\mathrm{Mpc})^{2}$]")
-    ax.set_title("Real-space correlation functions, MDPL2 snapshot 125")
+    ax.set_title(
+        "Real-space correlation functions, MDPL2 snapshot 125"
+        + (" -- binned" if binned else "")
+    )
     ax.legend(fontsize=8)
     fig.tight_layout()
     return fig
 
 
-def make_bias_figure(estimates: BiasEstimates, cfg: BiasRunConfig, fits: dict[str, ConstantFit]):
+def make_bias_figure(
+    estimates: BiasEstimates,
+    cfg: BiasRunConfig,
+    fits: dict[str, ConstantFit],
+    *,
+    binned: bool = False,
+):
     """The flatness plot: `b(r)` and `r_cc(r)` against `r`, two stacked panels.
 
     "A number without the flatness plot is not a measurement" -- so the fitted
     constant is drawn ON the curve it was fitted to, over the window it was
     fitted over, and nowhere else.
+
+    `binned=True` builds the binned lookup companion (CLAUDE.md hard rule 10):
+    `b_cross`, `b_auto` and `r_cc` each drawn as a flat segment over their own
+    bin (`cfg.bins`) instead of a line through `estimates.r`, via
+    `shell_plotting.draw_shell_series(..., points=estimates.r)`. The
+    constant-fit horizontal dashed lines are unchanged in both views -- they
+    are already flat segments over the fit window, not per-shell points. Both
+    panels keep the log x-axis of the line view; the binned view adds the
+    per-bin shell-edge guides (`shell_plotting.finish_shell_axis(...,
+    start_at_zero=False)`) to each.
 
     Parameters
     ----------
@@ -1857,6 +1936,8 @@ def make_bias_figure(estimates: BiasEstimates, cfg: BiasRunConfig, fits: dict[st
     fits : dict of str -> ConstantFit
         Keyed by "b_cross", "b_auto", "r_cc"; missing keys are simply not
         annotated (the placeholder case has no `b_cross` or `r_cc`).
+    binned : bool, default False
+        False: the line view (unchanged). True: the binned companion.
 
     Returns
     -------
@@ -1876,7 +1957,13 @@ def make_bias_figure(estimates: BiasEstimates, cfg: BiasRunConfig, fits: dict[st
             continue
         label = {"b_cross": r"$b_{\rm cross}=\xi_{hm}/\xi_{mm}$",
                  "b_auto": r"$b_{\rm auto}=\sqrt{\xi_{hh}/\xi_{mm}}$"}[key]
-        ax_b.plot(estimates.r, values, marker="o", ms=4, color=color, label=label)
+        if binned:
+            draw_shell_series(
+                ax_b, cfg.bins, values, binned=True, points=estimates.r,
+                color=color, marker="o", markersize=_BIAS_MARKER_SIZE, label=label,
+            )
+        else:
+            ax_b.plot(estimates.r, values, marker="o", ms=_BIAS_MARKER_SIZE, color=color, label=label)
         fit = fits.get(key)
         if fit is not None:
             ax_b.hlines(
@@ -1886,12 +1973,23 @@ def make_bias_figure(estimates: BiasEstimates, cfg: BiasRunConfig, fits: dict[st
 
     ax_b.axvspan(cfg.fit_min_radius, cfg.fit_max_radius, color="0.85", zorder=0)
     ax_b.set_xscale("log")
+    if binned:
+        finish_shell_axis(ax_b, cfg.bins, binned=True, start_at_zero=False)
     ax_b.set_ylabel(r"$b(r)$")
-    ax_b.set_title(f"Linear bias — {estimates.label}\nmatter field: {estimates.matter_source}")
+    ax_b.set_title(
+        f"Linear bias — {estimates.label}\nmatter field: {estimates.matter_source}"
+        + (" -- binned" if binned else "")
+    )
     ax_b.legend(fontsize=8)
 
     if np.any(np.isfinite(estimates.r_cc)):
-        ax_r.plot(estimates.r, estimates.r_cc, marker="o", ms=4, color="C2")
+        if binned:
+            draw_shell_series(
+                ax_r, cfg.bins, estimates.r_cc, binned=True, points=estimates.r,
+                color="C2", marker="o", markersize=_BIAS_MARKER_SIZE, label=None,
+            )
+        else:
+            ax_r.plot(estimates.r, estimates.r_cc, marker="o", ms=_BIAS_MARKER_SIZE, color="C2")
         fit = fits.get("r_cc")
         if fit is not None:
             ax_r.hlines(fit.value, fit.r_min, fit.r_max, color="C2", ls="--", lw=2)
@@ -1906,6 +2004,8 @@ def make_bias_figure(estimates: BiasEstimates, cfg: BiasRunConfig, fits: dict[st
     ax_r.axhspan(1.0 - R_CC_UNITY_TOLERANCE, 1.0 + R_CC_UNITY_TOLERANCE, color="C2", alpha=0.12)
     ax_r.axvspan(cfg.fit_min_radius, cfg.fit_max_radius, color="0.85", zorder=0)
     ax_r.set_xscale("log")
+    if binned:
+        finish_shell_axis(ax_r, cfg.bins, binned=True, start_at_zero=False)
     ax_r.set_xlabel(r"$r$  [$h^{-1}$ Mpc]")
     ax_r.set_ylabel(r"$r_{cc}(r)$")
 
@@ -1913,13 +2013,26 @@ def make_bias_figure(estimates: BiasEstimates, cfg: BiasRunConfig, fits: dict[st
     return fig
 
 
-def make_amplitude_ratio_figure(test: AmplitudeRatioTest, cfg: BiasRunConfig):
+def make_amplitude_ratio_figure(test: AmplitudeRatioTest, cfg: BiasRunConfig, *, binned: bool = False):
     """The free consistency test as a figure: the `zeta_1` ratio against `b_A/b_B`.
+
+    `binned=True` builds the binned lookup companion (CLAUDE.md hard rule 10):
+    the ratio drawn as a flat segment over its own zeta_1 shell
+    (`test.shell_edges` -- the dipole shells, NOT `cfg.bins`, which bins
+    the correlation functions; raises if the test was built without them) via
+    `shell_plotting.draw_shell_series(..., points=test.r)`, with
+    `test.ratio_error` carried over as a box band per bin -- the binned-view
+    counterpart of the line view's `errorbar` whiskers, same numbers,
+    different geometry. The bias-ratio and fitted-constant reference lines
+    are unchanged in both views: neither is a per-shell series.
 
     Parameters
     ----------
     test : AmplitudeRatioTest
     cfg : BiasRunConfig
+    binned : bool, default False
+        False: the line view (unchanged). True: the binned companion;
+        requires `test.shell_edges`.
 
     Returns
     -------
@@ -1928,10 +2041,24 @@ def make_amplitude_ratio_figure(test: AmplitudeRatioTest, cfg: BiasRunConfig):
     import matplotlib.pyplot as plt
 
     fig, ax = plt.subplots(figsize=(8.0, 5.0))
-    ax.errorbar(
-        test.r, test.ratio, yerr=test.ratio_error, marker="o", ms=4, lw=1.2, capsize=2,
-        label=rf"$\zeta_1^{{\rm {test.label_a}}} / \zeta_1^{{\rm {test.label_b}}}$",
-    )
+    ratio_label = rf"$\zeta_1^{{\rm {test.label_a}}} / \zeta_1^{{\rm {test.label_b}}}$"
+    if binned and test.shell_edges is None:
+        raise ValueError(
+            "make_amplitude_ratio_figure: binned=True needs the zeta shell edges -- "
+            "build the test with zeta_amplitude_ratio(..., shell_edges=...)."
+        )
+    if binned:
+        draw_shell_series(
+            ax, test.shell_edges, test.ratio, binned=True, points=test.r,
+            lower=test.ratio - test.ratio_error, upper=test.ratio + test.ratio_error,
+            band_alpha=_BINNED_BAND_ALPHA,
+            color="C0", marker="o", markersize=_BIAS_MARKER_SIZE, label=ratio_label,
+        )
+    else:
+        ax.errorbar(
+            test.r, test.ratio, yerr=test.ratio_error, marker="o", ms=_BIAS_MARKER_SIZE, lw=1.2, capsize=2,
+            label=ratio_label,
+        )
     ax.axhline(
         test.bias_ratio, color="C3", ls="-", lw=2,
         label=rf"$b_{{\rm {test.label_a}}}/b_{{\rm {test.label_b}}} = {test.bias_ratio:.3f}$",
@@ -1943,11 +2070,14 @@ def make_amplitude_ratio_figure(test: AmplitudeRatioTest, cfg: BiasRunConfig):
     )
     ax.axvspan(cfg.fit_min_radius, cfg.fit_max_radius, color="0.85", zorder=0)
     ax.set_xscale("log")
+    if binned:
+        finish_shell_axis(ax, test.shell_edges, binned=True, start_at_zero=False)
     ax.set_xlabel(r"$r$  [$h^{-1}$ Mpc]")
     ax.set_ylabel(r"$\zeta_1$ amplitude ratio")
     ax.set_title(
         f"Free consistency test: does the ζ₁ ratio track the bias ratio?\n"
         f"discrepancy {100.0 * test.discrepancy:+.1f}%"
+        + (" -- binned" if binned else "")
     )
     ax.legend(fontsize=8)
     fig.tight_layout()

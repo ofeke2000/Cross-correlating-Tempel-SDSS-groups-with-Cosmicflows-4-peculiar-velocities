@@ -19,11 +19,17 @@ between ordered and unordered pairs, and getting it wrong halves every
 
 from __future__ import annotations
 
+import matplotlib
+
+matplotlib.use("Agg")  # backend discipline: before any pyplot import, cf. test_shell_plotting.py
+
+import matplotlib.pyplot as plt
 import numpy as np
 import pytest
+from matplotlib.collections import LineCollection
 
 from dvcorr import conventions
-from dvcorr.config import CatalogConfig, CosmologyConfig, PathsConfig
+from dvcorr.config import CatalogConfig, CosmologyConfig, PathsConfig, volume_weighted_shell_radii
 from dvcorr.pipeline import galaxy_bias as gb
 
 HAS_CORRFUNC = True
@@ -104,7 +110,7 @@ def test_fractional_scatter_is_scatter_over_value():
 # ---------------------------------------------------------------------------
 
 
-def _fake_xi_hh(xi_values: np.ndarray) -> gb.CorrelationFunction:
+def _fake_xi_hh(xi_values: np.ndarray, label: str = "hh") -> gb.CorrelationFunction:
     r = np.geomspace(5.0, 100.0, xi_values.size)
     return gb.CorrelationFunction(
         edges=np.geomspace(4.0, 110.0, xi_values.size + 1),
@@ -113,7 +119,7 @@ def _fake_xi_hh(xi_values: np.ndarray) -> gb.CorrelationFunction:
         npairs=np.full(xi_values.size, 1000, dtype=np.int64),
         n1=10,
         n2=10,
-        label="hh",
+        label=label,
     )
 
 
@@ -533,3 +539,244 @@ def test_direct_correlation_rejects_shells_beyond_half_the_box():
         gb.measure_velocity_density_correlation(
             pos, vel, np.array([10.0, conventions.MAX_ANALYSIS_RADIUS + 1.0])
         )
+
+
+# ---------------------------------------------------------------------------
+# Figures -- the binned companion (CLAUDE.md hard rule 10, amended)
+# ---------------------------------------------------------------------------
+#
+# Unlike `dvcorr.pipeline.velocity_centered.make_figure`, every figure here
+# keeps its abscissa at the pair-weighted `CorrelationFunction.r_eff`
+# (module docstring, "NOT volume_weighted_shell_radii") and stays log-x in
+# both views, so these tests check the binned segments land at `r_eff` (not
+# `volume_weighted_shell_radii`) and that the log scale survives, rather than
+# reusing `test_shell_plotting.py`'s r=0 / volume-weighted assertions.
+
+
+def _fake_bias_run_config(edges: np.ndarray) -> gb.BiasRunConfig:
+    return gb.BiasRunConfig(bins=edges)
+
+
+def _line_collections(ax: plt.Axes) -> list[LineCollection]:
+    return [coll for coll in ax.collections if isinstance(coll, LineCollection)]
+
+
+def _marker_lines(ax: plt.Axes) -> list[plt.Line2D]:
+    """The `r_eff`-marker lines `draw_shell_series` draws (linestyle "None")."""
+    return [line for line in ax.get_lines() if line.get_linestyle() == "None"]
+
+
+def _segment_collections(ax: plt.Axes, n_segments: int) -> list[LineCollection]:
+    """`LineCollection`s with exactly `n_segments` segments -- the per-shell
+    measured series `draw_shell_series` draws via `ax.hlines`, as opposed to
+    the single-segment `ax.hlines` calls this module's figures use to draw a
+    fitted CONSTANT over its window (also a `LineCollection`, one segment,
+    not a per-shell series -- `ax.hlines` never returns a `Line2D`).
+    """
+    return [coll for coll in _line_collections(ax) if len(coll.get_segments()) == n_segments]
+
+
+def test_correlation_figure_binned_segments_match_the_line_view_at_curve_r_eff():
+    hh = _fake_xi_hh(np.geomspace(0.5, 1e-3, 8), label="hh")
+    hm = _fake_xi_hh(np.geomspace(0.3, 5e-4, 8), label="hm")
+    cfg = _fake_bias_run_config(hh.edges)
+
+    line_fig = gb.make_correlation_figure([hh, hm], cfg)
+    bin_fig = gb.make_correlation_figure([hh, hm], cfg, binned=True)
+    line_ax, bin_ax = line_fig.axes[0], bin_fig.axes[0]
+
+    # Line view: unchanged, one Line2D per curve at its OWN r_eff.
+    for curve in (hh, hm):
+        (line,) = [l for l in line_ax.get_lines() if l.get_label() == curve.label]
+        np.testing.assert_allclose(line.get_xdata(), curve.r_eff)
+        np.testing.assert_allclose(line.get_ydata(), curve.r_eff**2 * curve.xi)
+
+    # Binned view: one LineCollection per curve, segment heights equal the
+    # line view's y-values, each segment spanning the curve's OWN edges, and
+    # the marker sitting at the curve's own r_eff -- NOT
+    # volume_weighted_shell_radii(edges), which the shared shell_plotting
+    # primitive would have used instead.
+    collections = _line_collections(bin_ax)
+    markers = _marker_lines(bin_ax)
+    assert len(collections) == len(markers) == 2
+    volume_weighted = volume_weighted_shell_radii(hh.edges)
+    for curve, coll, marker in zip((hh, hm), collections, markers):
+        segments = coll.get_segments()
+        assert len(segments) == curve.xi.size
+        heights = np.array([seg[0, 1] for seg in segments])
+        np.testing.assert_allclose(heights, curve.r_eff**2 * curve.xi)
+        for seg, lo, hi in zip(segments, curve.edges[:-1], curve.edges[1:]):
+            np.testing.assert_allclose(seg[:, 0], [lo, hi])
+        np.testing.assert_allclose(marker.get_xdata(), curve.r_eff)
+        assert not np.allclose(marker.get_xdata(), volume_weighted)
+    plt.close(line_fig)
+    plt.close(bin_fig)
+
+
+def test_correlation_figure_theory_curve_is_unbinned_in_both_views():
+    hh = _fake_xi_hh(np.geomspace(0.5, 1e-3, 8))
+    cfg = _fake_bias_run_config(hh.edges)
+    r_theory = np.geomspace(1.0, 120.0, 50)
+    xi_theory = np.exp(-r_theory / 30.0)
+    theory = (r_theory, xi_theory, "theory")
+
+    for binned in (False, True):
+        fig = gb.make_correlation_figure([hh], cfg, theory=theory, binned=binned)
+        (ax,) = fig.axes
+        (theory_line,) = [l for l in ax.get_lines() if l.get_label() == "theory"]
+        np.testing.assert_allclose(theory_line.get_xdata(), r_theory)
+        np.testing.assert_allclose(theory_line.get_ydata(), r_theory**2 * xi_theory)
+        assert theory_line.get_linestyle() == "--"
+        plt.close(fig)
+
+
+def test_correlation_figure_binned_view_stays_log_x_and_adds_edge_guides():
+    hh = _fake_xi_hh(np.geomspace(0.5, 1e-3, 8))
+    cfg = _fake_bias_run_config(hh.edges)
+
+    line_fig = gb.make_correlation_figure([hh], cfg)
+    bin_fig = gb.make_correlation_figure([hh], cfg, binned=True)
+    line_ax, bin_ax = line_fig.axes[0], bin_fig.axes[0]
+
+    assert line_ax.get_xscale() == "log" == bin_ax.get_xscale()
+    edge_guides = [
+        line for line in bin_ax.get_lines()
+        if len(line.get_xdata()) == 2 and np.ptp(line.get_xdata()) == 0
+    ]
+    assert len(edge_guides) == hh.edges.size
+    no_guides_in_line_view = [
+        line for line in line_ax.get_lines()
+        if len(line.get_xdata()) == 2 and np.ptp(line.get_xdata()) == 0
+    ]
+    assert no_guides_in_line_view == []
+    plt.close(line_fig)
+    plt.close(bin_fig)
+
+
+def test_bias_figure_binned_segments_match_the_line_view():
+    b_true = 1.4
+    xi_mm = np.geomspace(0.5, 1e-3, 12)
+    hh = _fake_xi_hh(b_true**2 * xi_mm)
+    estimates = gb.bias_estimates(hh, xi_mm, gb.MATTER_SOURCE_PARTICLES, xi_hm=b_true * xi_mm)
+    cfg = _fake_bias_run_config(hh.edges)
+    fits = {
+        key: gb.fit_constant(estimates.r, values, cfg.fit_min_radius, cfg.fit_max_radius)
+        for key, values in (
+            ("b_cross", estimates.b_cross),
+            ("b_auto", estimates.b_auto),
+            ("r_cc", estimates.r_cc),
+        )
+    }
+
+    line_fig = gb.make_bias_figure(estimates, cfg, fits)
+    bin_fig = gb.make_bias_figure(estimates, cfg, fits, binned=True)
+    (line_ax_b, line_ax_r), (bin_ax_b, bin_ax_r) = line_fig.axes, bin_fig.axes
+    n_bins = estimates.b_cross.size
+
+    # Top panel: b_cross and b_auto, two segment series (each B segments,
+    # distinct from the single-segment fitted-constant hlines below).
+    b_collections = _segment_collections(bin_ax_b, n_bins)
+    assert len(b_collections) == 2
+    for values, coll in zip((estimates.b_cross, estimates.b_auto), b_collections):
+        heights = np.array([seg[0, 1] for seg in coll.get_segments()])
+        np.testing.assert_allclose(heights, values)
+
+    # Bottom panel: r_cc, one segment series at the same estimates.r marker.
+    (r_cc_coll,) = _segment_collections(bin_ax_r, n_bins)
+    heights = np.array([seg[0, 1] for seg in r_cc_coll.get_segments()])
+    np.testing.assert_allclose(heights, estimates.r_cc)
+    (marker,) = _marker_lines(bin_ax_r)
+    np.testing.assert_allclose(marker.get_xdata(), estimates.r)
+
+    # The fitted-constant reference lines (single-segment LineCollections --
+    # `ax.hlines` never returns a Line2D) are unchanged: same segment in both
+    # views, since they are not per-shell series.
+    for line_ax, bin_ax in ((line_ax_b, bin_ax_b), (line_ax_r, bin_ax_r)):
+        line_fits = sorted(
+            tuple(map(tuple, coll.get_segments()[0]))
+            for coll in _segment_collections(line_ax, 1)
+        )
+        bin_fits = sorted(
+            tuple(map(tuple, coll.get_segments()[0]))
+            for coll in _segment_collections(bin_ax, 1)
+        )
+        assert line_fits == bin_fits
+    plt.close(line_fig)
+    plt.close(bin_fig)
+
+
+def test_bias_figure_binned_placeholder_case_still_renders_without_xi_hm():
+    xi_mm = np.geomspace(0.5, 1e-3, 8)
+    hh = _fake_xi_hh(xi_mm)
+    estimates = gb.bias_estimates(hh, xi_mm, gb.MATTER_SOURCE_CAMB_HALOFIT)
+    cfg = _fake_bias_run_config(hh.edges)
+    fits = {"b_auto": gb.fit_constant(estimates.r, estimates.b_auto, cfg.fit_min_radius, cfg.fit_max_radius)}
+
+    fig = gb.make_bias_figure(estimates, cfg, fits, binned=True)
+    ax_b, ax_r = fig.axes
+    n_bins = estimates.b_auto.size
+    assert len(_segment_collections(ax_b, n_bins)) == 1  # b_auto only, b_cross all-NaN and skipped
+    assert _line_collections(ax_r) == []  # r_cc all-NaN: the text annotation, not a segment series
+    plt.close(fig)
+
+
+def test_amplitude_ratio_figure_binned_band_matches_the_errorbar_and_segments_match_ratio():
+    r = np.geomspace(10.0, 64.0, 10)
+    zeta_b = np.geomspace(20.0, 3.0, 10)
+    bias_ratio = 0.87
+    sem = 0.03 * zeta_b
+    shell_edges = np.geomspace(9.0, 70.0, r.size + 1)
+    test = gb.zeta_amplitude_ratio(
+        r, bias_ratio * zeta_b, sem, zeta_b, sem, bias_ratio=bias_ratio, label_a="a", label_b="b",
+        shell_edges=shell_edges,
+    )
+    # The correlation-function bins are a DIFFERENT ladder from the zeta
+    # shells (in notebook 09: 24 bins vs 15 shells); the binned ratio must
+    # span the zeta shells, never cfg.bins.
+    cfg = _fake_bias_run_config(np.geomspace(0.1, 100.0, 2 * r.size + 5))
+
+    line_fig = gb.make_amplitude_ratio_figure(test, cfg)
+    bin_fig = gb.make_amplitude_ratio_figure(test, cfg, binned=True)
+    (line_ax,), (bin_ax,) = line_fig.axes, bin_fig.axes
+
+    # `ax.errorbar`'s primary data line is solid; the cap "lines" it also
+    # draws are marker-only (linestyle "None") and share the same length, so
+    # they must be excluded explicitly.
+    (errorbar_line,) = [
+        l for l in line_ax.get_lines() if len(l.get_xdata()) == r.size and l.get_linestyle() == "-"
+    ]
+    np.testing.assert_allclose(errorbar_line.get_ydata(), test.ratio)
+
+    (coll,) = _segment_collections(bin_ax, r.size)
+    heights = np.array([seg[0, 1] for seg in coll.get_segments()])
+    np.testing.assert_allclose(heights, test.ratio)
+
+    # `bin_ax.patches` also holds the fit-range `axvspan`, a Rectangle too;
+    # keep only the per-bin boxes, identified by starting at a bin's own edge.
+    boxes = [p for p in bin_ax.patches if np.any(np.isclose(p.get_x(), shell_edges[:-1]))]
+    assert len(boxes) == r.size
+    for seg, lo, hi in zip(coll.get_segments(), shell_edges[:-1], shell_edges[1:]):
+        np.testing.assert_allclose(seg[:, 0], [lo, hi])
+    lower, upper = test.ratio - test.ratio_error, test.ratio + test.ratio_error
+    for box, lo, hi, bottom, top in zip(boxes, shell_edges[:-1], shell_edges[1:], lower, upper):
+        assert box.get_x() == pytest.approx(lo)
+        assert box.get_width() == pytest.approx(hi - lo)
+        assert box.get_y() == pytest.approx(bottom)
+        assert box.get_height() == pytest.approx(top - bottom)
+    plt.close(line_fig)
+    plt.close(bin_fig)
+
+
+def test_amplitude_ratio_binned_needs_the_zeta_shell_edges():
+    r = np.geomspace(10.0, 64.0, 5)
+    zeta = np.geomspace(20.0, 3.0, 5)
+    test = gb.zeta_amplitude_ratio(r, zeta, zeta, zeta, zeta, bias_ratio=1.0, label_a="a", label_b="b")
+    cfg = _fake_bias_run_config(np.geomspace(9.0, 70.0, r.size + 1))
+    with pytest.raises(ValueError):
+        gb.make_amplitude_ratio_figure(test, cfg, binned=True)
+    with pytest.raises(ValueError):
+        gb.zeta_amplitude_ratio(
+            r, zeta, zeta, zeta, zeta, bias_ratio=1.0, label_a="a", label_b="b",
+            shell_edges=np.arange(r.size),
+        )
+    plt.close("all")

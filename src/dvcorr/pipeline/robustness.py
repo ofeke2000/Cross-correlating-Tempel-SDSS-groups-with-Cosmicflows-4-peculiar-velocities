@@ -110,6 +110,7 @@ from dvcorr.estimators.shell_dipole import (
     center_standard_error,
     expected_shell_occupancy,
 )
+from dvcorr.pipeline.shell_plotting import draw_shell_series, finish_shell_axis
 from dvcorr.pipeline.velocity_centered import (
     DipoleFigures,
     RunConfig,
@@ -117,7 +118,6 @@ from dvcorr.pipeline.velocity_centered import (
     run_estimator,
     select_shared_centers,
     shell_dipole_norm_scale,
-    step_band,
 )
 
 # Percent, not fraction -- np.percentile's units, so the conversion happens
@@ -1245,6 +1245,10 @@ _COLOR_ZERO_LINE = "0.5"
 _ZERO_LINE_WIDTH = 0.8
 _BAND_ALPHA = 0.25
 _GRID_ALPHA = 0.3
+#: The per-seed curves of the seed-repeat panel: thin and slightly faded, so
+#: the across-seed mean drawn over them reads as the result.
+_SEED_LINE_WIDTH = 1.0
+_SEED_LINE_ALPHA = 0.8
 #: The five non-monopole tests, one 3x2 sheet with the sixth cell unused
 #: (CLAUDE.md hard rule 6 -- the monopole companion is a SEPARATE figure,
 #: below, sized on its own).
@@ -1258,7 +1262,10 @@ _ANNOTATION_HEADROOM = 1.18  # y-limit slack for the split panel's bar labels
 
 def _shell_axis(
     ax: plt.Axes,
+    shell_edges: np.ndarray,
     max_radius: float | None = None,
+    *,
+    binned: bool = False,
     xlabel: str = r"$r$  [$h^{-1}$ Mpc]",
 ) -> None:
     """Cartesian radial axis, zero line, grid -- the house style.
@@ -1274,12 +1281,27 @@ def _shell_axis(
     The left edge is always pinned to r = 0 (CLAUDE.md hard rule 10 -- every
     figure starts at r = 0), independent of `max_radius`; passing
     `right=None` when `max_radius` is None leaves the autoscaled upper bound
-    untouched.
+    untouched. `binned` layers `shell_plotting.finish_shell_axis` on top for
+    the shell-edge guide lines: that shared primitive only knows how to pin
+    the left edge, not `max_radius`'s right one, so `max_radius` is applied
+    here FIRST and `finish_shell_axis` is called after -- it touches only
+    `left`, so the right limit set here survives.
+
+    Parameters
+    ----------
+    ax : matplotlib Axes
+    shell_edges : ndarray, shape (B + 1,)
+        Passed through to `finish_shell_axis` for the binned-view edge
+        guides; unused when `binned` is False.
+    max_radius : float | None
+    binned : bool, default False
+    xlabel : str
     """
     ax.axhline(0.0, color=_COLOR_ZERO_LINE, lw=_ZERO_LINE_WIDTH)
     ax.set_xlabel(xlabel)
     ax.grid(alpha=_GRID_ALPHA)
     ax.set_xlim(left=0.0, right=max_radius)
+    finish_shell_axis(ax, shell_edges, binned=binned)
 
 
 def make_robustness_figure(
@@ -1290,6 +1312,8 @@ def make_robustness_figure(
     trim: TrimLadder,
     repeats: SeedRepeats,
     split: PropertySplit,
+    *,
+    binned: bool = False,
 ) -> DipoleFigures:
     """The five tests on one sheet, plus the monopole companion as its own figure.
 
@@ -1317,12 +1341,24 @@ def make_robustness_figure(
 
     6. Monopole (hard rule 6) -- the geometry companion of panel 2.
 
-    Panels 2-4 and 6 are STEPS (`ax.stairs`), held flat across each bin's
-    full width from `stack.shell_edges[0]` (0.0 under the default binning)
-    -- CLAUDE.md hard rule 10 -- rather than a point at the shell midpoint;
-    `anchor_dipole_at_origin` is therefore not needed here either. Panels 1
-    and 5 are not radial (N_c and group index respectively) and are
-    unaffected.
+    Panels 2-4 and 6 are LINES through one point per shell at the shell's
+    volume-weighted radius (`volume_weighted_shell_radii`, CLAUDE.md hard
+    rule 10), never steps held flat across the bin; `_shell_axis` pins their
+    x-axis to start at r = 0. Panels 1 and 5 are not radial (N_c and group
+    index respectively) and are unaffected.
+
+    `binned=True` builds the binned COMPANION pair instead (hard rule 10):
+    every radial series in panels 2-4 and 6 is drawn as a flat segment over
+    its own shell's edges, with the r_eff point marked and every shell edge
+    as a faint guide (`dvcorr.pipeline.shell_plotting.draw_shell_series`,
+    `finish_shell_axis`), so a point on the line figure can be looked up --
+    which shell, what value. Panels 1 and 5 are unaffected (not radial).
+    Every series in panels 2-4 and 6 shares `stack.shell_edges` -- nothing in
+    this figure overlays curves from a coarser or finer ladder (that only
+    happens when a caller merges shells for its OWN comparison, e.g. the
+    notebook's `merge_shells` step, which is outside this figure). Call once
+    with each value of `binned` to get both pairs; radial titles gain a
+    " -- binned" suffix so the two are never confused in a saved file name.
 
     Parameters
     ----------
@@ -1330,12 +1366,14 @@ def make_robustness_figure(
     stack : PerCenterStack
     ladder, interval, trim, repeats, split
         The five test results, all built from `stack`.
+    binned : bool, default False
+        False: the line view. True: the binned lookup companion.
 
     Returns
     -------
     DipoleFigures
     """
-    edges = stack.shell_edges
+    view = " -- binned" if binned else ""
     b = cfg.trim_rank_shell
     shell_text = (
         f"[{stack.shell_edges[b]:g}, {stack.shell_edges[b + 1]:g}) "
@@ -1389,23 +1427,30 @@ def make_robustness_figure(
     ax_ladder.legend(fontsize="small")
 
     # --- 2: bootstrap interval ----------------------------------------------
-    # Panels 2, 3, 4 and the monopole panel below are all STEPS (`ax.stairs`),
-    # held flat across each bin's full width from `edges[0]` (0.0 under the
-    # default binning) -- CLAUDE.md hard rule 10 -- so the curve already
-    # starts at the exact origin without a separate anchor.
-    step_band(
-        ax_boot, edges, interval.zeta_hat - interval.sem, interval.zeta_hat + interval.sem,
-        color=_COLOR_SEM, alpha=_BAND_ALPHA, label="Gaussian SEM",
+    # Panels 2, 3, 4 and the monopole panel below are all lines through one
+    # point per shell at r_eff (CLAUDE.md hard rule 10); `_shell_axis` pins
+    # each x-axis to start at r = 0. The two bands are independent of the
+    # zeta_hat line (each carries its own legend entry) so they are drawn
+    # band-only (`values=None`) with the line drawn separately below.
+    draw_shell_series(
+        ax_boot, stack.shell_edges, None, binned=binned,
+        lower=interval.zeta_hat - interval.sem, upper=interval.zeta_hat + interval.sem,
+        color=_COLOR_SEM, band_alpha=_BAND_ALPHA, label="Gaussian SEM",
     )
-    step_band(
-        ax_boot, edges, interval.low, interval.high,
-        color=_COLOR_SIGNAL, alpha=_BAND_ALPHA,
+    draw_shell_series(
+        ax_boot, stack.shell_edges, None, binned=binned,
+        lower=interval.low, upper=interval.high,
+        color=_COLOR_SIGNAL, band_alpha=_BAND_ALPHA,
         label=f"{interval.confidence:.0%} bootstrap ({interval.n_resamples} resamples)",
     )
-    ax_boot.stairs(interval.zeta_hat, edges, color=_COLOR_SIGNAL, label=r"$\hat\zeta_1$")
-    _shell_axis(ax_boot, cfg.figure_max_radius)
+    draw_shell_series(
+        ax_boot, stack.shell_edges, interval.zeta_hat, binned=binned,
+        color=_COLOR_SIGNAL, marker="o", linestyle="-", band_alpha=_BAND_ALPHA,
+        label=r"$\hat\zeta_1$",
+    )
+    _shell_axis(ax_boot, stack.shell_edges, cfg.figure_max_radius, binned=binned)
     ax_boot.set_ylabel(r"$\hat\zeta_1(r)$  [km/s]")
-    ax_boot.set_title(f"2 - bootstrap interval, $N_c$ = {stack.n_centers}")
+    ax_boot.set_title(f"2 - bootstrap interval{view}, $N_c$ = {stack.n_centers}")
     ax_boot.legend(fontsize="small")
 
     # --- 3: trim ladder ------------------------------------------------------
@@ -1413,11 +1458,12 @@ def make_robustness_figure(
         np.linspace(0.0, _COLOR_SPAN, trim.trim_counts.size)
     )
     for i, k in enumerate(trim.trim_counts):
-        ax_trim.stairs(
-            trim.zeta_hat[i], edges, color=trim_colors[i],
+        draw_shell_series(
+            ax_trim, stack.shell_edges, trim.zeta_hat[i], binned=binned,
+            color=trim_colors[i], marker="o", linestyle="-", band_alpha=_BAND_ALPHA,
             label=f"drop top {k}" if k else "untrimmed",
         )
-    _shell_axis(ax_trim, cfg.figure_max_radius)
+    _shell_axis(ax_trim, stack.shell_edges, cfg.figure_max_radius, binned=binned)
     ax_trim.set_ylabel(r"$\hat\zeta_1(r)$  [km/s]")
     # The heavy-tail headline, in whichever form the shell admits. A median of
     # exactly zero is not a failure to guard around on a sparse inner shell --
@@ -1428,23 +1474,38 @@ def make_robustness_figure(
     else:
         contributing = trim.n_contributing / trim.n_centers[0]
         tail_text = f"median = 0; {contributing:.1%} of centers contribute"
-    ax_trim.set_title(f"3 - trim ladder (ranked on {shell_text}); {tail_text}")
+    ax_trim.set_title(f"3 - trim ladder (ranked on {shell_text}){view}; {tail_text}")
     ax_trim.legend(fontsize="small")
 
     # --- 4: seed repeats -----------------------------------------------------
-    step_band(
-        ax_seed, edges, repeats.mean - repeats.spread, repeats.mean + repeats.spread,
-        color=_COLOR_SIGNAL, alpha=_BAND_ALPHA, label="across-seed spread",
+    draw_shell_series(
+        ax_seed, stack.shell_edges, None, binned=binned,
+        lower=repeats.mean - repeats.spread, upper=repeats.mean + repeats.spread,
+        color=_COLOR_SIGNAL, band_alpha=_BAND_ALPHA, label="across-seed spread",
     )
+    # The individual per-seed curves are a thin, de-emphasized family with no
+    # marker, drawn through `draw_shell_series` with the reduced `linewidth`/
+    # `alpha` it carries. Colors are read explicitly off the default property
+    # cycle (index 0, 1, 2, ... -- nothing else has consumed this axis's cycle
+    # yet) so the SAME color lands in both views.
+    prop_colors = plt.rcParams["axes.prop_cycle"].by_key()["color"]
     for i in range(repeats.seeds.size):
-        ax_seed.stairs(
-            repeats.zeta_hat[i], edges, lw=1.0, alpha=0.8,
-            label=f"$N_c$ = {repeats.n_centers[i]}",
+        color = prop_colors[i % len(prop_colors)]
+        label = f"$N_c$ = {repeats.n_centers[i]}"
+        draw_shell_series(
+            ax_seed, stack.shell_edges, repeats.zeta_hat[i], binned=binned,
+            color=color, marker="", linestyle="-",
+            linewidth=_SEED_LINE_WIDTH, alpha=_SEED_LINE_ALPHA,
+            label=label,
         )
-    ax_seed.stairs(repeats.mean, edges, color=_COLOR_SIGNAL, label="across-seed mean")
-    _shell_axis(ax_seed, cfg.figure_max_radius)
+    draw_shell_series(
+        ax_seed, stack.shell_edges, repeats.mean, binned=binned,
+        color=_COLOR_SIGNAL, marker="o", linestyle="-", band_alpha=_BAND_ALPHA,
+        label="across-seed mean",
+    )
+    _shell_axis(ax_seed, stack.shell_edges, cfg.figure_max_radius, binned=binned)
     ax_seed.set_ylabel(r"$\hat\zeta_1(r)$  [km/s]")
-    ax_seed.set_title(f"4 - {repeats.seeds.size} independent center draws")
+    ax_seed.set_title(f"4 - {repeats.seeds.size} independent center draws{view}")
     ax_seed.legend(fontsize="x-small", ncol=2)
 
     # --- 5: mechanism split --------------------------------------------------
@@ -1491,10 +1552,13 @@ def make_robustness_figure(
     # --- 6: the monopole companion (hard rule 6), its own figure ------------
     full = restack(stack)
     fig_mono, ax_mono = plt.subplots(figsize=_MONOPOLE_FIGSIZE)
-    ax_mono.stairs(full.monopole_norm, edges, color=_COLOR_MONOPOLE)
-    _shell_axis(ax_mono, cfg.figure_max_radius)
+    draw_shell_series(
+        ax_mono, stack.shell_edges, full.monopole_norm, binned=binned,
+        color=_COLOR_MONOPOLE, marker="o", linestyle="-", band_alpha=_BAND_ALPHA,
+    )
+    _shell_axis(ax_mono, stack.shell_edges, cfg.figure_max_radius, binned=binned)
     ax_mono.set_ylabel(r"normalized monopole  [km/s]")
-    ax_mono.set_title("6 - monopole companion (hard rule 6)")
+    ax_mono.set_title(f"6 - monopole companion (hard rule 6){view}")
     fig_mono.tight_layout()
 
     return DipoleFigures(dipole=fig, monopole=fig_mono)

@@ -191,9 +191,9 @@ from dvcorr.pipeline.velocity_centered import (
     normalize_result,
     select_shared_centers,
     shell_dipole_norm_scale,
-    step_band,
 )
 from dvcorr.pipeline.velocity_centered import _COLOR_SIGNAL as _COLOR_REAL
+from dvcorr.pipeline.shell_plotting import draw_shell_series, finish_shell_axis
 
 _COLOR_REAL_NULL = "#a9c9ee"       # lighter tint of _COLOR_REAL: the real-space run's u-shuffle null
 _COLOR_REDSHIFT = "#1b9e77"        # distinct hue for the redshift-space run's curves
@@ -1208,6 +1208,8 @@ def make_redshift_comparison_figure(
     cfg: RedshiftSpaceRunConfig,
     results: RedshiftSpaceFrameResults,
     comparison: RedshiftSpaceComparison,
+    *,
+    binned: bool = False,
 ) -> DipoleFigures:
     """Center-averaged comparison: real-space vs. redshift-space zeta_hat_1 + monopole.
 
@@ -1223,11 +1225,16 @@ def make_redshift_comparison_figure(
     occupancy N_alpha,b -- there is no projection-factor scale gap to hide
     behind a twin axis.
 
-    Every curve is a STEP (`ax.stairs`), held flat across each bin's full
-    width from `results.real_result.shell_edges[0]` (0.0 under the default
-    binning) -- CLAUDE.md hard rule 10 -- rather than a point at the
-    volume-weighted radius; `anchor_dipole_at_origin` is therefore not needed
-    here either.
+    Every per-shell curve is drawn through `dvcorr.pipeline.shell_plotting
+    .draw_shell_series` (CLAUDE.md hard rule 10), in one of two renderings
+    selected by `binned`: the line view (`binned=False`, the default), one
+    point per shell at the shell's volume-weighted radius
+    (`volume_weighted_shell_radii`) joined by a line -- never a step held
+    flat across the bin; or the binned lookup companion (`binned=True`),
+    each shell drawn as a flat segment over its own edges with faint
+    shell-edge guides (`dvcorr.pipeline.shell_plotting.finish_shell_axis`).
+    Both views are built from the SAME arrays, so they cannot disagree; the
+    x-axis is pinned to start at r = 0 in both.
 
     TOP panel: `zeta_hat` for both spaces, each with its own across-center
     SEM band and its own TWO nulls -- the velocity shuffle dashed in a
@@ -1262,52 +1269,56 @@ def make_redshift_comparison_figure(
     cfg : RedshiftSpaceRunConfig
     results : RedshiftSpaceFrameResults
     comparison : RedshiftSpaceComparison
+    binned : bool, default False
+        False: the line view. True: the binned lookup companion.
 
     Returns
     -------
     DipoleFigures
     """
     edges = results.real_result.shell_edges
+    view = " -- binned" if binned else ""
 
     fig_dipole, ax_dipole = plt.subplots(figsize=_DIPOLE_FIGSIZE)
 
-    step_band(
-        ax_dipole, edges, comparison.real.zeta_hat - comparison.real.sem,
-        comparison.real.zeta_hat + comparison.real.sem, color=_COLOR_REAL, alpha=_BAND_ALPHA,
-    )
-    ax_dipole.stairs(
-        comparison.real.zeta_hat, edges, color=_COLOR_REAL,
+    draw_shell_series(
+        ax_dipole, edges, comparison.real.zeta_hat, binned=binned,
+        lower=comparison.real.zeta_hat - comparison.real.sem,
+        upper=comparison.real.zeta_hat + comparison.real.sem,
+        color=_COLOR_REAL, marker="o", linestyle="-", band_alpha=_BAND_ALPHA,
         label=fr"$\hat\zeta_1^{{real}}$  (N$_c$={results.real_result.n_centers})",
     )
-    ax_dipole.stairs(
-        comparison.real.zeta_hat_shuffle, edges, color=_COLOR_REAL_NULL, linestyle="--",
+    draw_shell_series(
+        ax_dipole, edges, comparison.real.zeta_hat_shuffle, binned=binned,
+        color=_COLOR_REAL_NULL, marker="o", linestyle="--", band_alpha=_BAND_ALPHA,
         label="real null (u-shuffle)",
     )
-    ax_dipole.stairs(
-        comparison.real.zeta_hat_gaussian, edges, color=_COLOR_REAL_GAUSSIAN, linestyle=":",
+    draw_shell_series(
+        ax_dipole, edges, comparison.real.zeta_hat_gaussian, binned=binned,
+        color=_COLOR_REAL_GAUSSIAN, marker="o", linestyle=":", band_alpha=_BAND_ALPHA,
         label="real null (gaussian)",
     )
 
-    step_band(
-        ax_dipole, edges, comparison.redshift.zeta_hat - comparison.redshift.sem,
-        comparison.redshift.zeta_hat + comparison.redshift.sem,
-        color=_COLOR_REDSHIFT, alpha=_BAND_ALPHA,
-    )
-    ax_dipole.stairs(
-        comparison.redshift.zeta_hat, edges, color=_COLOR_REDSHIFT,
+    draw_shell_series(
+        ax_dipole, edges, comparison.redshift.zeta_hat, binned=binned,
+        lower=comparison.redshift.zeta_hat - comparison.redshift.sem,
+        upper=comparison.redshift.zeta_hat + comparison.redshift.sem,
+        color=_COLOR_REDSHIFT, marker="s", linestyle="-", band_alpha=_BAND_ALPHA,
         label=fr"$\hat\zeta_1^{{z}}$  (N$_c$={results.redshift_result.n_centers})",
     )
-    ax_dipole.stairs(
-        comparison.redshift.zeta_hat_shuffle, edges, color=_COLOR_REDSHIFT_NULL, linestyle="--",
+    draw_shell_series(
+        ax_dipole, edges, comparison.redshift.zeta_hat_shuffle, binned=binned,
+        color=_COLOR_REDSHIFT_NULL, marker="s", linestyle="--", band_alpha=_BAND_ALPHA,
         label="redshift null (u-shuffle)",
     )
-    ax_dipole.stairs(
-        comparison.redshift.zeta_hat_gaussian, edges, color=_COLOR_REDSHIFT_GAUSSIAN, linestyle=":",
+    draw_shell_series(
+        ax_dipole, edges, comparison.redshift.zeta_hat_gaussian, binned=binned,
+        color=_COLOR_REDSHIFT_GAUSSIAN, marker="s", linestyle=":", band_alpha=_BAND_ALPHA,
         label="redshift null (gaussian)",
     )
 
     ax_dipole.axhline(0.0, color=_COLOR_ZERO_LINE, lw=_ZERO_LINE_WIDTH)
-    ax_dipole.set_xlim(left=0.0)
+    finish_shell_axis(ax_dipole, edges, binned=binned)
     ax_dipole.set_ylabel(r"$\hat\zeta_1$  [km/s]", color=_LABEL_COLOR)
     ax_dipole.set_xlabel(r"separation $r$  [$h^{-1}$ Mpc]")
     ax_dipole.legend(fontsize="small")
@@ -1315,7 +1326,7 @@ def make_redshift_comparison_figure(
     ax_dipole.spines["top"].set_visible(False)
     ax_dipole.spines["right"].set_visible(False)
     ax_dipole.set_title(
-        "real space vs. redshift space  "
+        f"real space vs. redshift space{view}  "
         f"(R_sub={cfg.sub_volume_radius:.0f} h$^{{-1}}$Mpc, "
         f"{_binning_description(cfg.shells)}, "
         f"N$_c$={results.centers.n_centers}, "
@@ -1327,9 +1338,15 @@ def make_redshift_comparison_figure(
     fig_dipole.tight_layout()
 
     fig_mono, ax_mono = plt.subplots(figsize=_MONOPOLE_FIGSIZE)
-    ax_mono.stairs(comparison.real.monopole_norm, edges, color=_COLOR_REAL, label="real")
-    ax_mono.stairs(comparison.redshift.monopole_norm, edges, color=_COLOR_REDSHIFT, label="redshift")
-    ax_mono.set_xlim(left=0.0)
+    draw_shell_series(
+        ax_mono, edges, comparison.real.monopole_norm, binned=binned,
+        color=_COLOR_REAL, marker="o", linestyle="-", band_alpha=_BAND_ALPHA, label="real",
+    )
+    draw_shell_series(
+        ax_mono, edges, comparison.redshift.monopole_norm, binned=binned,
+        color=_COLOR_REDSHIFT, marker="s", linestyle="-", band_alpha=_BAND_ALPHA, label="redshift",
+    )
+    finish_shell_axis(ax_mono, edges, binned=binned)
     ax_mono.set_ylabel(r"$\hat\zeta_0 \simeq \langle|u|\rangle$  [km/s]", color=_LABEL_COLOR)
     ax_mono.set_xlabel(r"separation $r$  [$h^{-1}$ Mpc]")
     ax_mono.legend(fontsize="small")
@@ -1337,7 +1354,7 @@ def make_redshift_comparison_figure(
     ax_mono.spines["top"].set_visible(False)
     ax_mono.spines["right"].set_visible(False)
     ax_mono.set_title(
-        "real space vs. redshift space monopole  "
+        f"real space vs. redshift space monopole{view}  "
         f"(R_sub={cfg.sub_volume_radius:.0f} h$^{{-1}}$Mpc, "
         f"{_binning_description(cfg.shells)}, "
         f"N$_c$={results.centers.n_centers})",
@@ -1352,6 +1369,8 @@ def make_single_center_figure(
     cfg: RedshiftSpaceRunConfig,
     results: RedshiftSpaceFrameResults,
     n_bar: float,
+    *,
+    binned: bool = False,
 ) -> DipoleFigures:
     """One example center's own dipole + monopole, real vs. redshift, no band.
 
@@ -1365,6 +1384,14 @@ def make_single_center_figure(
     No error band: a single center has no across-center population to form
     a standard error from -- this figure is a shape/sanity read-out, not a
     stacked estimate.
+
+    Every per-shell curve is drawn through `dvcorr.pipeline.shell_plotting
+    .draw_shell_series`, in one of two renderings selected by `binned`: the
+    line view (`binned=False`, the default), one point per shell at the
+    shell's volume-weighted radius, joined by a line; or the binned lookup
+    companion (`binned=True`), each shell drawn as a flat segment over its
+    own edges with shell-edge guides (`dvcorr.pipeline.shell_plotting
+    .finish_shell_axis`). Both views come from the SAME arrays.
 
     Dipole: `per_center_dipole[a] * shell_dipole_norm_scale(shell_edges,
     n_bar)`, the SAME per-shell normalization
@@ -1387,6 +1414,8 @@ def make_single_center_figure(
         The SAME shared, box-wide n_bar used for the center-averaged
         figure (e.g. `RedshiftSpaceComparison.n_bar`) -- kept identical so
         the two figures' dipole y-axes are on the same normalization.
+    binned : bool, default False
+        False: the line view. True: the binned lookup companion.
 
     Returns
     -------
@@ -1406,6 +1435,7 @@ def make_single_center_figure(
         )
 
     edges = results.real_result.shell_edges
+    view = " -- binned" if binned else ""
     norm_scale = shell_dipole_norm_scale(edges, n_bar)
 
     real_dipole = results.real_result.per_center_dipole[a] * norm_scale
@@ -1417,10 +1447,16 @@ def make_single_center_figure(
     )
 
     fig_dipole, ax_dipole = plt.subplots(figsize=_DIPOLE_FIGSIZE)
-    ax_dipole.stairs(real_dipole, edges, color=_COLOR_REAL, label="real")
-    ax_dipole.stairs(redshift_dipole, edges, color=_COLOR_REDSHIFT, label="redshift")
+    draw_shell_series(
+        ax_dipole, edges, real_dipole, binned=binned,
+        color=_COLOR_REAL, marker="o", linestyle="-", band_alpha=_BAND_ALPHA, label="real",
+    )
+    draw_shell_series(
+        ax_dipole, edges, redshift_dipole, binned=binned,
+        color=_COLOR_REDSHIFT, marker="s", linestyle="-", band_alpha=_BAND_ALPHA, label="redshift",
+    )
     ax_dipole.axhline(0.0, color=_COLOR_ZERO_LINE, lw=_ZERO_LINE_WIDTH)
-    ax_dipole.set_xlim(left=0.0)
+    finish_shell_axis(ax_dipole, edges, binned=binned)
     ax_dipole.set_ylabel(r"$\hat\zeta_1$ (single center)  [km/s]", color=_LABEL_COLOR)
     ax_dipole.set_xlabel(r"separation $r$  [$h^{-1}$ Mpc]")
     ax_dipole.legend(fontsize="small")
@@ -1428,16 +1464,22 @@ def make_single_center_figure(
     ax_dipole.spines["top"].set_visible(False)
     ax_dipole.spines["right"].set_visible(False)
     ax_dipole.set_title(
-        f"single-center example (index {a} of {n_centers}, "
+        f"single-center example{view} (index {a} of {n_centers}, "
         f"{_binning_description(cfg.shells)})",
         fontsize=9,
     )
     fig_dipole.tight_layout()
 
     fig_mono, ax_mono = plt.subplots(figsize=_MONOPOLE_FIGSIZE)
-    ax_mono.stairs(real_mono, edges, color=_COLOR_REAL, label="real")
-    ax_mono.stairs(redshift_mono, edges, color=_COLOR_REDSHIFT, label="redshift")
-    ax_mono.set_xlim(left=0.0)
+    draw_shell_series(
+        ax_mono, edges, real_mono, binned=binned,
+        color=_COLOR_REAL, marker="o", linestyle="-", band_alpha=_BAND_ALPHA, label="real",
+    )
+    draw_shell_series(
+        ax_mono, edges, redshift_mono, binned=binned,
+        color=_COLOR_REDSHIFT, marker="s", linestyle="-", band_alpha=_BAND_ALPHA, label="redshift",
+    )
+    finish_shell_axis(ax_mono, edges, binned=binned)
     ax_mono.set_ylabel(r"$|u_\alpha|\, N_{\alpha,b}$  [km/s]", color=_LABEL_COLOR)
     ax_mono.set_xlabel(r"separation $r$  [$h^{-1}$ Mpc]")
     ax_mono.legend(fontsize="small")
@@ -1445,7 +1487,7 @@ def make_single_center_figure(
     ax_mono.spines["top"].set_visible(False)
     ax_mono.spines["right"].set_visible(False)
     ax_mono.set_title(
-        f"single-center example monopole (index {a} of {n_centers}, "
+        f"single-center example monopole{view} (index {a} of {n_centers}, "
         f"{_binning_description(cfg.shells)})",
         fontsize=9,
     )

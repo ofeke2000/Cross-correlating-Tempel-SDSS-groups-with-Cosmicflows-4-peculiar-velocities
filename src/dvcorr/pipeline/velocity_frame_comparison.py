@@ -55,6 +55,7 @@ from dvcorr.estimators.velocity_frame_dipole import (
     velocity_frame_shell_dipole,
 )
 from dvcorr.geometry import unit_vector
+from dvcorr.pipeline.shell_plotting import draw_shell_series, finish_shell_axis
 
 # Stage functions and the styling constants reused verbatim from the
 # observer-frame pipeline. _COLOR_SIGNAL is imported as `_COLOR_OBS` (below)
@@ -83,7 +84,6 @@ from dvcorr.pipeline.velocity_centered import (
     normalize_stacked_dipole,
     select_shared_centers,
     shell_dipole_norm_scale,
-    step_band,
 )
 from dvcorr.pipeline.velocity_centered import _COLOR_SIGNAL as _COLOR_OBS
 
@@ -687,6 +687,8 @@ def make_comparison_figure(
     cfg: ComparisonRunConfig,
     results: FrameRunResults,
     comparison: FrameComparison,
+    *,
+    binned: bool = False,
 ) -> DipoleFigures:
     """The main deliverable: two figures comparing the observer and velocity frames.
 
@@ -694,12 +696,22 @@ def make_comparison_figure(
     sendable on its own), returned together as a `DipoleFigures` --
     `dvcorr.pipeline.velocity_centered.make_figure`'s return type, reused
     here rather than a second definition, since both pipelines hand back
-    exactly "a dipole figure plus its monopole companion". Every curve is a
-    STEP (`ax.stairs`), held flat across each bin's full width from
-    `results.obs_result.shell_edges[0]` (0.0 under the default binning) --
-    CLAUDE.md hard rule 10 -- rather than a point at the volume-weighted
-    radius; `anchor_dipole_at_origin` is therefore not needed here either.
-    Builder only: never saves, never calls `plt.show`.
+    exactly "a dipole figure plus its monopole companion". Every per-shell
+    series -- both panels, all six top-panel curves -- goes through
+    `dvcorr.pipeline.shell_plotting.draw_shell_series` /
+    `finish_shell_axis`, the one drawing primitive for CLAUDE.md hard rule
+    10's two renderings. Builder only: never saves, never calls `plt.show`.
+
+    `binned=True` builds the binned COMPANION pair instead of the default
+    line view (hard rule 10): the same arrays, each shell drawn flat across
+    its own edges with the volume-weighted point marked and the shell edges
+    as faint guides, so a point on the line figure can be looked up -- which
+    shell, what value. Call once with each value to get both pairs; every
+    series goes through `draw_shell_series`, so the two cannot disagree on
+    the data. In the line view (`binned=False`, the default), every curve is
+    a LINE through one point per shell at the shell's volume-weighted radius
+    (`volume_weighted_shell_radii`), never a step held flat across the bin;
+    both views' x-axes are pinned to start at r = 0.
 
     TOP panel: `zeta_hat_obs` and `zeta_hat_vel` overlaid, each with its
     across-center standard-error band (`fill_between`) and each with its OWN
@@ -791,76 +803,65 @@ def make_comparison_figure(
     cfg : ComparisonRunConfig
     results : FrameRunResults
     comparison : FrameComparison
+    binned : bool, default False
+        False: the line view. True: the binned lookup companion.
 
     Returns
     -------
     DipoleFigures
     """
     edges = results.obs_result.shell_edges
+    view = " -- binned" if binned else ""
 
     fig_dipole, ax_dipole = plt.subplots(figsize=_DIPOLE_FIGSIZE)
 
-    # --- the two dipoles, each with its SEM band and its two nulls, as steps
-    step_band(
-        ax_dipole, edges, comparison.obs.zeta_hat - comparison.obs.sem,
-        comparison.obs.zeta_hat + comparison.obs.sem, color=_COLOR_OBS, alpha=_BAND_ALPHA,
-    )
-    ax_dipole.stairs(
-        comparison.obs.zeta_hat, edges, color=_COLOR_OBS,
+    # --- the two dipoles, each with its SEM band and its two nulls
+    draw_shell_series(
+        ax_dipole, edges, comparison.obs.zeta_hat, binned=binned,
+        lower=comparison.obs.zeta_hat - comparison.obs.sem,
+        upper=comparison.obs.zeta_hat + comparison.obs.sem,
+        color=_COLOR_OBS, marker="o", linestyle="-", band_alpha=_BAND_ALPHA,
         label=fr"$\hat\zeta_1^{{obs}}$  (N$_c$={results.obs_result.n_centers})",
     )
-    step_band(
-        ax_dipole, edges,
-        comparison.obs.zeta_hat_shuffle - comparison.obs.null_spread_shuffle,
-        comparison.obs.zeta_hat_shuffle + comparison.obs.null_spread_shuffle,
-        color=_COLOR_OBS_NULL, alpha=_BAND_ALPHA,
-    )
-    ax_dipole.stairs(
-        comparison.obs.zeta_hat_shuffle, edges, color=_COLOR_OBS_NULL, linestyle="--",
+    draw_shell_series(
+        ax_dipole, edges, comparison.obs.zeta_hat_shuffle, binned=binned,
+        lower=comparison.obs.zeta_hat_shuffle - comparison.obs.null_spread_shuffle,
+        upper=comparison.obs.zeta_hat_shuffle + comparison.obs.null_spread_shuffle,
+        color=_COLOR_OBS_NULL, marker="o", linestyle="--", band_alpha=_BAND_ALPHA,
         label="obs null (u-shuffle)",
     )
-    step_band(
-        ax_dipole, edges,
-        comparison.obs.zeta_hat_gaussian - comparison.obs.null_spread_gaussian,
-        comparison.obs.zeta_hat_gaussian + comparison.obs.null_spread_gaussian,
-        color=_COLOR_OBS_GAUSSIAN, alpha=_BAND_ALPHA,
-    )
-    ax_dipole.stairs(
-        comparison.obs.zeta_hat_gaussian, edges, color=_COLOR_OBS_GAUSSIAN, linestyle=":",
+    draw_shell_series(
+        ax_dipole, edges, comparison.obs.zeta_hat_gaussian, binned=binned,
+        lower=comparison.obs.zeta_hat_gaussian - comparison.obs.null_spread_gaussian,
+        upper=comparison.obs.zeta_hat_gaussian + comparison.obs.null_spread_gaussian,
+        color=_COLOR_OBS_GAUSSIAN, marker="o", linestyle=":", band_alpha=_BAND_ALPHA,
         label="obs null (gaussian)",
     )
 
-    step_band(
-        ax_dipole, edges, comparison.vel.zeta_hat - comparison.vel.sem,
-        comparison.vel.zeta_hat + comparison.vel.sem, color=_COLOR_VEL, alpha=_BAND_ALPHA,
-    )
-    ax_dipole.stairs(
-        comparison.vel.zeta_hat, edges, color=_COLOR_VEL,
+    draw_shell_series(
+        ax_dipole, edges, comparison.vel.zeta_hat, binned=binned,
+        lower=comparison.vel.zeta_hat - comparison.vel.sem,
+        upper=comparison.vel.zeta_hat + comparison.vel.sem,
+        color=_COLOR_VEL, marker="s", linestyle="-", band_alpha=_BAND_ALPHA,
         label=fr"$\hat\zeta_1^{{vel}}$  (N$_c$={results.vel_result.n_centers})",
     )
-    step_band(
-        ax_dipole, edges,
-        comparison.vel.zeta_hat_shuffle - comparison.vel.null_spread_shuffle,
-        comparison.vel.zeta_hat_shuffle + comparison.vel.null_spread_shuffle,
-        color=_COLOR_VEL_NULL, alpha=_BAND_ALPHA,
-    )
-    ax_dipole.stairs(
-        comparison.vel.zeta_hat_shuffle, edges, color=_COLOR_VEL_NULL, linestyle="--",
+    draw_shell_series(
+        ax_dipole, edges, comparison.vel.zeta_hat_shuffle, binned=binned,
+        lower=comparison.vel.zeta_hat_shuffle - comparison.vel.null_spread_shuffle,
+        upper=comparison.vel.zeta_hat_shuffle + comparison.vel.null_spread_shuffle,
+        color=_COLOR_VEL_NULL, marker="s", linestyle="--", band_alpha=_BAND_ALPHA,
         label="vel null (random-axis)",
     )
-    step_band(
-        ax_dipole, edges,
-        comparison.vel.zeta_hat_gaussian - comparison.vel.null_spread_gaussian,
-        comparison.vel.zeta_hat_gaussian + comparison.vel.null_spread_gaussian,
-        color=_COLOR_VEL_GAUSSIAN, alpha=_BAND_ALPHA,
-    )
-    ax_dipole.stairs(
-        comparison.vel.zeta_hat_gaussian, edges, color=_COLOR_VEL_GAUSSIAN, linestyle=":",
+    draw_shell_series(
+        ax_dipole, edges, comparison.vel.zeta_hat_gaussian, binned=binned,
+        lower=comparison.vel.zeta_hat_gaussian - comparison.vel.null_spread_gaussian,
+        upper=comparison.vel.zeta_hat_gaussian + comparison.vel.null_spread_gaussian,
+        color=_COLOR_VEL_GAUSSIAN, marker="s", linestyle=":", band_alpha=_BAND_ALPHA,
         label="vel null (gaussian)",
     )
 
     ax_dipole.axhline(0.0, color=_COLOR_ZERO_LINE, lw=_ZERO_LINE_WIDTH)
-    ax_dipole.set_xlim(left=0.0)
+    finish_shell_axis(ax_dipole, edges, binned=binned)
     ax_dipole.set_ylabel(r"$\hat\zeta_1$  [km/s]", color=_LABEL_COLOR)
     ax_dipole.set_xlabel(r"separation $r$  [$h^{-1}$ Mpc]")
     ax_dipole.legend(fontsize="small")
@@ -868,7 +869,7 @@ def make_comparison_figure(
     ax_dipole.spines["top"].set_visible(False)
     ax_dipole.spines["right"].set_visible(False)
     ax_dipole.set_title(
-        "observer frame vs. velocity frame  "
+        f"observer frame vs. velocity frame{view}  "
         f"(R_sub={cfg.sub_volume_radius:.0f} h$^{{-1}}$Mpc, "
         f"{_binning_description(cfg.shells)}, "
         f"N$_c$={results.centers.n_centers})\n"
@@ -884,20 +885,29 @@ def make_comparison_figure(
 
     # No zero reference line: with the |u_alpha| weight the obs-frame
     # monopole sits near <|u|>, not near zero (see this function's docstring).
-    ax_mono_obs.stairs(comparison.obs.monopole_norm, edges, color=_COLOR_OBS)
+    draw_shell_series(
+        ax_mono_obs, edges, comparison.obs.monopole_norm, binned=binned,
+        color=_COLOR_OBS, marker="o", linestyle="-", band_alpha=_BAND_ALPHA,
+    )
     ax_mono_obs.set_ylabel(r"$\hat\zeta_0^{obs} \simeq \langle|u|\rangle$  [km/s]", color=_COLOR_OBS)
     ax_mono_obs.tick_params(axis="y", labelcolor=_COLOR_OBS)
     ax_mono_obs.set_xlabel(r"separation $r$  [$h^{-1}$ Mpc]")
-    ax_mono_obs.set_xlim(left=0.0)
+    # twinx() shares the x-axis, so ax_mono_vel needs neither its own
+    # finish_shell_axis call nor its own set_xlim -- one call here, exactly as
+    # the pre-binned code called set_xlim(left=0.0) on ax_mono_obs alone.
+    finish_shell_axis(ax_mono_obs, edges, binned=binned)
     ax_mono_obs.grid(alpha=_GRID_ALPHA)
     ax_mono_obs.spines["top"].set_visible(False)
 
-    ax_mono_vel.stairs(comparison.vel.monopole_norm, edges, color=_COLOR_VEL)
+    draw_shell_series(
+        ax_mono_vel, edges, comparison.vel.monopole_norm, binned=binned,
+        color=_COLOR_VEL, marker="s", linestyle="-", band_alpha=_BAND_ALPHA,
+    )
     ax_mono_vel.set_ylabel(r"$\hat\zeta_0^{vel}$  [km/s]", color=_COLOR_VEL)
     ax_mono_vel.tick_params(axis="y", labelcolor=_COLOR_VEL)
     ax_mono_vel.spines["top"].set_visible(False)
     ax_mono_obs.set_title(
-        "observer frame vs. velocity frame monopole  "
+        f"observer frame vs. velocity frame monopole{view}  "
         f"(R_sub={cfg.sub_volume_radius:.0f} h$^{{-1}}$Mpc, "
         f"{_binning_description(cfg.shells)}, "
         f"N$_c$={results.centers.n_centers})",

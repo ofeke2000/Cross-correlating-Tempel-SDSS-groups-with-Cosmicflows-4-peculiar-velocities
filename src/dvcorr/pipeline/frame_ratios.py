@@ -86,6 +86,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 from dvcorr.config import volume_weighted_shell_radii
+from dvcorr.pipeline.shell_plotting import draw_shell_series, finish_shell_axis
 from dvcorr.pipeline.velocity_centered import (
     NormalizedDipole,
     _COLOR_ZERO_LINE,
@@ -221,16 +222,15 @@ class FrameRatio:
     numerator_label, denominator_label : str
     shell_edges : ndarray, shape (B + 1,)
         The numerator's and denominator's shared edges (`frame_ratio` checks
-        they match before this is built) -- the plotting abscissa for the
-        STEP rendering (CLAUDE.md hard rule 10), never assumed to be any
-        other ratio's or curve's edges: different `FrameRatio`s in one
+        they match before this is built), never assumed to be any other
+        ratio's or curve's edges: different `FrameRatio`s in one
         `frame_ratios()` tuple can legitimately sit on different ladders
         (e.g. a redshift-space curve built from a different `ShellConfig`
         than the real-space ones it is not paired against).
     shell_centers : ndarray, shape (B,)
-        `volume_weighted_shell_radii` -- retained for callers that still want
-        a point abscissa (e.g. a printed table); the figure now plots
-        against `shell_edges` instead.
+        `volume_weighted_shell_radii(shell_edges)` -- the plotting abscissa
+        (CLAUDE.md hard rule 10), the same one every other figure in the
+        package uses.
     ratio : ndarray, shape (B,)
         ``zeta_hat_num / zeta_hat_den``, every shell, poles included.
     monopole_ratio : ndarray, shape (B,)
@@ -436,6 +436,8 @@ def make_frame_ratio_figure(
     cfg: FrameRatioConfig,
     curves: tuple[FrameCurve, ...],
     ratios: tuple[FrameRatio, ...],
+    *,
+    binned: bool = False,
 ) -> DipoleFigures:
     """Two separate figures: dipole ratios, and their monopole companion.
 
@@ -446,29 +448,44 @@ def make_frame_ratio_figure(
     binning is a binning choice and never implies a log axis (house style,
     pinned by `tests/test_plot_wiring.py`).
 
-    Every ratio curve is a STEP (`ax.stairs`), held flat across each bin's
-    full width from its OWN `ratio.shell_edges[0]` (0.0 under the default
-    binning) -- CLAUDE.md hard rule 10 -- rather than a line joining points
-    at the volume-weighted radius. Different `FrameRatio`s in `ratios` are
-    NOT assumed to share one edge array (`frame_ratio` only checks a match
-    within one numerator/denominator pair, never across ratios), so each is
-    drawn against its own `shell_edges`, never a borrowed one. The connecting
-    step still BREAKS at a pole rather than running through it (a NaN in the
-    `stairs` value array leaves that one step undrawn, the same gap the old
-    line left): a step drawn to an off-scale value is a vertical stripe
-    across the panel that reads as structure and is nothing but the excluded
-    bin. Markers sit at each bin's own LOWER edge (`ratio.shell_edges[:-1]`,
-    not `ratio.shell_centers`'s volume-weighted radius) -- one abscissa per
-    panel, matching the step's own start -- and carry no additional value of
-    their own (the step already draws the value), only the categorical
-    usable-vs-pole distinction (filled vs open), which is not a measurement
-    rule 10 governs.
+    Two renderings, chosen by `binned` (CLAUDE.md hard rule 10):
 
-    DIPOLE figure: one step per ratio, with its own filled markers on shells
-    that enter the mean and OPEN markers on shells excluded by the pole
-    guard, the mean printed in the legend. The dotted line at 1 is where the
-    two frames agree; the y-limits span the usable shells only, so points at
-    a pole clip off-scale rather than compressing everything else
+    - **line view** (`binned=False`, the default): every ratio curve is a
+      LINE joining one point per shell at its OWN `ratio.shell_centers` (the
+      volume-weighted radius), never a step held flat across the bin. The
+      connecting line BREAKS at a pole rather than running through it (a NaN
+      in the y array leaves that segment undrawn): a segment drawn to an
+      off-scale value is a stripe across the panel that reads as structure
+      and is nothing but the excluded bin.
+    - **binned view** (`binned=True`): each shell is drawn as its own flat
+      segment over `[ratio.shell_edges[i], ratio.shell_edges[i+1])`, so the
+      pole break is automatic -- there is no adjacent segment for an
+      excluded shell to bleed into, and no NaN-masking is needed the way the
+      line view's `joined` array needs it. Every shell edge is drawn as a
+      faint guide line (`dvcorr.pipeline.shell_plotting.finish_shell_axis`),
+      once per ratio's own ladder since different `FrameRatio`s in `ratios`
+      are not assumed to share one (see below). Both panels' binned segments
+      go through `dvcorr.pipeline.shell_plotting.draw_shell_series`: the
+      ratio panel calls it twice per ratio, once on the usable shells
+      (`ratio.ratio` with the pole shells masked to NaN) with filled
+      markers, once on the pole shells (the complementary mask) with
+      `markerfacecolor="none"`, both at `markersize=_MARKER_SIZE` -- the
+      binned counterpart of the line view's filled-vs-open split. The
+      monopole panel needs no such split (monopoles never cross zero) and
+      goes through the primitive once.
+
+    Different `FrameRatio`s in `ratios` are NOT assumed to share one ladder
+    (`frame_ratio` only checks a match within one numerator/denominator
+    pair, never across ratios), so each is drawn against its own
+    `shell_centers` / `shell_edges`, never a borrowed one. Markers sit on
+    the same abscissa and carry only the categorical usable-vs-pole
+    distinction (filled vs open), in BOTH views.
+
+    DIPOLE figure: one curve per ratio, with its own filled markers on
+    shells that enter the mean and OPEN markers on shells excluded by the
+    pole guard, the mean printed in the legend. The dotted line at 1 is
+    where the two frames agree; the y-limits span the usable shells only, so
+    points at a pole clip off-scale rather than compressing everything else
     (`_usable_ylim`).
 
     MONOPOLE figure: the matching monopole ratios, on the same colors. This
@@ -483,35 +500,26 @@ def make_frame_ratio_figure(
     cfg : FrameRatioConfig
     curves : tuple of FrameCurve
         Only for the title's center counts; every plotted value and its
-        abscissa come from `ratios` (each carrying its own `shell_edges`).
+        abscissa come from `ratios` (each carrying its own `shell_centers`).
         May be empty (paired with an empty `ratios`) -- this function never
         indexes into `curves` directly.
     ratios : tuple of FrameRatio
+    binned : bool, default False
+        False: the line view. True: the binned lookup companion.
 
     Returns
     -------
     DipoleFigures
     """
+    view = " -- binned" if binned else ""
     fig_ratio, ax_ratio = plt.subplots(figsize=_DIPOLE_FIGSIZE)
     fig_mono, ax_mono = plt.subplots(figsize=_MONOPOLE_FIGSIZE)
 
     for i, ratio in enumerate(ratios):
         color = _RATIO_COLORS[i % len(_RATIO_COLORS)]
         marker = _MARKERS[i % len(_MARKERS)]
-        edges = ratio.shell_edges
-        lower_edges = edges[:-1]
+        r = ratio.shell_centers
 
-        # The connecting step BREAKS at a pole rather than spiking through it: a
-        # step drawn to an off-scale value is a vertical stripe across the
-        # panel that reads as structure and is nothing but the excluded bin.
-        joined = np.where(ratio.usable, ratio.ratio, np.nan)
-        ax_ratio.stairs(joined, edges, color=color, alpha=_LINE_ALPHA, zorder=2)
-        for mask, fill in ((ratio.usable, _USABLE_FILL), (~ratio.usable, _UNUSABLE_FILL)):
-            if mask.any():
-                ax_ratio.plot(
-                    lower_edges[mask], ratio.ratio[mask], marker, color=color,
-                    fillstyle=fill, ms=_MARKER_SIZE, ls="none", zorder=3,
-                )
         # The legend entry carries the number the ratio exists to produce --
         # and, where the curve crosses zero, refuses to let one averaged number
         # stand for two regimes that disagree in sign.
@@ -522,11 +530,59 @@ def make_frame_ratio_figure(
         else:
             text = (f"{ratio.label}   mean = {ratio.mean_ratio:.2f}  "
                     f"({ratio.n_used}/{ratio.n_shells} shells)")
-        ax_ratio.plot([], [], marker + "-", color=color, ms=_MARKER_SIZE, label=text)
-        ax_mono.stairs(ratio.monopole_ratio, edges, color=color, label=ratio.label)
+
+        if binned:
+            # Each shell is its own segment, so the pole break is automatic
+            # -- unlike the line view, there is no NaN-masked `joined` array
+            # to build. Usable and pole shells are two masked series through
+            # the shared primitive -- filled vs. `markerfacecolor="none"` --
+            # the binned counterpart of the line view's `fillstyle` split
+            # below. Only the usable call carries the legend label, so the
+            # ratio gets exactly one legend entry.
+            usable_ratio = np.where(ratio.usable, ratio.ratio, np.nan)
+            pole_ratio = np.where(ratio.usable, np.nan, ratio.ratio)
+            draw_shell_series(
+                ax_ratio, ratio.shell_edges, usable_ratio, binned=True,
+                color=color, marker=marker, markersize=_MARKER_SIZE, label=text,
+            )
+            draw_shell_series(
+                ax_ratio, ratio.shell_edges, pole_ratio, binned=True,
+                color=color, marker=marker, markersize=_MARKER_SIZE,
+                markerfacecolor="none",
+            )
+            finish_shell_axis(ax_ratio, ratio.shell_edges, binned=True)
+            finish_shell_axis(ax_mono, ratio.shell_edges, binned=True)
+        else:
+            # The connecting line BREAKS at a pole rather than spiking through
+            # it: a segment drawn to an off-scale point is a stripe across the
+            # panel that reads as structure and is nothing but the excluded bin.
+            joined = np.where(ratio.usable, ratio.ratio, np.nan)
+            ax_ratio.plot(r, joined, "-", color=color, alpha=_LINE_ALPHA, zorder=2)
+            for mask, fill in ((ratio.usable, _USABLE_FILL), (~ratio.usable, _UNUSABLE_FILL)):
+                if mask.any():
+                    ax_ratio.plot(
+                        r[mask], ratio.ratio[mask], marker, color=color,
+                        fillstyle=fill, ms=_MARKER_SIZE, ls="none", zorder=3,
+                    )
+            ax_ratio.plot([], [], marker + "-", color=color, ms=_MARKER_SIZE, label=text)
+
+        # Monopole panel: no pole guard here (monopoles never cross zero, see
+        # module docstring), so this is a plain series through the shared
+        # primitive, carrying its own legend label.
+        if binned:
+            draw_shell_series(
+                ax_mono, ratio.shell_edges, ratio.monopole_ratio, binned=True,
+                color=color, marker=marker, markersize=_MARKER_SIZE, label=ratio.label,
+            )
+        else:
+            ax_mono.plot(r, ratio.monopole_ratio, marker + "-", color=color,
+                         ms=_MARKER_SIZE, label=ratio.label)
 
     for ax in (ax_ratio, ax_mono):
         ax.axhline(_UNITY, color=_COLOR_ZERO_LINE, lw=_ZERO_LINE_WIDTH, ls=_UNITY_LINE_STYLE)
+        # finish_shell_axis (called per-ratio above, binned view only) already
+        # pins x=0; this is the explicit fallback for the empty-`ratios` case
+        # and reproduces the line view's original unconditional call exactly.
         ax.set_xlim(left=0.0)
         ax.set_xlabel(r"separation $r$  [$h^{-1}$ Mpc]")
         ax.grid(alpha=_GRID_ALPHA)
@@ -540,14 +596,14 @@ def make_frame_ratio_figure(
     ax_ratio.set_ylim(*_usable_ylim(ratios, "ratio"))
     ax_ratio.set_ylabel(r"$\hat\zeta_1$ ratio", color=_LABEL_COLOR)
     ax_ratio.set_title(
-        f"frame-to-frame ratios of the velocity-centered dipole   {title_info}\n"
+        f"frame-to-frame ratios of the velocity-centered dipole{view}   {title_info}\n"
         f"open markers: denominator below {cfg.min_denominator_sigma:g}$\\sigma$ "
         "-- a pole, plotted but not averaged",
         fontsize=9,
     )
     ax_mono.set_ylabel(r"$\hat\zeta_0$ ratio", color=_LABEL_COLOR)
     ax_mono.set_title(
-        f"frame-to-frame ratios of the monopole   {title_info}", fontsize=9,
+        f"frame-to-frame ratios of the monopole{view}   {title_info}", fontsize=9,
     )
     # An empty `ratios` (paired with empty `curves`) has nothing to put in a
     # legend -- `ncol=len(ratios)` would be `ncol=0`, which matplotlib

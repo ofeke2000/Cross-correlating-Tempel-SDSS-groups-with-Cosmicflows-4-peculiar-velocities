@@ -33,12 +33,11 @@ import matplotlib
 
 matplotlib.use("Agg")
 
-import matplotlib.patches
 import numpy as np
 import pytest
 
 from dvcorr import conventions
-from dvcorr.config import CATALOG_MVIR12, SPACING_LOG, CatalogConfig, ShellConfig
+from dvcorr.config import CATALOG_MVIR12, SPACING_LOG, CatalogConfig, ShellConfig, volume_weighted_shell_radii
 from dvcorr.pipeline.catalog_conversion import NUM_OF_SUBHALOS_UNKNOWN
 from dvcorr.pipeline.halo_class_comparison import (
     CENTER_CLASS_PARENT,
@@ -429,8 +428,8 @@ class TestEndToEnd:
 
     @staticmethod
     def _zero_bin_cfg(**overrides) -> HaloClassRunConfig:
-        """`_tiny_cfg`, but with the `[0, min_radius)` bin included, so a
-        step's `edges[0] == 0.0` is actually exercised."""
+        """`_tiny_cfg`, but with the `[0, min_radius)` bin included, so an
+        innermost edge of exactly 0.0 is actually exercised."""
         params = dict(
             shells=ShellConfig(
                 min_radius=2.0, max_radius=10.0, n_bins=4,
@@ -440,58 +439,40 @@ class TestEndToEnd:
         params.update(overrides)
         return _tiny_cfg(**params)
 
-    def test_frame_contrast_figure_draws_steps_from_each_bins_lower_edge(self) -> None:
-        """CLAUDE.md hard rule 10: every per-class curve is a STEP
-        (`ax.stairs`), held flat across each bin's full width from
-        `edges[0]` (0.0 under a zero-bin binning) -- not a point-to-point
-        line at the volume-weighted radius. The class marker moves with it,
-        to each bin's own LOWER edge rather than `shell_centers` -- two
-        abscissae on one panel is exactly the failure the step removes.
+    @staticmethod
+    def _assert_lines_at_r_eff(ax_dipole, cfg: HaloClassRunConfig, n_series: int) -> None:
+        """CLAUDE.md hard rule 10: every per-class curve is a `Line2D`
+        through one point per shell at the volume-weighted radius
+        (`volume_weighted_shell_radii`), never a step (`ax.stairs`, a
+        `StepPatch`) held flat across the bin; the class marker rides on
+        that same line, so there is one abscissa per panel. The x-axis is
+        pinned to start at r = 0 regardless.
         """
+        edges = cfg.shells.shell_edges
+        assert edges[0] == 0.0
+        r_eff = volume_weighted_shell_radii(edges)
+
+        assert not ax_dipole.patches, "a stairs rendering is the regression this pins"
+        curves = [
+            line for line in ax_dipole.get_lines()
+            if len(line.get_xdata()) == r_eff.size
+        ]
+        assert len(curves) == n_series * len(cfg.center_classes)
+        for line in curves:
+            np.testing.assert_allclose(line.get_xdata(), r_eff)
+            assert line.get_linestyle() == "-"
+            assert line.get_marker() != "None"
+        assert ax_dipole.get_xlim()[0] == pytest.approx(0.0)
+
+    def test_frame_contrast_figure_draws_lines_at_the_volume_weighted_radius(self) -> None:
         cfg = self._zero_bin_cfg()
         figures = make_frame_class_contrast_figure(cfg, self._frame_runs(cfg))
-        ax_dipole = figures.dipole.axes[0]
+        self._assert_lines_at_r_eff(figures.dipole.axes[0], cfg, n_series=2)  # {obs, vel}
 
-        steps = [
-            p for p in ax_dipole.patches if isinstance(p, matplotlib.patches.StepPatch)
-        ]
-        assert len(steps) == 2 * len(cfg.center_classes)  # {obs, vel} x classes
-        edges = cfg.shells.shell_edges
-        assert edges[0] == 0.0
-        for step in steps:
-            np.testing.assert_array_equal(step.get_data().edges, edges)
-
-        lower_edges = edges[:-1]
-        marker_lines = [
-            line for line in ax_dipole.get_lines()
-            if line.get_linestyle() == "None" and len(line.get_xdata()) > 0
-        ]
-        assert marker_lines, "expected at least one class-marker series"
-        for line in marker_lines:
-            np.testing.assert_array_equal(np.sort(line.get_xdata()), np.sort(lower_edges))
-
-    def test_redshift_contrast_figure_draws_steps_from_each_bins_lower_edge(self) -> None:
+    def test_redshift_contrast_figure_draws_lines_at_the_volume_weighted_radius(self) -> None:
         cfg = self._zero_bin_cfg()
         figures = make_redshift_class_contrast_figure(cfg, self._redshift_runs(cfg))
-        ax_dipole = figures.dipole.axes[0]
-
-        steps = [
-            p for p in ax_dipole.patches if isinstance(p, matplotlib.patches.StepPatch)
-        ]
-        assert len(steps) == 2 * len(cfg.center_classes)  # {real, redshift} x classes
-        edges = cfg.shells.shell_edges
-        assert edges[0] == 0.0
-        for step in steps:
-            np.testing.assert_array_equal(step.get_data().edges, edges)
-
-        lower_edges = edges[:-1]
-        marker_lines = [
-            line for line in ax_dipole.get_lines()
-            if line.get_linestyle() == "None" and len(line.get_xdata()) > 0
-        ]
-        assert marker_lines, "expected at least one class-marker series"
-        for line in marker_lines:
-            np.testing.assert_array_equal(np.sort(line.get_xdata()), np.sort(lower_edges))
+        self._assert_lines_at_r_eff(figures.dipole.axes[0], cfg, n_series=2)  # {real, redshift}
 
     def test_contrast_figures_plot_one_curve_per_class_and_series(self) -> None:
         """Four dipole curves: {two series} x {two classes}."""
@@ -517,6 +498,124 @@ class TestEndToEnd:
         cfg = _tiny_cfg(center_classes=(CENTER_CLASS_PARENT,))
         figures = make_frame_class_contrast_figure(cfg, self._frame_runs(cfg))
         assert len(figures.dipole.axes[0].get_legend().get_texts()) == 2
+
+
+def _dipole_line_values(ax, n_shells: int) -> list[np.ndarray]:
+    """The per-shell y-values of every signal line on a dipole axis, in draw
+    order -- what `_plot_class_curves` fed `draw_shell_series` with, and
+    therefore what the binned segments must reproduce.
+
+    Filtered by exact length (one point per shell), the same discriminator
+    `TestEndToEnd._assert_lines_at_r_eff` uses: `axhline(0)` always has two
+    points regardless of `n_shells` and would otherwise slip through.
+    """
+    return [
+        np.asarray(line.get_ydata())
+        for line in ax.get_lines()
+        if len(line.get_xdata()) == n_shells
+    ]
+
+
+class TestBinnedView:
+    """`binned=True` on the two class-contrast figures (CLAUDE.md hard rule
+    10, amended): each series drawn as a flat segment per shell instead of a
+    line through r_eff, built from the identical arrays.
+    """
+
+    def test_frame_contrast_binned_matches_line_structure_and_values(self) -> None:
+        cfg = TestEndToEnd._zero_bin_cfg()
+        runs = TestEndToEnd._frame_runs(cfg)
+        edges = cfg.shells.shell_edges
+
+        line_figs = make_frame_class_contrast_figure(cfg, runs)
+        binned_figs = make_frame_class_contrast_figure(cfg, runs, binned=True)
+
+        # Same figure/axes structure as the line view.
+        assert len(binned_figs.dipole.axes) == len(line_figs.dipole.axes) == 1
+        assert len(binned_figs.monopole.axes) == len(line_figs.monopole.axes) == 2
+        assert (
+            len(binned_figs.dipole.axes[0].get_legend().get_texts())
+            == len(line_figs.dipole.axes[0].get_legend().get_texts())
+        )
+
+        line_values = _dipole_line_values(line_figs.dipole.axes[0], n_shells=edges.size - 1)
+        assert len(line_values) == 2 * len(cfg.center_classes)  # {obs, vel} x classes
+
+        from matplotlib.collections import LineCollection
+
+        segment_groups = [
+            c for c in binned_figs.dipole.axes[0].collections
+            if isinstance(c, LineCollection)
+        ]
+        assert len(segment_groups) == len(line_values)
+
+        # Segments span the shell edges at the line view's own values -- the
+        # binned view is the line view with the geometry changed, not a
+        # second computation.
+        for collection, values in zip(segment_groups, line_values):
+            segments = np.asarray(collection.get_segments())
+            np.testing.assert_allclose(segments[:, 0, 0], edges[:-1])
+            np.testing.assert_allclose(segments[:, 1, 0], edges[1:])
+            np.testing.assert_allclose(segments[:, 0, 1], values)
+            np.testing.assert_allclose(segments[:, 1, 1], values)
+
+        # x starts at r = 0 in both views (hard rule 10).
+        assert binned_figs.dipole.axes[0].get_xlim()[0] == pytest.approx(0.0)
+        assert binned_figs.monopole.axes[0].get_xlim()[0] == pytest.approx(0.0)
+
+    def test_redshift_contrast_binned_matches_line_structure_and_values(self) -> None:
+        cfg = TestEndToEnd._zero_bin_cfg()
+        runs = TestEndToEnd._redshift_runs(cfg)
+        edges = cfg.shells.shell_edges
+
+        line_figs = make_redshift_class_contrast_figure(cfg, runs)
+        binned_figs = make_redshift_class_contrast_figure(cfg, runs, binned=True)
+
+        assert len(binned_figs.dipole.axes) == len(line_figs.dipole.axes) == 1
+        assert len(binned_figs.monopole.axes) == len(line_figs.monopole.axes) == 1
+
+        line_values = _dipole_line_values(line_figs.dipole.axes[0], n_shells=edges.size - 1)
+        assert len(line_values) == 2 * len(cfg.center_classes)  # {real, redshift} x classes
+
+        from matplotlib.collections import LineCollection
+
+        segment_groups = [
+            c for c in binned_figs.dipole.axes[0].collections
+            if isinstance(c, LineCollection)
+        ]
+        assert len(segment_groups) == len(line_values)
+
+        for collection, values in zip(segment_groups, line_values):
+            segments = np.asarray(collection.get_segments())
+            np.testing.assert_allclose(segments[:, 0, 0], edges[:-1])
+            np.testing.assert_allclose(segments[:, 1, 0], edges[1:])
+            np.testing.assert_allclose(segments[:, 0, 1], values)
+            np.testing.assert_allclose(segments[:, 1, 1], values)
+
+        assert binned_figs.dipole.axes[0].get_xlim()[0] == pytest.approx(0.0)
+        assert binned_figs.monopole.axes[0].get_xlim()[0] == pytest.approx(0.0)
+
+    def test_binned_view_titles_are_marked(self) -> None:
+        """The " -- binned" title suffix (`velocity_centered.make_figure`'s
+        convention, mirrored here) is the cheap way to tell a saved PNG apart
+        from its line-view sibling."""
+        cfg = TestEndToEnd._zero_bin_cfg()
+        runs = TestEndToEnd._frame_runs(cfg)
+        binned_figs = make_frame_class_contrast_figure(cfg, runs, binned=True)
+        line_figs = make_frame_class_contrast_figure(cfg, runs)
+        assert "-- binned" in binned_figs.dipole.axes[0].get_title()
+        assert "-- binned" not in line_figs.dipole.axes[0].get_title()
+
+        def test_binned_view_titles_are_marked(self) -> None:
+            """The " -- binned" title suffix (`velocity_centered.make_figure`'s
+            convention, mirrored here) is the cheap way to tell a saved PNG
+            apart from its line-view sibling."""
+            cfg = TestEndToEnd._zero_bin_cfg()
+            runs = TestEndToEnd._frame_runs(cfg)
+            binned_figs = make_frame_class_contrast_figure(cfg, runs, binned=True)
+            line_figs = make_frame_class_contrast_figure(cfg, runs)
+            assert "-- binned" in binned_figs.dipole.axes[0].get_title()
+            assert "-- binned" not in line_figs.dipole.axes[0].get_title()
 
 
 def test_every_named_class_has_a_marker_and_a_fill() -> None:

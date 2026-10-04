@@ -93,6 +93,10 @@ multipoles relate to the pipeline's by `conventions.nusser_multipole_sign`.
   catalogs, streamed and cache-and-skip; both catalogs get one shared schema.
 - `mass_diagnostics.py` **[done]** — the mass funnel: log₁₀(m_vir) distribution of the
   halos surviving each selection stage, as a printed table and a two-panel figure.
+- `shell_plotting.py` **[done]** — the one drawing primitive for per-shell curves,
+  `draw_shell_series` + `finish_shell_axis`, in both renderings: the line through r_eff and
+  its binned lookup companion (hard rule 10). Every figure builder's `binned` flag routes
+  through it.
 - `velocity_centered.py` **[done]** — the shared base: load/carve, candidate drawing,
   shared-center selection (`SharedCenterSet`/`select_shared_centers`), running
   `velocity_centered_shell_dipole`, normalization (`NormalizedDipole`,
@@ -199,8 +203,11 @@ none contain algorithmic content (see Cross-cutting contracts below).
   unguarded counterpart, the sign-branch split, and the figure's linear axes, legend means
   and broken-at-a-pole connecting line.
 - `test_plot_wiring.py` **[done]** — pins the log/linear axis-scale wiring, the
-  `DipoleFigures` dipole/monopole split (hard rule 6), and the step-rendering,
-  starts-at-r=0 contract (hard rule 10).
+  `DipoleFigures` dipole/monopole split (hard rule 6), and the line-through-r_eff
+  rendering and starts-at-r=0 axis contract (hard rule 10).
+- `test_shell_plotting.py` **[done]** — the binned view: one flat segment per shell over
+  its own edges at the line view's value, r_eff marked, NaN as a gap, the edge guides, and
+  `make_figure(binned=True)` drawing the same values as the line view.
 - `test_default_shells.py` **[done]** — pins the default radial binning (hard rule 10)
   on `RunConfig().shells.shell_edges`.
 - `__init__.py` — present so `from tests.test_geometry import …` resolves.

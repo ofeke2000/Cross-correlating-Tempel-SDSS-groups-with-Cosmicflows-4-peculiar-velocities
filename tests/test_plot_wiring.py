@@ -15,10 +15,10 @@ the `SPACING_LOG` path and leave the `SPACING_LINEAR` figures looking correct.
 
 Also pins CLAUDE.md hard rules 6 and 10: `make_figure` returns a
 `DipoleFigures(dipole, monopole)` -- two separate `Figure` objects, never one
-merged two-panel image (rule 6) -- and every curve is a STEP
-(`ax.stairs`/`ax.fill_between(..., step="post")`) held flat across each
-bin's full width from `result.shell_edges[0]`, rather than a point plotted at
-the volume-weighted radius (rule 10).
+merged two-panel image (rule 6) -- and every curve is a LINE through one
+point per shell at the volume-weighted radius
+(`volume_weighted_shell_radii`), never a step held flat across the bin, on
+an x-axis pinned to start at r = 0 (rule 10).
 
 Backend discipline: this test module calls `matplotlib.use("Agg")` itself,
 before importing `dvcorr.pipeline.velocity_centered` (which imports
@@ -34,13 +34,12 @@ import matplotlib
 
 matplotlib.use("Agg")
 
-import matplotlib.patches
 import matplotlib.pyplot as plt
 import numpy as np
 import pytest
 
 from dvcorr import conventions
-from dvcorr.config import SPACING_LINEAR, SPACING_LOG, ShellConfig
+from dvcorr.config import SPACING_LINEAR, SPACING_LOG, ShellConfig, volume_weighted_shell_radii
 from dvcorr.estimators.shell_dipole import velocity_centered_shell_dipole
 from dvcorr.pipeline.velocity_centered import (
     DipoleFigures,
@@ -50,7 +49,6 @@ from dvcorr.pipeline.velocity_centered import (
     box_number_density,
     make_figure,
     normalize_result,
-    step_band,
 )
 
 _N_BAR_ARBITRARY = 1.0e-3  # tracers per (h^-1 Mpc)^3 -- values are irrelevant to this test
@@ -172,10 +170,11 @@ def test_make_figure_plots_every_shell_including_the_zero_bin():
 
     `shell_edges[0] == 0` is the one thing a log AXIS could not have
     accommodated; on the cartesian axes this pipeline actually uses it is
-    ordinary. This test pins that the step curve carries every shell -- i.e.
-    that B = n_bins + 1 shells reach the plot, not the n_bins the config's
-    `n_bins` field names -- by reading the edges straight off the plotted
-    `StepPatch` (`ax.stairs`'s artist), rather than off a derived abscissa.
+    ordinary, and the [0, 1) bin's abscissa is the finite, strictly positive
+    `volume_weighted_shell_radii` value 0.75 (3R/4 for a full sphere). This
+    test pins that the figure carries a point for it -- i.e. that
+    B = n_bins + 1 shells reach the plot, not the n_bins the config's
+    `n_bins` field names.
     """
     shells = _zero_bin_shells()
     cfg = RunConfig(sub_volume_radius=conventions.MAX_ANALYSIS_RADIUS, shells=shells)
@@ -188,12 +187,10 @@ def test_make_figure_plots_every_shell_including_the_zero_bin():
     ax_dipole = figures.dipole.axes[0]
 
     assert ax_dipole.get_xscale() == "linear"
-    signal_step = ax_dipole.patches[0]
-    assert isinstance(signal_step, matplotlib.patches.StepPatch)
-    edges_plotted = signal_step.get_data().edges
-    # B + 1 edges for B = n_bins + 1 shells.
-    assert len(edges_plotted) == shells.n_bins + 2
-    np.testing.assert_array_equal(edges_plotted, result.shell_edges)
+    x_plotted = ax_dipole.lines[0].get_xdata()
+    assert len(x_plotted) == shells.n_bins + 1
+    assert x_plotted[0] == pytest.approx(0.75 * shells.min_radius)
+    np.testing.assert_allclose(x_plotted, volume_weighted_shell_radii(result.shell_edges))
 
 
 # ---------------------------------------------------------------------------
@@ -201,18 +198,13 @@ def test_make_figure_plots_every_shell_including_the_zero_bin():
 # ---------------------------------------------------------------------------
 
 
-def test_dipole_and_monopole_steps_both_start_at_the_exact_origin():
-    """Both figures' step curves start at r = 0 under the default zero-bin
-    binning -- a SYMMETRIC statement, unlike the point-plus-anchor rendering
-    this replaces (CLAUDE.md hard rule 10). There, only the dipole panel was
-    drawn into an exact r = 0 IDENTITY point (`anchor_dipole_at_origin`,
-    since a dipole needs a direction and coincident points define none) while
-    the monopole panel started at the innermost shell's volume-weighted
-    radius, strictly positive. Now `result.shell_edges[0] == 0.0` is a
-    property of the BINNING (`include_zero_bin=True`) rather than of the
-    dipole's own definition, and it applies equally to both curves: each is a
-    step (`ax.stairs`) held flat from `shell_edges[0]` to `shell_edges[1]` at
-    the bin's own measured value, not an asserted identity.
+def test_dipole_and_monopole_curves_are_lines_at_r_eff_on_axes_that_start_at_zero():
+    """CLAUDE.md hard rule 10, both halves. The binning is how the estimator
+    accumulates, not how the figure is drawn: each curve is a `Line2D`
+    through one point per shell at the volume-weighted radius, never a step
+    (`ax.stairs`, a `StepPatch`) held flat across the bin. Independently of
+    where that first abscissa falls (0.75 * min_radius here, strictly
+    positive), both figures' x-axes are pinned to start at r = 0.
     """
     shells = _zero_bin_shells()
     cfg = RunConfig(sub_volume_radius=conventions.MAX_ANALYSIS_RADIUS, shells=shells)
@@ -222,23 +214,19 @@ def test_dipole_and_monopole_steps_both_start_at_the_exact_origin():
     ax_dipole = figures.dipole.axes[0]
     ax_mono = figures.monopole.axes[0]
 
-    dipole_step = ax_dipole.patches[0]
-    mono_step = ax_mono.patches[0]
-    assert isinstance(dipole_step, matplotlib.patches.StepPatch)
-    assert isinstance(mono_step, matplotlib.patches.StepPatch)
+    # No step artists anywhere: a stairs rendering is the regression this pins.
+    assert not ax_dipole.patches
+    assert not ax_mono.patches
 
-    assert dipole_step.get_data().edges[0] == 0.0
-    assert mono_step.get_data().edges[0] == 0.0
+    r_eff = volume_weighted_shell_radii(result.shell_edges)
+    for ax in (ax_dipole, ax_mono):
+        curves = [line for line in ax.get_lines() if len(line.get_xdata()) == r_eff.size]
+        assert curves, "expected at least one curve with one point per shell"
+        for line in curves:
+            np.testing.assert_allclose(line.get_xdata(), r_eff)
 
     # The x-axis lower limit is pinned to 0 explicitly, independent of the
-    # binning happening to start there.
+    # innermost abscissa being strictly positive.
+    assert r_eff[0] > 0.0
     assert ax_dipole.get_xlim()[0] == pytest.approx(0.0)
     assert ax_mono.get_xlim()[0] == pytest.approx(0.0)
-
-
-def test_step_band_refuses_edges_with_no_bin():
-    """B = 0 (edges.size < 2) must raise, not crash on `low[-1]` of an empty array."""
-    fig, ax = plt.subplots()
-    with pytest.raises(ValueError, match="at least two entries"):
-        step_band(ax, np.array([0.0]), np.array([]), np.array([]))
-    plt.close(fig)

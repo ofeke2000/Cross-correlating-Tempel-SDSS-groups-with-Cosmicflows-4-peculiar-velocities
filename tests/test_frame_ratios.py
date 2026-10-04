@@ -440,40 +440,43 @@ def test_the_table_names_the_cancellation_when_a_ratio_changes_sign():
     assert "2.000 (positive)" in text
 
 
-def test_the_connecting_step_breaks_at_a_pole_instead_of_spiking_through_it():
-    """A step drawn to an off-scale value is a stripe that reads as structure.
+def _connecting_lines(ax, n_points: int) -> list:
+    """The solid point-to-point `Line2D` per ratio, in `ratios` order --
+    never a `StepPatch` (CLAUDE.md hard rule 10: lines, not steps)."""
+    assert not ax.patches, "a stairs rendering is the regression this pins"
+    return [line for line in ax.get_lines()
+            if line.get_linestyle() == "-" and len(line.get_xdata()) == n_points]
 
-    CLAUDE.md hard rule 10: the connecting curve is now a STEP
-    (`ax.stairs`, a `StepPatch`), not a point-to-point `Line2D` -- one patch
-    per ratio, in the same order `ratios` was given.
-    """
+
+def test_the_connecting_line_breaks_at_a_pole_instead_of_spiking_through_it():
+    """A segment drawn to an off-scale point is a stripe that reads as structure."""
     curves = _figure_curves()
     cfg = FrameRatioConfig()
     ratios = frame_ratios(cfg, curves)
     figures = make_frame_ratio_figure(cfg, curves, ratios)
 
-    steps = figures.dipole.axes[0].patches
-    assert len(steps) == len(ratios), "expected one connecting step per ratio"
-    for ratio, step in zip(ratios, steps):
-        values = np.asarray(step.get_data().values, dtype=float)
-        np.testing.assert_array_equal(np.isnan(values), ~ratio.usable)
+    joined = _connecting_lines(figures.dipole.axes[0], N_BINS)
+    assert len(joined) == len(ratios), "expected one connecting line per ratio"
+    for ratio, line in zip(ratios, joined):
+        ydata = np.asarray(line.get_ydata(), dtype=float)
+        np.testing.assert_array_equal(np.isnan(ydata), ~ratio.usable)
     plt.close(figures.dipole)
     plt.close(figures.monopole)
 
 
 # ---------------------------------------------------------------------------
-# Per-ratio edges (each FrameRatio carries its own, never a borrowed one)
+# Per-ratio abscissa (each FrameRatio carries its own, never a borrowed one)
 # ---------------------------------------------------------------------------
 
 
-def test_the_figure_draws_each_ratio_on_its_own_edges_not_the_first_curves():
-    """A ratio not involving `curves[0]` must be drawn on ITS OWN `shell_edges`.
+def test_the_figure_draws_each_ratio_on_its_own_radii_not_the_first_curves():
+    """A ratio not involving `curves[0]` must be drawn on ITS OWN `shell_centers`.
 
     `frame_ratio` only checks a match WITHIN one numerator/denominator pair,
     never across different ratios, so two `FrameRatio`s handed to the figure
     together may legitimately sit on different ladders (e.g. a redshift-space
     curve built from a different `ShellConfig`). The figure must read each
-    ratio's edges off the ratio itself, never off `curves[0]`.
+    ratio's abscissa off the ratio itself, never off `curves[0]`.
     """
     edges_a = np.array([0.0, 2.0, 5.0, 10.0, 20.0])
     edges_b = np.array([0.0, 3.0, 6.0, 12.0, 24.0])
@@ -488,10 +491,10 @@ def test_the_figure_draws_each_ratio_on_its_own_edges_not_the_first_curves():
         FrameRatioConfig(), (num_a, den_a, num_b, den_b), (ratio_a, ratio_b)
     )
 
-    steps = figures.dipole.axes[0].patches
-    assert len(steps) == 2
-    np.testing.assert_array_equal(steps[0].get_data().edges, edges_a)
-    np.testing.assert_array_equal(steps[1].get_data().edges, edges_b)
+    lines = _connecting_lines(figures.dipole.axes[0], edges_a.size - 1)
+    assert len(lines) == 2
+    np.testing.assert_allclose(lines[0].get_xdata(), volume_weighted_shell_radii(edges_a))
+    np.testing.assert_allclose(lines[1].get_xdata(), volume_weighted_shell_radii(edges_b))
     plt.close(figures.dipole)
     plt.close(figures.monopole)
 
@@ -506,16 +509,173 @@ def test_the_figure_builds_with_no_ratios_at_all():
     """
     figures = make_frame_ratio_figure(FrameRatioConfig(), (), ())
     assert figures.dipole is not figures.monopole
-    assert len(figures.dipole.axes[0].patches) == 0
+    # Only the unity reference line (an unlabeled axhline) is drawn.
+    assert all(line.get_label().startswith("_") for line in figures.dipole.axes[0].get_lines())
     plt.close(figures.dipole)
     plt.close(figures.monopole)
 
 
-def test_markers_sit_at_the_bins_lower_edge_not_the_volume_weighted_radius():
+# ---------------------------------------------------------------------------
+# Binned view (CLAUDE.md hard rule 10's binned companion)
+# ---------------------------------------------------------------------------
+
+
+def test_binned_figure_builds_with_the_same_figure_and_axes_shape_as_the_line_view():
+    curves = _figure_curves()
+    cfg = FrameRatioConfig()
+    ratios = frame_ratios(cfg, curves)
+    line = make_frame_ratio_figure(cfg, curves, ratios, binned=False)
+    binned = make_frame_ratio_figure(cfg, curves, ratios, binned=True)
+
+    assert binned.dipole is not binned.monopole
+    assert len(binned.dipole.axes) == len(line.dipole.axes) == 1
+    assert len(binned.monopole.axes) == len(line.monopole.axes) == 1
+    plt.close(line.dipole)
+    plt.close(line.monopole)
+    plt.close(binned.dipole)
+    plt.close(binned.monopole)
+
+
+def test_binned_figure_segments_span_each_shells_edges_at_the_line_views_value():
+    """Each shell's binned segment must be a flat horizontal line at exactly
+    the value the line view plots for that shell, spanning that shell's own
+    `[r_lo, r_hi)` -- the binned view is the line view's data with the
+    geometry changed, never a second computation (`shell_plotting`'s module
+    docstring).
+
+    The ratio panel draws each ratio through TWO `draw_shell_series` calls
+    (usable shells masked to NaN off the pole shells, and vice versa -- the
+    binned counterpart of the line view's filled-vs-open marker split), so
+    each ratio now owns two `hlines` collections rather than one; combined,
+    every shell must still be carried by exactly one of the two at its exact
+    edges and value.
+    """
+    curves = _figure_curves()
+    cfg = FrameRatioConfig()
+    ratios = frame_ratios(cfg, curves)
+    figures = make_frame_ratio_figure(cfg, curves, ratios, binned=True)
+    ax = figures.dipole.axes[0]
+
+    segments = [
+        c for c in ax.collections
+        if getattr(c, "get_segments", None) is not None and len(c.get_segments()) == N_BINS
+    ]
+    assert len(segments) == 2 * len(ratios), "expected two hlines collections per ratio"
+
+    for i, ratio in enumerate(ratios):
+        usable_segs = segments[2 * i].get_segments()
+        pole_segs = segments[2 * i + 1].get_segments()
+        for shell in range(N_BINS):
+            seg = usable_segs[shell] if len(usable_segs[shell]) else pole_segs[shell]
+            assert len(seg) == 2, f"shell {shell} of {ratio.label!r} drawn by neither call"
+            (x0, y0), (x1, y1) = seg
+            assert x0 == pytest.approx(ratio.shell_edges[shell])
+            assert x1 == pytest.approx(ratio.shell_edges[shell + 1])
+            assert y0 == pytest.approx(ratio.ratio[shell])
+            assert y1 == pytest.approx(ratio.ratio[shell])
+    plt.close(figures.dipole)
+    plt.close(figures.monopole)
+
+
+def test_binned_figure_still_distinguishes_usable_from_pole_markers():
+    """The binned companion keeps the same filled-vs-open marker split the
+    line view uses for the pole guard (module docstring: "each shell is its
+    own segment, so the pole break is automatic", but the usable/unusable
+    distinction on the markers is preserved regardless).
+
+    The binned view draws this split through `draw_shell_series`'s
+    `markerfacecolor` (open = ``"none"``) rather than the line view's
+    `fillstyle`, since that is the knob the shared primitive exposes.
+    """
+    curves = _figure_curves()
+    cfg = FrameRatioConfig()
+    ratios = frame_ratios(cfg, curves)
+    figures = make_frame_ratio_figure(cfg, curves, ratios, binned=True)
+
+    facecolors = {
+        line.get_markerfacecolor() for line in figures.dipole.axes[0].get_lines()
+        if line.get_linestyle() == "None" and len(line.get_xdata()) > 0
+    }
+    assert "none" in facecolors
+    assert any(fc != "none" for fc in facecolors)
+    assert any(not r.usable.all() for r in ratios), "fixture must exercise a pole"
+    plt.close(figures.dipole)
+    plt.close(figures.monopole)
+
+
+def test_binned_figure_x_axis_starts_at_zero():
+    curves = _figure_curves()
+    cfg = FrameRatioConfig()
+    ratios = frame_ratios(cfg, curves)
+    figures = make_frame_ratio_figure(cfg, curves, ratios, binned=True)
+
+    assert figures.dipole.axes[0].get_xlim()[0] == pytest.approx(0.0)
+    assert figures.monopole.axes[0].get_xlim()[0] == pytest.approx(0.0)
+    plt.close(figures.dipole)
+    plt.close(figures.monopole)
+
+
+def test_binned_figure_draws_shell_edge_guides():
+    """The binned view marks every shell edge as a faint vertical guide
+    (`shell_plotting.finish_shell_axis`); the line view carries only its
+    own dotted unity reference line (also styled ":"), none of these guides.
+    """
+    curves = _figure_curves()
+    cfg = FrameRatioConfig()
+    ratios = frame_ratios(cfg, curves)
+    line = make_frame_ratio_figure(cfg, curves, ratios, binned=False)
+    binned = make_frame_ratio_figure(cfg, curves, ratios, binned=True)
+
+    def _dotted_lines(fig):
+        return [ln for ln in fig.axes[0].get_lines() if ln.get_linestyle() == ":"]
+
+    n_line = len(_dotted_lines(line.dipole))
+    n_binned = len(_dotted_lines(binned.dipole))
+    # The line view has exactly the one dotted unity-reference axhline; the
+    # binned view has that SAME line plus one axvline guide per shell edge,
+    # per ratio (edges.size = N_BINS + 1).
+    assert n_line == 1
+    assert n_binned == n_line + len(ratios) * (N_BINS + 1)
+    plt.close(line.dipole)
+    plt.close(line.monopole)
+    plt.close(binned.dipole)
+    plt.close(binned.monopole)
+
+
+def test_binned_figure_with_no_ratios_does_not_crash():
+    figures = make_frame_ratio_figure(FrameRatioConfig(), (), (), binned=True)
+    assert figures.dipole is not figures.monopole
+    plt.close(figures.dipole)
+    plt.close(figures.monopole)
+
+
+def test_line_view_output_is_unchanged_by_the_binned_parameter_existing():
+    """`binned=False` (the default) must reproduce the pre-existing line-view
+    figure exactly: same connecting-line data, same legend text, same y-limits.
+    """
+    curves = _figure_curves()
+    cfg = FrameRatioConfig()
+    ratios = frame_ratios(cfg, curves)
+    explicit = make_frame_ratio_figure(cfg, curves, ratios, binned=False)
+    default = make_frame_ratio_figure(cfg, curves, ratios)
+
+    joined_explicit = _connecting_lines(explicit.dipole.axes[0], N_BINS)
+    joined_default = _connecting_lines(default.dipole.axes[0], N_BINS)
+    assert len(joined_explicit) == len(joined_default) == len(ratios)
+    for a, b in zip(joined_explicit, joined_default):
+        np.testing.assert_array_equal(a.get_ydata(), b.get_ydata())
+    assert explicit.dipole.axes[0].get_ylim() == default.dipole.axes[0].get_ylim()
+    plt.close(explicit.dipole)
+    plt.close(explicit.monopole)
+    plt.close(default.dipole)
+    plt.close(default.monopole)
+
+
+def test_markers_sit_at_the_volume_weighted_radius_not_the_bins_lower_edge():
     """One abscissa per panel (CLAUDE.md hard rule 10): the usable/pole
-    markers must sit where the step starts (`shell_edges[:-1]`), not at
-    `shell_centers`'s volume-weighted radius -- two abscissae in one panel
-    is exactly the failure the step rendering was meant to remove.
+    markers must sit on the connecting line's own abscissa,
+    `shell_centers`'s volume-weighted radius -- not at the bin's lower edge,
+    where the step rendering this replaces put them.
     """
     num = _curve("obs", [40.0, 40.0, 40.0, 40.0])
     den = _curve("z", [20.0, 20.0, -0.5, 20.0], sem=[1.0] * N_BINS)
@@ -533,6 +693,6 @@ def test_markers_sit_at_the_bins_lower_edge_not_the_volume_weighted_radius():
     ]
     assert marker_lines, "expected at least one usable/pole marker series"
     all_marker_x = np.sort(np.concatenate([line.get_xdata() for line in marker_lines]))
-    np.testing.assert_array_equal(all_marker_x, np.sort(lower_edges))
+    np.testing.assert_allclose(all_marker_x, np.sort(ratio.shell_centers))
     plt.close(figures.dipole)
     plt.close(figures.monopole)

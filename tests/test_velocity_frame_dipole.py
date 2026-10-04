@@ -20,11 +20,24 @@ center set, row-aligned; the null tests for both frames (an uncorrelated
 density field, and the pipeline's random-axis null on a genuine signal);
 binning/empty-input/input-validation mechanics mirroring the observer-frame
 test file; and the `per_center_axis_angle` diagnostic's shape, range, and a
-hand-checked case.
+hand-checked case. The final section covers the two-frame comparison
+figures (`make_comparison_figure`, CLAUDE.md hard rule 10's binned
+companion) built on a small `run_both_frames` fixture.
+
+Backend discipline: `matplotlib.use("Agg")` here, before importing
+`dvcorr.pipeline.velocity_frame_comparison` (which imports
+`matplotlib.pyplot` at module level via `dvcorr.pipeline.velocity_centered`
+but never selects a backend), exactly as `tests/test_plot_wiring.py` and
+`tests/test_frame_ratios.py` document.
 """
 
 from __future__ import annotations
 
+import matplotlib
+
+matplotlib.use("Agg")
+
+import matplotlib.pyplot as plt
 import numpy as np
 import pytest
 
@@ -37,12 +50,16 @@ from dvcorr.estimators.shell_dipole import (
 )
 from dvcorr.estimators.velocity_frame_dipole import velocity_frame_shell_dipole
 from dvcorr.pipeline.velocity_centered import (
+    DipoleFigures,
+    box_number_density,
     matched_gaussian_sample,
     null_realization_seeds,
 )
 from dvcorr.pipeline.velocity_frame_comparison import (
     ComparisonRunConfig,
     gaussian_velocity_null_dipoles,
+    make_comparison_figure,
+    normalize_comparison,
     random_axis_null_dipoles,
     run_both_frames,
     select_shared_centers,
@@ -1261,3 +1278,118 @@ def test_per_center_axis_angle_shape_and_range_for_a_batch():
     # would put centers past a right angle, which is the reading being fixed.
     unsigned = np.arccos(np.clip(u / speed, -1.0, 1.0))
     assert np.any(unsigned > np.pi / 2.0)
+
+
+# ---------------------------------------------------------------------------
+# 8. make_comparison_figure -- line view and its binned companion
+# ---------------------------------------------------------------------------
+#
+# A small end-to-end `run_both_frames` -> `normalize_comparison` fixture,
+# reusing `test_run_both_frames_shares_the_same_center_set`'s construction
+# (same helper, same magnitudes) so this section does not need its own
+# parallel toy.
+
+_MCF_N_CANDIDATES = 40
+_MCF_N_TRACERS = 800
+_MCF_SUB_VOLUME_RADIUS = 300.0
+
+
+def _comparison_fixture():
+    """cfg, results, comparison -- everything `make_comparison_figure` needs."""
+    rng = np.random.default_rng(20260929)
+    observer = np.asarray(conventions.OBSERVER_POSITION, dtype=float)
+    cfg = ComparisonRunConfig(sub_volume_radius=_MCF_SUB_VOLUME_RADIUS, n_null_realizations=4)
+
+    s_candidates = _sample_ball(rng, _MCF_N_CANDIDATES, _MCF_SUB_VOLUME_RADIUS)
+    v_candidates = rng.normal(scale=200.0, size=(_MCF_N_CANDIDATES, 3))
+    too_slow = np.linalg.norm(v_candidates, axis=1) < cfg.min_center_speed
+    v_candidates[too_slow] += 50.0
+    tracers = _sample_ball(rng, _MCF_N_TRACERS, _MCF_SUB_VOLUME_RADIUS)
+
+    centers = select_shared_centers(cfg, s_candidates, v_candidates, observer)
+    results = run_both_frames(cfg, centers, tracers, observer)
+    n_bar = box_number_density(_MCF_N_TRACERS)
+    comparison = normalize_comparison(cfg, results, n_bar)
+    return cfg, results, comparison
+
+
+def test_make_comparison_figure_binned_builds_with_the_same_shape_as_line_view():
+    cfg, results, comparison = _comparison_fixture()
+    line = make_comparison_figure(cfg, results, comparison, binned=False)
+    binned = make_comparison_figure(cfg, results, comparison, binned=True)
+
+    assert isinstance(line, DipoleFigures)
+    assert isinstance(binned, DipoleFigures)
+    assert binned.dipole is not binned.monopole
+    assert len(binned.dipole.axes) == len(line.dipole.axes) == 1
+    # Both figures carry the twin-y-axis monopole panel: obs axis + vel axis.
+    assert len(binned.monopole.axes) == len(line.monopole.axes) == 2
+    plt.close(line.dipole)
+    plt.close(line.monopole)
+    plt.close(binned.dipole)
+    plt.close(binned.monopole)
+
+
+def test_make_comparison_figure_binned_segments_match_the_line_views_values():
+    """Each shell's binned segment must sit at exactly the line view's value
+    for that shell, spanning that shell's own `[r_lo, r_hi)` -- both views are
+    built from the identical arrays via `draw_shell_series`
+    (`dvcorr.pipeline.shell_plotting`'s module docstring: the binned figure is
+    the line figure with the geometry changed, never a second computation).
+    """
+    cfg, results, comparison = _comparison_fixture()
+    edges = results.obs_result.shell_edges
+
+    binned = make_comparison_figure(cfg, results, comparison, binned=True)
+    ax = binned.dipole.axes[0]
+
+    n_bins = edges.shape[0] - 1
+    segment_collections = [
+        c for c in ax.collections
+        if getattr(c, "get_segments", None) is not None and len(c.get_segments()) == n_bins
+    ]
+    # One hlines collection per top-panel curve: obs signal/shuffle/gaussian,
+    # vel signal/shuffle/gaussian.
+    assert len(segment_collections) == 6
+
+    signal_collection = segment_collections[0]
+    for shell, seg in enumerate(signal_collection.get_segments()):
+        (x0, y0), (x1, y1) = seg
+        assert x0 == pytest.approx(edges[shell])
+        assert x1 == pytest.approx(edges[shell + 1])
+        assert y0 == pytest.approx(comparison.obs.zeta_hat[shell])
+        assert y1 == pytest.approx(comparison.obs.zeta_hat[shell])
+    plt.close(binned.dipole)
+    plt.close(binned.monopole)
+
+
+def test_make_comparison_figure_binned_x_axis_starts_at_zero():
+    cfg, results, comparison = _comparison_fixture()
+    binned = make_comparison_figure(cfg, results, comparison, binned=True)
+
+    assert binned.dipole.axes[0].get_xlim()[0] == pytest.approx(0.0)
+    assert binned.monopole.axes[0].get_xlim()[0] == pytest.approx(0.0)
+    plt.close(binned.dipole)
+    plt.close(binned.monopole)
+
+
+def test_make_comparison_figure_line_view_is_unaffected_by_the_binned_parameter_existing():
+    """`binned=False` (the default) must reproduce the pre-existing line-view
+    figure exactly: same curve data on both panels.
+    """
+    cfg, results, comparison = _comparison_fixture()
+    explicit = make_comparison_figure(cfg, results, comparison, binned=False)
+    default = make_comparison_figure(cfg, results, comparison)
+
+    def _line_ydata(fig):
+        ax = fig.axes[0]
+        n_points = results.obs_result.shell_edges.shape[0] - 1
+        return sorted(
+            tuple(ln.get_ydata()) for ln in ax.get_lines() if len(ln.get_xdata()) == n_points
+        )
+
+    assert _line_ydata(explicit.dipole) == _line_ydata(default.dipole)
+    plt.close(explicit.dipole)
+    plt.close(explicit.monopole)
+    plt.close(default.dipole)
+    plt.close(default.monopole)

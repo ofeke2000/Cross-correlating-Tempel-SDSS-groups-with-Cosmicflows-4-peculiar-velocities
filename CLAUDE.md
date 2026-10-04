@@ -222,12 +222,72 @@ reads the column, and only from `full`. Loading it is opt-in
     from 0.5.** The default ladder is the inner bin [0, 0.5) followed by 14 geometric
     shells 0.5 · √2ⁿ ending exactly at 64 — fifteen shells in all — built by
     `ShellConfig(min_radius=0.5, max_radius=64.0, spacing=SPACING_LOG, n_bins=14,
-    include_zero_bin=True)`. Every figure starts at r = 0, and each bin's value is drawn
-    at the **start** of its bin as a step spanning the bin's full width (not a marker at
-    the midpoint or the volume-weighted radius). Any run that departs from this —
-    **including one the user asked for** — is confirmed with the user before it is
-    executed: state the edges you are about to use and wait for a yes. A plot that begins
-    at 1 instead of 0 is the failure this rule exists to prevent.
+    include_zero_bin=True)`. Binning is a *computation* choice, not a *rendering* one:
+    the estimator accumulates per shell, but a figure draws one point per shell at the
+    shell's volume-weighted radius (`volume_weighted_shell_radii`) and joins the points
+    with a line — never a step or `stairs` curve held flat across the bin. Every figure's
+    x-axis starts at r = 0 (`set_xlim(left=0)`), whatever the innermost edge is.
+    **Every such line figure also gets a binned companion**: the same arrays, each shell
+    drawn as a flat segment spanning its own edges [r_lo, r_hi), with its r_eff point
+    marked on it, bands drawn as boxes over the same span, and the shell edges as faint
+    vertical guides. It is there so a point on the line figure can be looked up: which
+    shell it belongs to and what value was measured over it. It is a companion, never a
+    replacement: the line figure stays primary, and the binned one is the only place a
+    flat-across-the-bin rendering is allowed. Both views come from one builder called
+    with `binned=False` / `binned=True`, drawing every series through
+    `dvcorr.pipeline.shell_plotting.draw_shell_series` and `finish_shell_axis`. That way
+    the two views cannot come from different data, and hard rule 6 applies to the binned
+    pair unchanged (dipole and monopole are separate figures from the same call). A
+    notebook shows each binned figure right after its line figure. Any run
+    that departs from this binning — **including one the user asked for** — is confirmed
+    with the user before it is executed: state the edges you are about to use and wait
+    for a yes. An axis that begins at 1 instead of 0, or a curve drawn as steps, is the
+    failure this rule exists to prevent.
+
+11. **A changed notebook is re-executed, top to bottom, before the work is called done.**
+    A notebook's saved outputs are the figures the user reads, so an edit that leaves old
+    outputs in place — or a library change that alters what a notebook's cells would now
+    produce — leaves a notebook that lies. After editing a notebook's cells, and after
+    changing any `dvcorr` code a notebook calls (a plotting helper, a stage function, a
+    default), re-run every affected notebook headlessly and save the outputs in place:
+
+    ```bash
+    jupyter nbconvert --to notebook --execute --inplace notebooks/<name>.ipynb
+    ```
+
+    A run on the `full` catalog is long (see *Running*), so the confirmation there still
+    applies: say which notebooks need re-running and why, ask before starting, then run
+    them. What is never acceptable is silently skipping the re-run: a notebook that was
+    touched but not re-executed is reported as stale in the final message, by name, so the
+    user knows its outputs are not to be trusted until it is.
+
+## Answering questions
+
+Every answer to a question — anything asked with a question mark, or a "why / what /
+how / which / should I" in prose, including one asked mid-task — is written in three
+labeled layers, in this order:
+
+1. **Bottom line:** the answer itself in a phrase or one short sentence. No hedging, no
+   context; if the honest answer is "it depends", say what it depends on and which way it
+   goes in the common case.
+2. **One line:** one sentence giving the reason or mechanism behind the bottom line.
+3. **Long answer:** the regular full response — derivation, evidence, caveats, code.
+
+Example:
+
+> Q: why did the man go to the supermarket?
+>
+> **Bottom line:** to get milk.
+> **One line:** the milk in his house ran out, so he went to the supermarket to get more.
+> **Long answer:** (the regular full response)
+
+The first two layers are read on their own, so they must stand without the third: the
+bottom line is the sentence that gets quoted, the one line is what makes it believable.
+The long answer never contradicts them; if writing it changes the conclusion, rewrite the
+bottom line rather than burying the correction below. A request to build, change, or run
+something is not a question — its deliverable is the work and the ordinary report format
+stands — but a question embedded in such a request still gets its three layers, at the top
+of the reply.
 
 ## Coding conventions
 

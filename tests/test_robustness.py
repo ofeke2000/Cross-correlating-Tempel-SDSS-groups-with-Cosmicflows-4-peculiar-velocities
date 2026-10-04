@@ -27,6 +27,8 @@ import matplotlib
 
 matplotlib.use("Agg")
 
+from matplotlib.collections import LineCollection
+
 import numpy as np
 import pytest
 
@@ -683,3 +685,134 @@ def test_robustness_figure_labels_negative_split_bars_below_the_axis():
     low, high = ax_split.get_ylim()
     assert low < 0.0 < high
     assert low < values.min() and high > values.max()
+
+
+# ---------------------------------------------------------------------------
+# The binned companion (CLAUDE.md hard rule 10)
+# ---------------------------------------------------------------------------
+
+
+def _figure_args(cfg: RobustnessRunConfig):
+    """Every positional argument `make_robustness_figure` needs, from one stack.
+
+    Mirrors the setup already repeated across the figure tests above, so the
+    binned-companion tests below can build both a line figure and a binned
+    figure from the IDENTICAL inputs -- the load-bearing property the binned
+    view is checked against.
+    """
+    _, stack = _stack_and_result(cfg)
+    s_pool, v_pool = _population(500, 11)
+    s_tracers, _ = _population(3000, 12)
+    mvir = np.full(s_pool.shape[0], conventions.PARTICLE_MASS)
+    is_distinct = np.ones(s_pool.shape[0], dtype=bool)
+    args = (
+        cfg,
+        stack,
+        precision_ladder(cfg, stack),
+        bootstrap_confidence(cfg, stack),
+        trim_ladder(cfg, stack),
+        seed_repeats(
+            cfg, s_pool, v_pool, mvir, is_distinct, s_tracers, _OBSERVER, _N_BAR
+        ),
+        crowding_split(cfg, stack),
+    )
+    return stack, args
+
+
+def test_robustness_figure_binned_builds_with_same_axes_structure():
+    """The binned companion keeps the same panel layout as the line figure:
+    5 panels on `.dipole`, the monopole alone on `.monopole` (hard rule 6).
+    The precision ladder (panel 1) is not radial and stays log-log; the
+    radial panels (2-4, and the monopole) stay cartesian and pinned to
+    r = 0, same as the line view (`test_robustness_figure_builds_with_
+    cartesian_shell_axes`) -- `binned` changes how a shell is drawn, never
+    the axis scale.
+    """
+    cfg = _config(n_bootstrap=32, n_subset_draws=3, n_seed_repeats=2, n_candidate_centers=80)
+    _, args = _figure_args(cfg)
+
+    figures = make_robustness_figure(*args, binned=True)
+
+    assert figures.dipole is not figures.monopole
+    axes = figures.dipole.get_axes()
+    assert len(axes) == 5
+    ax_ladder = axes[0]
+    assert ax_ladder.get_xscale() == "log"
+    assert ax_ladder.get_yscale() == "log"
+    for ax in (axes[1], axes[2], axes[3]):
+        assert ax.get_xscale() == "linear"
+        assert ax.get_yscale() == "linear"
+        assert ax.get_xlim()[0] == 0.0
+
+    ax_mono = figures.monopole.get_axes()[0]
+    assert ax_mono.get_xscale() == "linear"
+    assert ax_mono.get_yscale() == "linear"
+    assert ax_mono.get_xlim()[0] == 0.0
+
+
+def test_robustness_figure_binned_segments_match_the_line_views_values():
+    """The binned companion is the line figure with the geometry changed
+    (`dvcorr.pipeline.shell_plotting`), never a second computation: for every
+    radial panel -- 2 (bootstrap interval), 3 (trim ladder), 4 (seed
+    repeats), and the monopole companion -- each drawn curve's binned
+    segments equal that SAME curve's line-view y-values, shell by shell.
+    Every one of those panels overlays its curve(s) on the SAME
+    `stack.shell_edges` (no coarse/fine ladder mixing happens inside this
+    figure -- see `make_robustness_figure`'s docstring), so one set of edges
+    covers all four checks.
+    """
+    cfg = _config(n_bootstrap=32, n_subset_draws=3, n_seed_repeats=2, n_candidate_centers=80)
+    stack, args = _figure_args(cfg)
+    n_shells = stack.shell_centers.size
+
+    lines = make_robustness_figure(*args)
+    bins = make_robustness_figure(*args, binned=True)
+
+    panels = [
+        (lines.dipole.get_axes()[1], bins.dipole.get_axes()[1]),  # 2: bootstrap
+        (lines.dipole.get_axes()[2], bins.dipole.get_axes()[2]),  # 3: trim ladder
+        (lines.dipole.get_axes()[3], bins.dipole.get_axes()[3]),  # 4: seed repeats
+        (lines.monopole.get_axes()[0], bins.monopole.get_axes()[0]),  # 6: monopole
+    ]
+    for line_ax, bin_ax in panels:
+        curves = [l for l in line_ax.get_lines() if len(l.get_xdata()) == n_shells]
+        segment_groups = [
+            [seg for seg in coll.get_segments() if np.size(seg)]
+            for coll in bin_ax.collections
+            if isinstance(coll, LineCollection)
+        ]
+        assert len(curves) > 0, "panel drew no per-shell curve to compare"
+        assert len(segment_groups) == len(curves)
+        for curve, segs in zip(curves, segment_groups):
+            finite = np.isfinite(curve.get_ydata())
+            assert len(segs) == int(finite.sum())
+            np.testing.assert_allclose(
+                [seg[0, 1] for seg in segs], np.asarray(curve.get_ydata())[finite]
+            )
+        assert bin_ax.get_xlim()[0] == 0.0
+
+
+def test_robustness_figure_binned_draws_a_guide_at_every_shell_edge():
+    """The binned radial panels mark every shell edge as a faint vertical
+    guide (`shell_plotting.finish_shell_axis`); the line view draws none.
+    """
+    cfg = _config(n_bootstrap=32, n_subset_draws=3, n_seed_repeats=2, n_candidate_centers=80)
+    stack, args = _figure_args(cfg)
+    n_edges = stack.shell_edges.size
+
+    lines = make_robustness_figure(*args)
+    bins = make_robustness_figure(*args, binned=True)
+
+    def _n_edge_guides(ax) -> int:
+        return sum(
+            1 for line in ax.get_lines()
+            if len(line.get_xdata()) == 2 and np.ptp(line.get_xdata()) == 0
+        )
+
+    for ax in (bins.dipole.get_axes()[1], bins.dipole.get_axes()[2], bins.dipole.get_axes()[3]):
+        assert _n_edge_guides(ax) == n_edges
+    assert _n_edge_guides(bins.monopole.get_axes()[0]) == n_edges
+
+    for ax in (lines.dipole.get_axes()[1], lines.dipole.get_axes()[2], lines.dipole.get_axes()[3]):
+        assert _n_edge_guides(ax) == 0
+    assert _n_edge_guides(lines.monopole.get_axes()[0]) == 0
