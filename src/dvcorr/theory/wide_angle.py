@@ -47,10 +47,31 @@ Fig. 1 curves 4 and 5). Eq. (15) subtracts it, so the contribution to
 `xi^s_u delta` is minus what this function returns. Its DOL monopole is
 `-2 (Psi_perp + Psi_-/3) / r_tilde`, Nusser's eq. (16).
 
+Which distance divides the rocket term
+======================================
+Eq. (6) writes the rocket term as `2 xi_uu / r_tilde`, with `r_tilde` the
+distance of the DENSITY point -- `mu`-dependent at finite `r_obs`. Nusser's
+Fig. 1, however, is reproduced only if the denominator is the FIXED distance
+`r_obs` of the velocity object: with it, curve 5 dips to about -0.5 km/s and
+curve 4 reads ~3.4 km/s at y = 90 h^-1 Mpc, as in his figure; with `r_tilde`
+they are -3.2 and 1.9. The two choices are:
+
+- `ROCKET_DENOMINATOR_FIXED` (the default) -- `1 / r_obs`, Nusser's Fig. 1.
+  To first order in `eps = y / r_obs` the rocket dipole is then
+  `+(4 y / 15 r_obs^2) Psi_-`, from the tilt of `mu_tilde` alone.
+- `ROCKET_DENOMINATOR_EXACT` -- `1 / r_tilde(mu)`, eq. (6) as written. The
+  near side of the velocity object (`mu < 0`) now sits closer to the
+  observer and is weighted up, and the first-order dipole becomes
+  `-(2 y / 3 r_obs^2) (Psi_perp + Psi_-/5)` -- several times larger.
+
+The two agree in the DOL and on every monopole to first order in `eps`;
+they differ only in the finite-distance dipole (and at large `y / r_obs`).
+
 Numerical moments
 =================
-Because `r_tilde` depends on `mu`, none of this factorizes and the moments are
-taken by Gauss-Legendre quadrature in `mu` (`legendre_moment`), in Nusser's
+Because `nu`, `mu_tilde` (and, for `ROCKET_DENOMINATOR_EXACT`, `r_tilde`)
+depend on `mu`, none of this factorizes and the moments are taken by
+Gauss-Legendre quadrature in `mu` (`legendre_moment`), in Nusser's
 normalization `(1/2) Int_-1^1 X(mu) L_ell(mu) dmu`. The integrands are
 polynomials in `mu` divided by `r_tilde(mu)`, smooth on [-1, 1], so
 `DEFAULT_MU_NODES` is generous rather than marginal.
@@ -84,6 +105,17 @@ from dvcorr.theory.gorski import GorskiFunctions
 #: Gauss-Legendre nodes used for every `mu` moment here. Odd, so `mu = 0` is a
 #: node and a `mu`-odd integrand's cancellation is exact rather than nearly so.
 DEFAULT_MU_NODES: int = 513
+
+#: Rocket-term denominator: the velocity object's fixed distance `r_obs`, as
+#: Nusser's Fig. 1 evidently uses. See the module docstring.
+ROCKET_DENOMINATOR_FIXED: str = "fixed"
+#: Rocket-term denominator: the density point's own distance `r_tilde(mu)`,
+#: eq. (6) as written.
+ROCKET_DENOMINATOR_EXACT: str = "exact"
+VALID_ROCKET_DENOMINATORS: tuple[str, ...] = (
+    ROCKET_DENOMINATOR_FIXED,
+    ROCKET_DENOMINATOR_EXACT,
+)
 
 
 def gauss_legendre_nodes(n_nodes: int = DEFAULT_MU_NODES) -> tuple[np.ndarray, np.ndarray]:
@@ -239,21 +271,66 @@ def xi_uu(geometry: WideAngleGeometry, functions: GorskiFunctions) -> np.ndarray
     )
 
 
+def rocket_term(
+    geometry: WideAngleGeometry,
+    functions: GorskiFunctions,
+    denominator: str = ROCKET_DENOMINATOR_FIXED,
+) -> np.ndarray:
+    """`+2 xi_uu / D`, shape (B, M), h^-1 Mpc -- the Kaiser-rocket term of eq. (6).
+
+    `D` is `r_obs` for `ROCKET_DENOMINATOR_FIXED` (Nusser's Fig. 1) and
+    `r_tilde(mu)` for `ROCKET_DENOMINATOR_EXACT` (eq. 6 as written); see the
+    module docstring for why the two exist and how their dipoles differ.
+    `xi_uu` itself is always in exact geometry. Eq. (15) SUBTRACTS this.
+
+    Parameters
+    ----------
+    geometry : WideAngleGeometry
+    functions : GorskiFunctions
+        Evaluated on the same `y` grid, shape (B,).
+    denominator : str
+        One of `VALID_ROCKET_DENOMINATORS`.
+
+    Returns
+    -------
+    ndarray, shape (B, M)
+
+    Raises
+    ------
+    ValueError
+        On an unrecognized `denominator`.
+    """
+    if denominator == ROCKET_DENOMINATOR_FIXED:
+        distance = geometry.r_obs
+    elif denominator == ROCKET_DENOMINATOR_EXACT:
+        distance = geometry.r_tilde
+    else:
+        raise ValueError(
+            f"rocket_term: denominator must be one of {VALID_ROCKET_DENOMINATORS}, "
+            f"got {denominator!r}."
+        )
+    return 2.0 * xi_uu(geometry, functions) / distance
+
+
 def xi_uu_over_r_tilde_moment(
     y: np.ndarray,
     r_obs: float,
     functions: GorskiFunctions,
     ell: int,
     *,
+    rocket_denominator: str = ROCKET_DENOMINATOR_FIXED,
     n_mu_nodes: int = DEFAULT_MU_NODES,
     a_hubble: float = 1.0,
     convention: str = CONVENTION_NUSSER,
 ) -> np.ndarray:
-    """`<2 xi_uu / r_tilde>_ell` in exact geometry, shape (B,).
+    """`<2 xi_uu / r_tilde>_ell` at finite observer distance, shape (B,).
 
     Curves 4 (`ell = 0`) and 5 (`ell = 1`) of Nusser's Fig. 1. Sign as
     written: eq. (15) SUBTRACTS this, so the contribution to
-    `xi^s_u delta` is its negative.
+    `xi^s_u delta` is its negative. By default the denominator is the fixed
+    `r_obs`, which is what reproduces his figure; pass
+    `rocket_denominator=ROCKET_DENOMINATOR_EXACT` for `r_tilde(mu)` (see the
+    module docstring). The name keeps Nusser's notation either way.
 
     `ell = 1` is the diagnostic -- it vanishes identically in the DOL, so a
     non-zero value at `y << r_obs` means the geometry is wrong (see the module
@@ -272,6 +349,8 @@ def xi_uu_over_r_tilde_moment(
         Evaluated on the same `y`.
     ell : int
         Multipole order.
+    rocket_denominator : str
+        One of `VALID_ROCKET_DENOMINATORS`.
     n_mu_nodes : int
         Gauss-Legendre nodes in `mu`.
     a_hubble : float
@@ -285,7 +364,7 @@ def xi_uu_over_r_tilde_moment(
     """
     mu, weights = gauss_legendre_nodes(n_mu_nodes)
     geometry = wide_angle_geometry(y, mu, r_obs)
-    integrand = 2.0 * xi_uu(geometry, functions) / geometry.r_tilde
+    integrand = rocket_term(geometry, functions, rocket_denominator)
     return float(a_hubble) * legendre_moment(
         integrand, mu, weights, ell, convention=convention
     )
@@ -297,6 +376,7 @@ def xi_udelta_wide_angle(
     *,
     b: float = 1.0,
     space: str = SPACE_REDSHIFT,
+    rocket_denominator: str = ROCKET_DENOMINATOR_FIXED,
 ) -> np.ndarray:
     """Nusser eq. (15) with exact geometry, shape (B, M), h^-1 Mpc.
 
@@ -308,6 +388,10 @@ def xi_udelta_wide_angle(
                        - Psi'_perp (2 mu_tilde nu + mu)
                        - (Psi'_- - 2 Psi'_perp) mu_tilde^2 mu
                        - 2 (nu Psi_perp + mu mu_tilde Psi_-) / r_tilde
+
+    The last (rocket) term is divided by the fixed `r_obs` by default, as in
+    Nusser's Fig. 1; `rocket_denominator=ROCKET_DENOMINATOR_EXACT` keeps the
+    `r_tilde(mu)` written above (see `rocket_term` and the module docstring).
 
     Only the first term carries `b` -- the other three are velocity-velocity
     and bias-free. `SPACE_REAL` returns that first term alone, which has no
@@ -324,6 +408,8 @@ def xi_udelta_wide_angle(
         Linear bias of the density tracer.
     space : str
         `SPACE_REAL` or `SPACE_REDSHIFT`.
+    rocket_denominator : str
+        One of `VALID_ROCKET_DENOMINATORS`; ignored for `SPACE_REAL`.
 
     Returns
     -------
@@ -333,7 +419,7 @@ def xi_udelta_wide_angle(
     Raises
     ------
     ValueError
-        On an unrecognized `space`.
+        On an unrecognized `space` or `rocket_denominator`.
     """
     if space not in VALID_SPACES:
         raise ValueError(
@@ -353,7 +439,7 @@ def xi_udelta_wide_angle(
         out = out - (minus_prime - 2.0 * perp_prime) * geometry.mu_tilde**2 * mu
         # The Kaiser-rocket term: even in mu in the DOL, so it leaves the
         # dipole alone there and returns only at finite distance.
-        out = out - 2.0 * xi_uu(geometry, functions) / geometry.r_tilde
+        out = out - rocket_term(geometry, functions, rocket_denominator)
     return out
 
 
@@ -365,6 +451,7 @@ def xi_udelta_wide_angle_moment(
     *,
     b: float = 1.0,
     space: str = SPACE_REDSHIFT,
+    rocket_denominator: str = ROCKET_DENOMINATOR_FIXED,
     n_mu_nodes: int = DEFAULT_MU_NODES,
     a_hubble: float = 1.0,
     convention: str = CONVENTION_NUSSER,
@@ -392,6 +479,9 @@ def xi_udelta_wide_angle_moment(
         Linear bias of the density tracer.
     space : str
         `SPACE_REAL` or `SPACE_REDSHIFT`.
+    rocket_denominator : str
+        One of `VALID_ROCKET_DENOMINATORS`, for the rocket term; ignored for
+        `SPACE_REAL`.
     n_mu_nodes : int
         Gauss-Legendre nodes in `mu`.
     a_hubble : float
@@ -407,7 +497,9 @@ def xi_udelta_wide_angle_moment(
     """
     mu, weights = gauss_legendre_nodes(n_mu_nodes)
     geometry = wide_angle_geometry(y, mu, r_obs)
-    integrand = xi_udelta_wide_angle(geometry, functions, b=b, space=space)
+    integrand = xi_udelta_wide_angle(
+        geometry, functions, b=b, space=space, rocket_denominator=rocket_denominator
+    )
     return float(a_hubble) * legendre_moment(
         integrand, mu, weights, ell, convention=convention
     )

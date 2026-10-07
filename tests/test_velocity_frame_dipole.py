@@ -1320,14 +1320,18 @@ def test_make_comparison_figure_binned_builds_with_the_same_shape_as_line_view()
 
     assert isinstance(line, DipoleFigures)
     assert isinstance(binned, DipoleFigures)
-    assert binned.dipole is not binned.monopole
     assert len(binned.dipole.axes) == len(line.dipole.axes) == 1
-    # Both figures carry the twin-y-axis monopole panel: obs axis + vel axis.
-    assert len(binned.monopole.axes) == len(line.monopole.axes) == 2
+    # The binned companion is dipole-only (hard rule 10); the line view's
+    # monopole figure carries the twin-y-axis panel: obs axis + vel axis.
+    assert binned.monopole is None
+    assert len(line.monopole.axes) == 2
+    # ... and carries no null curve: its legend names only the two signals.
+    texts = [t.get_text() for t in binned.dipole.axes[0].get_legend().get_texts()]
+    assert len(texts) == 2
+    assert not any("null" in t for t in texts)
     plt.close(line.dipole)
     plt.close(line.monopole)
     plt.close(binned.dipole)
-    plt.close(binned.monopole)
 
 
 def test_make_comparison_figure_binned_segments_match_the_line_views_values():
@@ -1348,9 +1352,9 @@ def test_make_comparison_figure_binned_segments_match_the_line_views_values():
         c for c in ax.collections
         if getattr(c, "get_segments", None) is not None and len(c.get_segments()) == n_bins
     ]
-    # One hlines collection per top-panel curve: obs signal/shuffle/gaussian,
-    # vel signal/shuffle/gaussian.
-    assert len(segment_collections) == 6
+    # One hlines collection per main curve: the obs and vel signals only (the
+    # nulls are drawn in the line view alone, hard rule 10).
+    assert len(segment_collections) == 2
 
     signal_collection = segment_collections[0]
     for shell, seg in enumerate(signal_collection.get_segments()):
@@ -1360,7 +1364,6 @@ def test_make_comparison_figure_binned_segments_match_the_line_views_values():
         assert y0 == pytest.approx(comparison.obs.zeta_hat[shell])
         assert y1 == pytest.approx(comparison.obs.zeta_hat[shell])
     plt.close(binned.dipole)
-    plt.close(binned.monopole)
 
 
 def test_make_comparison_figure_binned_x_axis_starts_at_zero():
@@ -1368,9 +1371,7 @@ def test_make_comparison_figure_binned_x_axis_starts_at_zero():
     binned = make_comparison_figure(cfg, results, comparison, binned=True)
 
     assert binned.dipole.axes[0].get_xlim()[0] == pytest.approx(0.0)
-    assert binned.monopole.axes[0].get_xlim()[0] == pytest.approx(0.0)
     plt.close(binned.dipole)
-    plt.close(binned.monopole)
 
 
 def test_make_comparison_figure_line_view_is_unaffected_by_the_binned_parameter_existing():

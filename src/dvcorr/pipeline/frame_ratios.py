@@ -68,14 +68,15 @@ where they part company, the difference is genuinely in the dipole's ANISOTROPY.
 Monopoles are sums of ``|u|`` and never cross zero, so that panel needs no pole
 guard.
 
-CENTER SETS.  Nothing here requires the curves to share a center set, and in the
-DM notebook they do not -- ``3D`` and ``obs`` come from one draw, ``z`` from the
-buffered carve's smaller one. Shell edges MUST match (checked); center sets need
-not, and where they differ the ratio inherits both curves' sampling noise. The
-honest like-for-like check is to compare a cross-section ratio against the
-same-center one measured inside the redshift-space run itself
-(``real / redshift``), which is the same pair of frames on one center set;
-`frame_ratio` is happy to compute either, and the DM notebook prints both.
+CENTER SETS.  Nothing here requires the curves to share a center set. Shell
+edges MUST match (checked); center sets need not, but where they differ the
+ratio inherits both curves' sampling noise AND any systematic difference
+between the two populations (in a constrained box, a different sub-volume is a
+different answer). The DM notebook therefore runs all three curves on ONE set
+-- the redshift-space selection, handed to the frame comparison through
+`dvcorr.pipeline.redshift_space_comparison.real_space_center_set` -- so its
+``obs`` curve is the redshift-space run's ``real`` curve exactly, and every
+ratio here is a like-for-like one.
 """
 
 from __future__ import annotations
@@ -471,8 +472,8 @@ def make_frame_ratio_figure(
       markers, once on the pole shells (the complementary mask) with
       `markerfacecolor="none"`, both at `markersize=_MARKER_SIZE` -- the
       binned counterpart of the line view's filled-vs-open split. The
-      monopole panel needs no such split (monopoles never cross zero) and
-      goes through the primitive once.
+      binned companion is dipole-only: `monopole` is None and no monopole
+      figure is created -- the line view carries it.
 
     Different `FrameRatio`s in `ratios` are NOT assumed to share one ladder
     (`frame_ratio` only checks a match within one numerator/denominator
@@ -505,15 +506,19 @@ def make_frame_ratio_figure(
         indexes into `curves` directly.
     ratios : tuple of FrameRatio
     binned : bool, default False
-        False: the line view. True: the binned lookup companion.
+        False: the line view. True: the binned lookup companion
+        (dipole-ratio figure only).
 
     Returns
     -------
     DipoleFigures
+        `.monopole` is None when `binned` is True.
     """
     view = " -- binned" if binned else ""
     fig_ratio, ax_ratio = plt.subplots(figsize=_DIPOLE_FIGSIZE)
-    fig_mono, ax_mono = plt.subplots(figsize=_MONOPOLE_FIGSIZE)
+    # The binned companion is dipole-only (hard rule 10): no monopole figure
+    # is created at all, so there is nothing for a notebook to display.
+    fig_mono, ax_mono = (None, None) if binned else plt.subplots(figsize=_MONOPOLE_FIGSIZE)
 
     for i, ratio in enumerate(ratios):
         color = _RATIO_COLORS[i % len(_RATIO_COLORS)]
@@ -551,7 +556,6 @@ def make_frame_ratio_figure(
                 markerfacecolor="none",
             )
             finish_shell_axis(ax_ratio, ratio.shell_edges, binned=True)
-            finish_shell_axis(ax_mono, ratio.shell_edges, binned=True)
         else:
             # The connecting line BREAKS at a pole rather than spiking through
             # it: a segment drawn to an off-scale point is a stripe across the
@@ -566,19 +570,13 @@ def make_frame_ratio_figure(
                     )
             ax_ratio.plot([], [], marker + "-", color=color, ms=_MARKER_SIZE, label=text)
 
-        # Monopole panel: no pole guard here (monopoles never cross zero, see
-        # module docstring), so this is a plain series through the shared
-        # primitive, carrying its own legend label.
-        if binned:
-            draw_shell_series(
-                ax_mono, ratio.shell_edges, ratio.monopole_ratio, binned=True,
-                color=color, marker=marker, markersize=_MARKER_SIZE, label=ratio.label,
-            )
-        else:
+        # Monopole panel (line view only): no pole guard here (monopoles never
+        # cross zero, see module docstring), so a plain series.
+        if not binned:
             ax_mono.plot(r, ratio.monopole_ratio, marker + "-", color=color,
                          ms=_MARKER_SIZE, label=ratio.label)
 
-    for ax in (ax_ratio, ax_mono):
+    for ax in (ax_ratio,) if binned else (ax_ratio, ax_mono):
         ax.axhline(_UNITY, color=_COLOR_ZERO_LINE, lw=_ZERO_LINE_WIDTH, ls=_UNITY_LINE_STYLE)
         # finish_shell_axis (called per-ratio above, binned view only) already
         # pins x=0; this is the explicit fallback for the empty-`ratios` case
@@ -601,18 +599,22 @@ def make_frame_ratio_figure(
         "-- a pole, plotted but not averaged",
         fontsize=9,
     )
-    ax_mono.set_ylabel(r"$\hat\zeta_0$ ratio", color=_LABEL_COLOR)
-    ax_mono.set_title(
-        f"frame-to-frame ratios of the monopole{view}   {title_info}", fontsize=9,
-    )
     # An empty `ratios` (paired with empty `curves`) has nothing to put in a
     # legend -- `ncol=len(ratios)` would be `ncol=0`, which matplotlib
     # refuses unconditionally. Skip both legends rather than pass a
     # nonsensical column count for a figure with no curves on it.
     if ratios:
         ax_ratio.legend(fontsize="small")
-        ax_mono.legend(fontsize="small", ncol=len(ratios))
     fig_ratio.tight_layout()
+    if binned:
+        return DipoleFigures(dipole=fig_ratio, monopole=None)
+
+    ax_mono.set_ylabel(r"$\hat\zeta_0$ ratio", color=_LABEL_COLOR)
+    ax_mono.set_title(
+        f"frame-to-frame ratios of the monopole{view}   {title_info}", fontsize=9,
+    )
+    if ratios:
+        ax_mono.legend(fontsize="small", ncol=len(ratios))
     fig_mono.tight_layout()
 
     return DipoleFigures(dipole=fig_ratio, monopole=fig_mono)

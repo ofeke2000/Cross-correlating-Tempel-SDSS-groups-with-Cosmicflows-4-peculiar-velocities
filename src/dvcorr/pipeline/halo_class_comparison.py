@@ -1117,12 +1117,14 @@ def make_frame_class_contrast_figure(
     live in denser environments and will show the higher monopole regardless of
     velocities.
 
-    `binned=True` builds the binned COMPANION pair instead (CLAUDE.md hard
-    rule 10): the same four curves, each shell drawn flat across its own
-    edges with the volume-weighted point marked and the shell edges as faint
-    guides (`dvcorr.pipeline.shell_plotting`), so a point on the line figure
-    can be looked up -- which shell, what value. `binned=False` output is
-    unchanged from before this flag existed.
+    `binned=True` builds the binned COMPANION instead (CLAUDE.md hard rule
+    10): the same four dipole curves with their SEM bands, each shell drawn
+    flat across its own edges with the volume-weighted point marked and the
+    shell edges as faint guides (`dvcorr.pipeline.shell_plotting`), so a
+    point on the line figure can be looked up -- which shell, what value.
+    Dipole-only: `DipoleFigures.monopole` is None and no monopole figure is
+    created. `binned=False` output is unchanged from before this flag
+    existed.
 
     Builder only: never saves, never calls `plt.show`.
 
@@ -1133,11 +1135,13 @@ def make_frame_class_contrast_figure(
         Keyed by center class, in plot order. Every value must have been run
         on the same `shell_edges` -- guaranteed when they share one `cfg`.
     binned : bool, keyword-only, default False
-        False: the line view. True: the binned lookup companion.
+        False: the line view. True: the binned lookup companion
+        (dipole-only).
 
     Returns
     -------
     DipoleFigures
+        `.monopole` is None when `binned` is True.
 
     Raises
     ------
@@ -1174,6 +1178,10 @@ def make_frame_class_contrast_figure(
         fontsize=9,
     )
     fig_dipole.tight_layout()
+
+    if binned:
+        # Dipole-only companion: no monopole figure is created (hard rule 10).
+        return DipoleFigures(dipole=fig_dipole, monopole=None)
 
     fig_mono, ax_mono_obs = plt.subplots(figsize=_MONOPOLE_FIGSIZE)
     ax_mono_vel = ax_mono_obs.twinx()
@@ -1236,12 +1244,14 @@ def make_redshift_class_contrast_figure(
     difference here is occupancy alone, which is exactly the redshift-space
     trust diagnostic.
 
-    `binned=True` builds the binned COMPANION pair instead (CLAUDE.md hard
-    rule 10): the same four curves, each shell drawn flat across its own
-    edges with the volume-weighted point marked and the shell edges as faint
-    guides (`dvcorr.pipeline.shell_plotting`), so a point on the line figure
-    can be looked up -- which shell, what value. `binned=False` output is
-    unchanged from before this flag existed.
+    `binned=True` builds the binned COMPANION instead (CLAUDE.md hard rule
+    10): the same four dipole curves with their SEM bands, each shell drawn
+    flat across its own edges with the volume-weighted point marked and the
+    shell edges as faint guides (`dvcorr.pipeline.shell_plotting`), so a
+    point on the line figure can be looked up -- which shell, what value.
+    Dipole-only: `DipoleFigures.monopole` is None and no monopole figure is
+    created. `binned=False` output is unchanged from before this flag
+    existed.
 
     Builder only: never saves, never calls `plt.show`.
 
@@ -1251,11 +1261,13 @@ def make_redshift_class_contrast_figure(
     runs : dict of str -> ClassRedshiftRun
         Keyed by center class, in plot order.
     binned : bool, keyword-only, default False
-        False: the line view. True: the binned lookup companion.
+        False: the line view. True: the binned lookup companion
+        (dipole-only).
 
     Returns
     -------
     DipoleFigures
+        `.monopole` is None when `binned` is True.
 
     Raises
     ------
@@ -1294,6 +1306,10 @@ def make_redshift_class_contrast_figure(
         fontsize=9,
     )
     fig_dipole.tight_layout()
+
+    if binned:
+        # Dipole-only companion: no monopole figure is created (hard rule 10).
+        return DipoleFigures(dipole=fig_dipole, monopole=None)
 
     fig_mono, ax_mono = plt.subplots(figsize=_MONOPOLE_FIGSIZE)
     _plot_class_curves(

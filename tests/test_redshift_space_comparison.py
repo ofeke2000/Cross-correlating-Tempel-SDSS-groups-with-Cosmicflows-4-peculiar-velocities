@@ -47,9 +47,11 @@ from dvcorr.pipeline.redshift_space_comparison import (
     make_single_center_figure,
     membership_diagnostics,
     normalize_redshift_comparison,
+    real_space_center_set,
     run_both_spaces,
     select_redshift_shared_centers,
 )
+from dvcorr.pipeline.velocity_frame_comparison import ComparisonRunConfig, run_both_frames
 
 _OBSERVER = np.asarray(conventions.OBSERVER_POSITION, dtype=float)
 
@@ -192,6 +194,39 @@ def test_select_redshift_shared_centers_percentile_statistic_drops_globally():
     assert centers.n_dropped_v_r_percentile > 0
     v_r_survivors = radial_velocity(centers.s_centers_real, centers.v_centers, observer=_OBSERVER)
     assert np.all(np.abs(v_r_survivors) <= v_margin_kms)
+
+
+def test_real_space_center_set_reproduces_the_real_space_run_exactly():
+    """An observer-frame run on `real_space_center_set(centers)` IS the
+    real-space run: same centers, same tracers, same estimator call, so the
+    per-center arrays agree bit for bit -- not to a tolerance."""
+    buffer, cfg = _synthetic_buffer(n=5000, sub_volume_radius=200.0, seed=4)
+    tracers = build_tracer_spaces(cfg, buffer, _OBSERVER)
+    candidates = draw_candidates_from_arrays(
+        cfg, buffer.pos_core, buffer.vel_core, buffer.mvir_core, buffer.is_distinct_core
+    )
+    centers = select_redshift_shared_centers(
+        cfg, candidates.s, candidates.v, _OBSERVER, buffer.v_margin_kms, buffer.v_margin_mpc
+    )
+    shared = real_space_center_set(centers)
+
+    assert shared.n_centers == centers.n_centers
+    assert shared.s_centers is centers.s_centers_real
+    assert shared.v_centers is centers.v_centers
+    assert shared.n_candidates == centers.base.n_candidates
+
+    spaces = run_both_spaces(cfg, centers, tracers, _OBSERVER)
+    frame_cfg = ComparisonRunConfig(
+        sub_volume_radius=cfg.sub_volume_radius, n_candidate_centers=cfg.n_candidate_centers
+    )
+    frames = run_both_frames(frame_cfg, shared, tracers.s_tracers_real, _OBSERVER)
+
+    np.testing.assert_array_equal(
+        frames.obs_result.per_center_dipole, spaces.real_result.per_center_dipole
+    )
+    np.testing.assert_array_equal(
+        frames.obs_result.per_center_count, spaces.real_result.per_center_count
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -351,12 +386,19 @@ def _assert_binned_matches_line(line_fig, bin_fig, n_bins: int) -> None:
     number of figures/axes, and every drawn segment's height equals the line
     view's y-value for that shell (NaN shells are a gap in both, never
     compared). Also checks the x-axis starts at r = 0 in the binned view --
-    CLAUDE.md hard rule 10."""
+    CLAUDE.md hard rule 10. Null curves exist only in the line view, so the
+    binned figure's legend must name none."""
     assert line_fig is not bin_fig
+    assert not any("null" in t.get_text() for t in bin_fig.axes[0].get_legend().get_texts())
     line_ax, bin_ax = line_fig.axes[0], bin_fig.axes[0]
     assert len(line_fig.axes) == len(bin_fig.axes) == 1
 
-    curves = [l for l in line_ax.get_lines() if len(l.get_xdata()) == n_bins]
+    # The binned companion carries the main signal(s) only (hard rule 10):
+    # compare against the line view's non-null curves.
+    curves = [
+        l for l in line_ax.get_lines()
+        if len(l.get_xdata()) == n_bins and "null" not in l.get_label()
+    ]
     segment_groups = [
         [seg for seg in coll.get_segments() if np.size(seg)]
         for coll in bin_ax.collections
@@ -381,9 +423,8 @@ def test_make_redshift_comparison_figure_binned_matches_line_view():
     lines = make_redshift_comparison_figure(cfg, results, comparison)
     bins = make_redshift_comparison_figure(cfg, results, comparison, binned=True)
 
-    assert bins.dipole is not bins.monopole
+    assert bins.monopole is None  # dipole-only companion (hard rule 10)
     _assert_binned_matches_line(lines.dipole, bins.dipole, n_bins)
-    _assert_binned_matches_line(lines.monopole, bins.monopole, n_bins)
     plt.close("all")
 
 
@@ -394,7 +435,6 @@ def test_make_single_center_figure_binned_matches_line_view():
     lines = make_single_center_figure(cfg, results, n_bar)
     bins = make_single_center_figure(cfg, results, n_bar, binned=True)
 
-    assert bins.dipole is not bins.monopole
+    assert bins.monopole is None  # dipole-only companion (hard rule 10)
     _assert_binned_matches_line(lines.dipole, bins.dipole, n_bins)
-    _assert_binned_matches_line(lines.monopole, bins.monopole, n_bins)
     plt.close("all")

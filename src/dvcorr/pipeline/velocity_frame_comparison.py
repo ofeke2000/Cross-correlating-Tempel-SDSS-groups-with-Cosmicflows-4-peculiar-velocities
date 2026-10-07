@@ -702,13 +702,14 @@ def make_comparison_figure(
     `finish_shell_axis`, the one drawing primitive for CLAUDE.md hard rule
     10's two renderings. Builder only: never saves, never calls `plt.show`.
 
-    `binned=True` builds the binned COMPANION pair instead of the default
-    line view (hard rule 10): the same arrays, each shell drawn flat across
-    its own edges with the volume-weighted point marked and the shell edges
-    as faint guides, so a point on the line figure can be looked up -- which
-    shell, what value. Call once with each value to get both pairs; every
-    series goes through `draw_shell_series`, so the two cannot disagree on
-    the data. In the line view (`binned=False`, the default), every curve is
+    `binned=True` builds the binned COMPANION instead of the default line
+    view (hard rule 10): only the obs and vel zeta_hat_1 curves, each with
+    its SEM band, each shell drawn flat across its own edges with the
+    volume-weighted point marked and the shell edges as faint guides, so a
+    point on the line figure can be looked up -- which shell, what value.
+    NO nulls and NO monopole figure (`DipoleFigures.monopole` is None and
+    none is created): the line view carries both. Every series goes through
+    `draw_shell_series`, so the two cannot disagree on the data. In the line view (`binned=False`, the default), every curve is
     a LINE through one point per shell at the shell's volume-weighted radius
     (`volume_weighted_shell_radii`), never a step held flat across the bin;
     both views' x-axes are pinned to start at r = 0.
@@ -804,11 +805,13 @@ def make_comparison_figure(
     results : FrameRunResults
     comparison : FrameComparison
     binned : bool, default False
-        False: the line view. True: the binned lookup companion.
+        False: the line view. True: the binned lookup companion (obs and vel
+        signals with their SEM bands only, dipole-only).
 
     Returns
     -------
     DipoleFigures
+        `.monopole` is None when `binned` is True.
     """
     edges = results.obs_result.shell_edges
     view = " -- binned" if binned else ""
@@ -823,20 +826,22 @@ def make_comparison_figure(
         color=_COLOR_OBS, marker="o", linestyle="-", band_alpha=_BAND_ALPHA,
         label=fr"$\hat\zeta_1^{{obs}}$  (N$_c$={results.obs_result.n_centers})",
     )
-    draw_shell_series(
-        ax_dipole, edges, comparison.obs.zeta_hat_shuffle, binned=binned,
-        lower=comparison.obs.zeta_hat_shuffle - comparison.obs.null_spread_shuffle,
-        upper=comparison.obs.zeta_hat_shuffle + comparison.obs.null_spread_shuffle,
-        color=_COLOR_OBS_NULL, marker="o", linestyle="--", band_alpha=_BAND_ALPHA,
-        label="obs null (u-shuffle)",
-    )
-    draw_shell_series(
-        ax_dipole, edges, comparison.obs.zeta_hat_gaussian, binned=binned,
-        lower=comparison.obs.zeta_hat_gaussian - comparison.obs.null_spread_gaussian,
-        upper=comparison.obs.zeta_hat_gaussian + comparison.obs.null_spread_gaussian,
-        color=_COLOR_OBS_GAUSSIAN, marker="o", linestyle=":", band_alpha=_BAND_ALPHA,
-        label="obs null (gaussian)",
-    )
+    # Nulls live in the line view only (hard rule 10).
+    if not binned:
+        draw_shell_series(
+            ax_dipole, edges, comparison.obs.zeta_hat_shuffle, binned=binned,
+            lower=comparison.obs.zeta_hat_shuffle - comparison.obs.null_spread_shuffle,
+            upper=comparison.obs.zeta_hat_shuffle + comparison.obs.null_spread_shuffle,
+            color=_COLOR_OBS_NULL, marker="o", linestyle="--", band_alpha=_BAND_ALPHA,
+            label="obs null (u-shuffle)",
+        )
+        draw_shell_series(
+            ax_dipole, edges, comparison.obs.zeta_hat_gaussian, binned=binned,
+            lower=comparison.obs.zeta_hat_gaussian - comparison.obs.null_spread_gaussian,
+            upper=comparison.obs.zeta_hat_gaussian + comparison.obs.null_spread_gaussian,
+            color=_COLOR_OBS_GAUSSIAN, marker="o", linestyle=":", band_alpha=_BAND_ALPHA,
+            label="obs null (gaussian)",
+        )
 
     draw_shell_series(
         ax_dipole, edges, comparison.vel.zeta_hat, binned=binned,
@@ -845,20 +850,22 @@ def make_comparison_figure(
         color=_COLOR_VEL, marker="s", linestyle="-", band_alpha=_BAND_ALPHA,
         label=fr"$\hat\zeta_1^{{vel}}$  (N$_c$={results.vel_result.n_centers})",
     )
-    draw_shell_series(
-        ax_dipole, edges, comparison.vel.zeta_hat_shuffle, binned=binned,
-        lower=comparison.vel.zeta_hat_shuffle - comparison.vel.null_spread_shuffle,
-        upper=comparison.vel.zeta_hat_shuffle + comparison.vel.null_spread_shuffle,
-        color=_COLOR_VEL_NULL, marker="s", linestyle="--", band_alpha=_BAND_ALPHA,
-        label="vel null (random-axis)",
-    )
-    draw_shell_series(
-        ax_dipole, edges, comparison.vel.zeta_hat_gaussian, binned=binned,
-        lower=comparison.vel.zeta_hat_gaussian - comparison.vel.null_spread_gaussian,
-        upper=comparison.vel.zeta_hat_gaussian + comparison.vel.null_spread_gaussian,
-        color=_COLOR_VEL_GAUSSIAN, marker="s", linestyle=":", band_alpha=_BAND_ALPHA,
-        label="vel null (gaussian)",
-    )
+    # Nulls live in the line view only (hard rule 10).
+    if not binned:
+        draw_shell_series(
+            ax_dipole, edges, comparison.vel.zeta_hat_shuffle, binned=binned,
+            lower=comparison.vel.zeta_hat_shuffle - comparison.vel.null_spread_shuffle,
+            upper=comparison.vel.zeta_hat_shuffle + comparison.vel.null_spread_shuffle,
+            color=_COLOR_VEL_NULL, marker="s", linestyle="--", band_alpha=_BAND_ALPHA,
+            label="vel null (random-axis)",
+        )
+        draw_shell_series(
+            ax_dipole, edges, comparison.vel.zeta_hat_gaussian, binned=binned,
+            lower=comparison.vel.zeta_hat_gaussian - comparison.vel.null_spread_gaussian,
+            upper=comparison.vel.zeta_hat_gaussian + comparison.vel.null_spread_gaussian,
+            color=_COLOR_VEL_GAUSSIAN, marker="s", linestyle=":", band_alpha=_BAND_ALPHA,
+            label="vel null (gaussian)",
+        )
 
     ax_dipole.axhline(0.0, color=_COLOR_ZERO_LINE, lw=_ZERO_LINE_WIDTH)
     finish_shell_axis(ax_dipole, edges, binned=binned)
@@ -878,6 +885,10 @@ def make_comparison_figure(
         fontsize=9,
     )
     fig_dipole.tight_layout()
+
+    if binned:
+        # Dipole-only companion: no monopole figure is created (hard rule 10).
+        return DipoleFigures(dipole=fig_dipole, monopole=None)
 
     # --- the two monopoles, twin y-axis (see docstring), same separate figure
     fig_mono, ax_mono_obs = plt.subplots(figsize=_MONOPOLE_FIGSIZE)

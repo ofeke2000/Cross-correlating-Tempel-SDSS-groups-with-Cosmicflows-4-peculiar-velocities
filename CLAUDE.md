@@ -236,9 +236,11 @@ reads the column, and only from `full`. Loading it is opt-in
     flat-across-the-bin rendering is allowed. Both views come from one builder called
     with `binned=False` / `binned=True`, drawing every series through
     `dvcorr.pipeline.shell_plotting.draw_shell_series` and `finish_shell_axis`. That way
-    the two views cannot come from different data, and hard rule 6 applies to the binned
-    pair unchanged (dipole and monopole are separate figures from the same call). A
-    notebook shows each binned figure right after its line figure. Any run
+    the two views cannot come from different data. The binned companion draws only the
+    main signal(s) with their own bands — no null curves, no monopole figure
+    (`DipoleFigures.monopole` is None and none is created) — since the line view already
+    carries both and hard rule 6's pair. A notebook shows each binned figure right after
+    its line figure. Any run
     that departs from this binning — **including one the user asked for** — is confirmed
     with the user before it is executed: state the edges you are about to use and wait
     for a yes. An axis that begins at 1 instead of 0, or a curve drawn as steps, is the

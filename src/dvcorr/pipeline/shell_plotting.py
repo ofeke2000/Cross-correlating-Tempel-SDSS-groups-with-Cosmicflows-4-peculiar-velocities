@@ -27,8 +27,12 @@ series through this function; `finish_shell_axis` then applies the shared
 axis rules (x from r = 0; in the binned view, the shell-edge guides).
 
 The binned view is a COMPANION, never a replacement: the line view stays the
-primary figure, and a binned figure keeps hard rule 6 -- one statistic per
-figure, dipole and monopole produced by the same call, saved separately.
+primary figure. The binned companion is DIPOLE-ONLY and MAIN-SIGNAL-ONLY: a
+builder called with `binned=True` draws just the measured signal curve(s)
+with their own uncertainty bands -- no null curves or null bands -- and
+creates no monopole figure at all (`DipoleFigures.monopole` is None). The
+monopole and the nulls live in the line view, which carries hard rule 6's
+dipole + monopole pair.
 
 Pure functions on a caller-supplied `Axes`; no state, and no
 `matplotlib.use` (backend discipline, see `velocity_centered`'s docstring).

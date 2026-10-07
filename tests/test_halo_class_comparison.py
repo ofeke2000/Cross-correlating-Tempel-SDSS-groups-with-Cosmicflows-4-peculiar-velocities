@@ -532,7 +532,8 @@ class TestBinnedView:
 
         # Same figure/axes structure as the line view.
         assert len(binned_figs.dipole.axes) == len(line_figs.dipole.axes) == 1
-        assert len(binned_figs.monopole.axes) == len(line_figs.monopole.axes) == 2
+        assert binned_figs.monopole is None  # dipole-only companion (hard rule 10)
+        assert len(line_figs.monopole.axes) == 2
         assert (
             len(binned_figs.dipole.axes[0].get_legend().get_texts())
             == len(line_figs.dipole.axes[0].get_legend().get_texts())
@@ -561,7 +562,6 @@ class TestBinnedView:
 
         # x starts at r = 0 in both views (hard rule 10).
         assert binned_figs.dipole.axes[0].get_xlim()[0] == pytest.approx(0.0)
-        assert binned_figs.monopole.axes[0].get_xlim()[0] == pytest.approx(0.0)
 
     def test_redshift_contrast_binned_matches_line_structure_and_values(self) -> None:
         cfg = TestEndToEnd._zero_bin_cfg()
@@ -572,7 +572,8 @@ class TestBinnedView:
         binned_figs = make_redshift_class_contrast_figure(cfg, runs, binned=True)
 
         assert len(binned_figs.dipole.axes) == len(line_figs.dipole.axes) == 1
-        assert len(binned_figs.monopole.axes) == len(line_figs.monopole.axes) == 1
+        assert binned_figs.monopole is None  # dipole-only companion (hard rule 10)
+        assert len(line_figs.monopole.axes) == 1
 
         line_values = _dipole_line_values(line_figs.dipole.axes[0], n_shells=edges.size - 1)
         assert len(line_values) == 2 * len(cfg.center_classes)  # {real, redshift} x classes
@@ -593,7 +594,6 @@ class TestBinnedView:
             np.testing.assert_allclose(segments[:, 1, 1], values)
 
         assert binned_figs.dipole.axes[0].get_xlim()[0] == pytest.approx(0.0)
-        assert binned_figs.monopole.axes[0].get_xlim()[0] == pytest.approx(0.0)
 
     def test_binned_view_titles_are_marked(self) -> None:
         """The " -- binned" title suffix (`velocity_centered.make_figure`'s

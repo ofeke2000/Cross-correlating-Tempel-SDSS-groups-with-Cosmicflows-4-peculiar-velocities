@@ -136,7 +136,7 @@ def test_finish_shell_axis_starts_at_zero_and_guides_every_edge_only_when_binned
 def test_make_figure_binned_draws_the_same_values_as_the_line_view():
     """The binned companion is the line figure with the geometry changed:
     every series' segment heights equal the line's y-values, shell by shell.
-    Still two separate figures (hard rule 6).
+    Null curves and the monopole figure exist only in the line view.
     """
     shells = ShellConfig(
         min_radius=1.0, max_radius=64.0, spacing=SPACING_LOG, n_bins=12, include_zero_bin=True,
@@ -147,22 +147,26 @@ def test_make_figure_binned_draws_the_same_values_as_the_line_view():
     lines = make_figure(cfg, result, normalized)
     bins = make_figure(cfg, result, normalized, binned=True)
 
-    assert bins.dipole is not bins.monopole
-    for line_fig, bin_fig in ((lines.dipole, bins.dipole), (lines.monopole, bins.monopole)):
-        line_ax, bin_ax = line_fig.axes[0], bin_fig.axes[0]
-        curves = [l for l in line_ax.get_lines() if len(l.get_xdata()) == result.shell_edges.size - 1]
-        heights = [
-            [seg for seg in coll.get_segments() if np.size(seg)]
-            for coll in bin_ax.collections
-            if isinstance(coll, LineCollection)
-        ]
-        assert len(heights) == len(curves)
-        for curve, segs in zip(curves, heights):
-            finite = np.isfinite(curve.get_ydata())
-            np.testing.assert_allclose(
-                [seg[0, 1] for seg in segs], np.asarray(curve.get_ydata())[finite]
-            )
-        assert bin_ax.get_xlim()[0] == 0.0
+    # The binned companion is dipole-only and main-signal-only (hard rule 10).
+    assert bins.monopole is None
+    line_ax, bin_ax = lines.dipole.axes[0], bins.dipole.axes[0]
+    assert not any("null" in t.get_text() for t in bin_ax.get_legend().get_texts())
+    curves = [
+        l for l in line_ax.get_lines()
+        if len(l.get_xdata()) == result.shell_edges.size - 1 and "null" not in l.get_label()
+    ]
+    heights = [
+        [seg for seg in coll.get_segments() if np.size(seg)]
+        for coll in bin_ax.collections
+        if isinstance(coll, LineCollection)
+    ]
+    assert len(heights) == len(curves) == 1
+    for curve, segs in zip(curves, heights):
+        finite = np.isfinite(curve.get_ydata())
+        np.testing.assert_allclose(
+            [seg[0, 1] for seg in segs], np.asarray(curve.get_ydata())[finite]
+        )
+    assert bin_ax.get_xlim()[0] == 0.0
     plt.close("all")
 
 

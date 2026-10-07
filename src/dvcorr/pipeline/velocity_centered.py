@@ -389,6 +389,9 @@ _MONOPOLE_FIGSIZE = (8.0, 3.0)
 class DipoleFigures:
     """The dipole figure and its monopole companion, built by one call.
 
+    The binned lookup companion (`binned=True`, hard rule 10) is dipole-only:
+    its `monopole` is None and no monopole figure is created at all.
+
     CLAUDE.md hard rule 6: monopole and dipole are computed and returned
     together but plotted as two SEPARATE figures, never merged into one
     two-panel image -- a dipole PNG must be sendable on its own. This is the
@@ -404,11 +407,12 @@ class DipoleFigures:
     Attributes
     ----------
     dipole : matplotlib.figure.Figure
-    monopole : matplotlib.figure.Figure
+    monopole : matplotlib.figure.Figure or None
+        None for a binned companion (the line view carries the monopole).
     """
 
     dipole: plt.Figure
-    monopole: plt.Figure
+    monopole: plt.Figure | None
 
 
 def dipole_and_monopole_paths(output_dir: Path, output_name: str) -> tuple[Path, Path]:
@@ -1845,13 +1849,14 @@ def make_figure(
     the bin. Both axes start at r = 0 explicitly (`ax.set_xlim(left=0.0)`),
     independent of where the innermost abscissa falls.
 
-    `binned=True` builds the binned COMPANION pair instead (hard rule 10):
-    the same arrays, each shell drawn flat across its own edges with the
-    r_eff point marked and the shell edges as faint guides
-    (`dvcorr.pipeline.shell_plotting`), so a point on the line figure can be
-    looked up -- which shell, what value. Call once with each value to get
-    both pairs; every series goes through `draw_shell_series`, so the two
-    cannot disagree on the data.
+    `binned=True` builds the binned COMPANION instead (hard rule 10): the
+    zeta_hat_1 signal alone, with its SEM band, each shell drawn flat across
+    its own edges with the r_eff point marked and the shell edges as faint
+    guides (`dvcorr.pipeline.shell_plotting`), so a point on the line figure
+    can be looked up -- which shell, what value. NO nulls and NO monopole
+    figure (`DipoleFigures.monopole` is None, and none is created): the line
+    view carries both. Every series goes through `draw_shell_series`, so the
+    two cannot disagree on the data.
 
     The two bands are DIFFERENT quantities and are read differently. The
     signal's is an across-CENTER standard error: how noisy this stack is.
@@ -1867,11 +1872,13 @@ def make_figure(
     result : VelocityCenteredShellDipoleResult
     normalized : NormalizedDipole
     binned : bool, default False
-        False: the line view. True: the binned lookup companion.
+        False: the line view. True: the binned lookup companion (signal and
+        its SEM band only, dipole-only).
 
     Returns
     -------
     DipoleFigures
+        `.monopole` is None when `binned` is True.
     """
     edges = result.shell_edges
     view = " -- binned" if binned else ""
@@ -1888,27 +1895,29 @@ def make_figure(
         color=_COLOR_SIGNAL, marker="o", linestyle="-", band_alpha=_BAND_ALPHA,
         label=fr"$\hat\zeta_1$  (N$_c$={result.n_centers})",
     )
-    draw_shell_series(
-        ax_dipole, edges, normalized.zeta_hat_shuffle, binned=binned,
-        lower=normalized.zeta_hat_shuffle - normalized.null_spread_shuffle,
-        upper=normalized.zeta_hat_shuffle + normalized.null_spread_shuffle,
-        color=_COLOR_NULL, marker="s", linestyle="--", band_alpha=_BAND_ALPHA,
-        label="shuffle null",
-    )
-    # Second null, matched to the same first two moments as the shuffle
-    # (`normalize_result`), so the two dashed/dotted curves are read against
-    # EACH OTHER: their separation is the non-Gaussianity of the u
-    # distribution. All-NaN when the caller normalized without one --
-    # matplotlib then draws nothing, and the legend entry is the only trace,
-    # which is the intended visible-absence behavior
-    # (`normalize_stacked_dipole`).
-    draw_shell_series(
-        ax_dipole, edges, normalized.zeta_hat_gaussian, binned=binned,
-        lower=normalized.zeta_hat_gaussian - normalized.null_spread_gaussian,
-        upper=normalized.zeta_hat_gaussian + normalized.null_spread_gaussian,
-        color=_COLOR_GAUSSIAN_NULL, marker="^", linestyle=":", band_alpha=_BAND_ALPHA,
-        label="gaussian null",
-    )
+    # Nulls live in the line view only (hard rule 10).
+    if not binned:
+        draw_shell_series(
+            ax_dipole, edges, normalized.zeta_hat_shuffle, binned=binned,
+            lower=normalized.zeta_hat_shuffle - normalized.null_spread_shuffle,
+            upper=normalized.zeta_hat_shuffle + normalized.null_spread_shuffle,
+            color=_COLOR_NULL, marker="s", linestyle="--", band_alpha=_BAND_ALPHA,
+            label="shuffle null",
+        )
+        # Second null, matched to the same first two moments as the shuffle
+        # (`normalize_result`), so the two dashed/dotted curves are read against
+        # EACH OTHER: their separation is the non-Gaussianity of the u
+        # distribution. All-NaN when the caller normalized without one --
+        # matplotlib then draws nothing, and the legend entry is the only trace,
+        # which is the intended visible-absence behavior
+        # (`normalize_stacked_dipole`).
+        draw_shell_series(
+            ax_dipole, edges, normalized.zeta_hat_gaussian, binned=binned,
+            lower=normalized.zeta_hat_gaussian - normalized.null_spread_gaussian,
+            upper=normalized.zeta_hat_gaussian + normalized.null_spread_gaussian,
+            color=_COLOR_GAUSSIAN_NULL, marker="^", linestyle=":", band_alpha=_BAND_ALPHA,
+            label="gaussian null",
+        )
     ax_dipole.axhline(0.0, color=_COLOR_ZERO_LINE, lw=_ZERO_LINE_WIDTH)
     finish_shell_axis(ax_dipole, edges, binned=binned)
     ax_dipole.set_ylabel(r"$\hat\zeta_1$  [km/s]", color=_LABEL_COLOR)
@@ -1919,6 +1928,10 @@ def make_figure(
     ax_dipole.spines["right"].set_visible(False)
     ax_dipole.set_title(f"velocity-centered dipole{view}  ({title_info})")
     fig_dipole.tight_layout()
+
+    if binned:
+        # Dipole-only companion: no monopole figure is created (hard rule 10).
+        return DipoleFigures(dipole=fig_dipole, monopole=None)
 
     # No zero reference line here: with the |u_alpha| weight the monopole sits
     # near <|u|>, not near zero (NormalizedDipole.monopole_norm), so a y=0 line

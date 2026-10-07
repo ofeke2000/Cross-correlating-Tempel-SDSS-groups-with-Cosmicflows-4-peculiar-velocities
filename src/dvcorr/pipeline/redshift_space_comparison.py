@@ -781,6 +781,51 @@ def select_redshift_shared_centers(
     )
 
 
+def real_space_center_set(centers: RedshiftCenterSet) -> SharedCenterSet:
+    """The real-space half of a `RedshiftCenterSet`, as a `SharedCenterSet`.
+
+    Lets a real-space-only pipeline -- e.g.
+    `dvcorr.pipeline.velocity_frame_comparison.run_both_frames` -- run on
+    EXACTLY the centers a redshift-space comparison uses, so that every curve
+    in a 3D -> obs -> z chain is measured on one population and the
+    observer-frame curve is identical to the redshift-space run's real-space
+    one, not merely the same estimator on a different draw.
+
+    The sharing can only go this way. Every center that survives
+    `select_redshift_shared_centers` also survives the plain
+    `select_shared_centers` (its core margin `r_max + v_margin` is the wider
+    one, and its two extra cuts only remove), whereas a plain-margin center
+    between `R_sub - r_max - v_margin` and `R_sub - r_max` of the observer
+    could be displaced out of the core in redshift space.
+
+    The arrays are passed through untouched (same objects, same row order).
+    The funnel counts are `centers.base`'s, so `n_core - n_dropped_slow`
+    exceeds `n_centers` by the global |v_r| and through-observer drops;
+    `centers` itself is the full record of those two.
+
+    Parameters
+    ----------
+    centers : RedshiftCenterSet
+
+    Returns
+    -------
+    SharedCenterSet
+        `s_centers` is `centers.s_centers_real`, shape (N_c, 3); `v_centers`
+        is `centers.v_centers`, shape (N_c, 3); `n_centers` is
+        `centers.n_centers`.
+    """
+    return SharedCenterSet(
+        s_centers=centers.s_centers_real,
+        v_centers=centers.v_centers,
+        n_candidates=centers.base.n_candidates,
+        n_core=centers.base.n_core,
+        n_dropped_slow=centers.base.n_dropped_slow,
+        n_centers=centers.n_centers,
+        mvir_centers=centers.mvir_centers,
+        is_distinct_centers=centers.is_distinct_centers,
+    )
+
+
 # ---------------------------------------------------------------------------
 # Stage 4: run the (unchanged) estimator, twice
 # ---------------------------------------------------------------------------
@@ -1236,6 +1281,11 @@ def make_redshift_comparison_figure(
     Both views are built from the SAME arrays, so they cannot disagree; the
     x-axis is pinned to start at r = 0 in both.
 
+    The binned companion is dipole-only and main-signal-only (hard rule 10):
+    the real and redshift zeta_hat_1 curves with their SEM bands, no nulls,
+    and NO monopole figure (`DipoleFigures.monopole` is None and none is
+    created) -- the line view carries both.
+
     TOP panel: `zeta_hat` for both spaces, each with its own across-center
     SEM band and its own TWO nulls -- the velocity shuffle dashed in a
     lighter tint, the matched-Gaussian null dotted in a darker one, grouped
@@ -1270,11 +1320,13 @@ def make_redshift_comparison_figure(
     results : RedshiftSpaceFrameResults
     comparison : RedshiftSpaceComparison
     binned : bool, default False
-        False: the line view. True: the binned lookup companion.
+        False: the line view. True: the binned lookup companion (real and
+        redshift signals with their SEM bands only, dipole-only).
 
     Returns
     -------
     DipoleFigures
+        `.monopole` is None when `binned` is True.
     """
     edges = results.real_result.shell_edges
     view = " -- binned" if binned else ""
@@ -1288,16 +1340,18 @@ def make_redshift_comparison_figure(
         color=_COLOR_REAL, marker="o", linestyle="-", band_alpha=_BAND_ALPHA,
         label=fr"$\hat\zeta_1^{{real}}$  (N$_c$={results.real_result.n_centers})",
     )
-    draw_shell_series(
-        ax_dipole, edges, comparison.real.zeta_hat_shuffle, binned=binned,
-        color=_COLOR_REAL_NULL, marker="o", linestyle="--", band_alpha=_BAND_ALPHA,
-        label="real null (u-shuffle)",
-    )
-    draw_shell_series(
-        ax_dipole, edges, comparison.real.zeta_hat_gaussian, binned=binned,
-        color=_COLOR_REAL_GAUSSIAN, marker="o", linestyle=":", band_alpha=_BAND_ALPHA,
-        label="real null (gaussian)",
-    )
+    # Nulls live in the line view only (hard rule 10).
+    if not binned:
+        draw_shell_series(
+            ax_dipole, edges, comparison.real.zeta_hat_shuffle, binned=binned,
+            color=_COLOR_REAL_NULL, marker="o", linestyle="--", band_alpha=_BAND_ALPHA,
+            label="real null (u-shuffle)",
+        )
+        draw_shell_series(
+            ax_dipole, edges, comparison.real.zeta_hat_gaussian, binned=binned,
+            color=_COLOR_REAL_GAUSSIAN, marker="o", linestyle=":", band_alpha=_BAND_ALPHA,
+            label="real null (gaussian)",
+        )
 
     draw_shell_series(
         ax_dipole, edges, comparison.redshift.zeta_hat, binned=binned,
@@ -1306,16 +1360,18 @@ def make_redshift_comparison_figure(
         color=_COLOR_REDSHIFT, marker="s", linestyle="-", band_alpha=_BAND_ALPHA,
         label=fr"$\hat\zeta_1^{{z}}$  (N$_c$={results.redshift_result.n_centers})",
     )
-    draw_shell_series(
-        ax_dipole, edges, comparison.redshift.zeta_hat_shuffle, binned=binned,
-        color=_COLOR_REDSHIFT_NULL, marker="s", linestyle="--", band_alpha=_BAND_ALPHA,
-        label="redshift null (u-shuffle)",
-    )
-    draw_shell_series(
-        ax_dipole, edges, comparison.redshift.zeta_hat_gaussian, binned=binned,
-        color=_COLOR_REDSHIFT_GAUSSIAN, marker="s", linestyle=":", band_alpha=_BAND_ALPHA,
-        label="redshift null (gaussian)",
-    )
+    # Nulls live in the line view only (hard rule 10).
+    if not binned:
+        draw_shell_series(
+            ax_dipole, edges, comparison.redshift.zeta_hat_shuffle, binned=binned,
+            color=_COLOR_REDSHIFT_NULL, marker="s", linestyle="--", band_alpha=_BAND_ALPHA,
+            label="redshift null (u-shuffle)",
+        )
+        draw_shell_series(
+            ax_dipole, edges, comparison.redshift.zeta_hat_gaussian, binned=binned,
+            color=_COLOR_REDSHIFT_GAUSSIAN, marker="s", linestyle=":", band_alpha=_BAND_ALPHA,
+            label="redshift null (gaussian)",
+        )
 
     ax_dipole.axhline(0.0, color=_COLOR_ZERO_LINE, lw=_ZERO_LINE_WIDTH)
     finish_shell_axis(ax_dipole, edges, binned=binned)
@@ -1336,6 +1392,10 @@ def make_redshift_comparison_figure(
         fontsize=9,
     )
     fig_dipole.tight_layout()
+
+    if binned:
+        # Dipole-only companion: no monopole figure is created (hard rule 10).
+        return DipoleFigures(dipole=fig_dipole, monopole=None)
 
     fig_mono, ax_mono = plt.subplots(figsize=_MONOPOLE_FIGSIZE)
     draw_shell_series(
@@ -1393,6 +1453,9 @@ def make_single_center_figure(
     own edges with shell-edge guides (`dvcorr.pipeline.shell_plotting
     .finish_shell_axis`). Both views come from the SAME arrays.
 
+    The binned companion is dipole-only (hard rule 10): `monopole` is None
+    and no monopole figure is created.
+
     Dipole: `per_center_dipole[a] * shell_dipole_norm_scale(shell_edges,
     n_bar)`, the SAME per-shell normalization
     `dvcorr.pipeline.velocity_frame_comparison.normalize_comparison` uses for
@@ -1415,11 +1478,13 @@ def make_single_center_figure(
         figure (e.g. `RedshiftSpaceComparison.n_bar`) -- kept identical so
         the two figures' dipole y-axes are on the same normalization.
     binned : bool, default False
-        False: the line view. True: the binned lookup companion.
+        False: the line view. True: the binned lookup companion
+        (dipole-only).
 
     Returns
     -------
     DipoleFigures
+        `.monopole` is None when `binned` is True.
 
     Raises
     ------
@@ -1469,6 +1534,10 @@ def make_single_center_figure(
         fontsize=9,
     )
     fig_dipole.tight_layout()
+
+    if binned:
+        # Dipole-only companion: no monopole figure is created (hard rule 10).
+        return DipoleFigures(dipole=fig_dipole, monopole=None)
 
     fig_mono, ax_mono = plt.subplots(figsize=_MONOPOLE_FIGSIZE)
     draw_shell_series(

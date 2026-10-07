@@ -1254,6 +1254,9 @@ _SEED_LINE_ALPHA = 0.8
 #: below, sized on its own).
 _FIGSIZE = (13.0, 13.5)
 _MONOPOLE_FIGSIZE = (8.0, 3.0)
+#: The binned companion is one axis -- the full-stack zeta_hat_1 -- not the
+#: 5-panel sheet; the same size as the other builders' dipole figures.
+_BINNED_FIGSIZE = (8.0, 6.0)
 _TRIM_CMAP = "viridis"
 _SPLIT_CMAP = "plasma"
 _COLOR_SPAN = 0.85  # keep colormap ends off pure white/yellow
@@ -1347,18 +1350,18 @@ def make_robustness_figure(
     x-axis to start at r = 0. Panels 1 and 5 are not radial (N_c and group
     index respectively) and are unaffected.
 
-    `binned=True` builds the binned COMPANION pair instead (hard rule 10):
-    every radial series in panels 2-4 and 6 is drawn as a flat segment over
-    its own shell's edges, with the r_eff point marked and every shell edge
-    as a faint guide (`dvcorr.pipeline.shell_plotting.draw_shell_series`,
+    `binned=True` builds the binned COMPANION instead (hard rule 10), and it
+    is NOT the 5-panel sheet: none of the robustness tests is the main data,
+    so it is a SINGLE-axis figure of the full-stack zeta_hat_1
+    (`interval.zeta_hat`, panel 2's curve) with its Gaussian SEM band, drawn
+    as a flat segment over each shell's edges with the r_eff point marked and
+    every shell edge as a faint guide
+    (`dvcorr.pipeline.shell_plotting.draw_shell_series`,
     `finish_shell_axis`), so a point on the line figure can be looked up --
-    which shell, what value. Panels 1 and 5 are unaffected (not radial).
-    Every series in panels 2-4 and 6 shares `stack.shell_edges` -- nothing in
-    this figure overlays curves from a coarser or finer ladder (that only
-    happens when a caller merges shells for its OWN comparison, e.g. the
-    notebook's `merge_shells` step, which is outside this figure). Call once
-    with each value of `binned` to get both pairs; radial titles gain a
-    " -- binned" suffix so the two are never confused in a saved file name.
+    which shell, what value. No bootstrap band, trim ladder, seed repeats,
+    non-radial panels or monopole (`DipoleFigures.monopole` is None and no
+    monopole figure is created); the title gains a " -- binned" suffix so the
+    two are never confused in a saved file name.
 
     Parameters
     ----------
@@ -1367,11 +1370,13 @@ def make_robustness_figure(
     ladder, interval, trim, repeats, split
         The five test results, all built from `stack`.
     binned : bool, default False
-        False: the line view. True: the binned lookup companion.
+        False: the line view. True: the binned lookup companion (single
+        axis, full-stack zeta_hat_1 with its Gaussian SEM band).
 
     Returns
     -------
     DipoleFigures
+        `.monopole` is None when `binned` is True.
     """
     view = " -- binned" if binned else ""
     b = cfg.trim_rank_shell
@@ -1379,6 +1384,26 @@ def make_robustness_figure(
         f"[{stack.shell_edges[b]:g}, {stack.shell_edges[b + 1]:g}) "
         r"$h^{-1}$ Mpc"
     )
+
+    if binned:
+        # Binned lookup companion (hard rule 10): the main data only -- the
+        # full-stack zeta_hat_1 with its Gaussian SEM band. None of the
+        # robustness diagnostics (bootstrap band, trim ladder, seed repeats,
+        # non-radial panels) and no monopole figure is created.
+        fig_binned, ax_binned = plt.subplots(figsize=_BINNED_FIGSIZE)
+        draw_shell_series(
+            ax_binned, stack.shell_edges, interval.zeta_hat, binned=True,
+            lower=interval.zeta_hat - interval.sem,
+            upper=interval.zeta_hat + interval.sem,
+            color=_COLOR_SIGNAL, marker="o", linestyle="-", band_alpha=_BAND_ALPHA,
+            label=r"$\hat\zeta_1$",
+        )
+        _shell_axis(ax_binned, stack.shell_edges, cfg.figure_max_radius, binned=True)
+        ax_binned.set_ylabel(r"$\hat\zeta_1(r)$  [km/s]")
+        ax_binned.set_title(f"full-stack dipole{view}, $N_c$ = {stack.n_centers}")
+        ax_binned.legend(fontsize="small")
+        fig_binned.tight_layout()
+        return DipoleFigures(dipole=fig_binned, monopole=None)
 
     fig, axes = plt.subplots(3, 2, figsize=_FIGSIZE)
     ax_ladder, ax_boot, ax_trim, ax_seed, ax_split, ax_unused = axes.ravel()

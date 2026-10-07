@@ -527,13 +527,13 @@ def test_binned_figure_builds_with_the_same_figure_and_axes_shape_as_the_line_vi
     line = make_frame_ratio_figure(cfg, curves, ratios, binned=False)
     binned = make_frame_ratio_figure(cfg, curves, ratios, binned=True)
 
-    assert binned.dipole is not binned.monopole
+    # The binned companion is dipole-only (hard rule 10).
+    assert binned.monopole is None
     assert len(binned.dipole.axes) == len(line.dipole.axes) == 1
-    assert len(binned.monopole.axes) == len(line.monopole.axes) == 1
+    assert len(line.monopole.axes) == 1
     plt.close(line.dipole)
     plt.close(line.monopole)
     plt.close(binned.dipole)
-    plt.close(binned.monopole)
 
 
 def test_binned_figure_segments_span_each_shells_edges_at_the_line_views_value():
@@ -574,7 +574,6 @@ def test_binned_figure_segments_span_each_shells_edges_at_the_line_views_value()
             assert y0 == pytest.approx(ratio.ratio[shell])
             assert y1 == pytest.approx(ratio.ratio[shell])
     plt.close(figures.dipole)
-    plt.close(figures.monopole)
 
 
 def test_binned_figure_still_distinguishes_usable_from_pole_markers():
@@ -600,7 +599,6 @@ def test_binned_figure_still_distinguishes_usable_from_pole_markers():
     assert any(fc != "none" for fc in facecolors)
     assert any(not r.usable.all() for r in ratios), "fixture must exercise a pole"
     plt.close(figures.dipole)
-    plt.close(figures.monopole)
 
 
 def test_binned_figure_x_axis_starts_at_zero():
@@ -610,9 +608,7 @@ def test_binned_figure_x_axis_starts_at_zero():
     figures = make_frame_ratio_figure(cfg, curves, ratios, binned=True)
 
     assert figures.dipole.axes[0].get_xlim()[0] == pytest.approx(0.0)
-    assert figures.monopole.axes[0].get_xlim()[0] == pytest.approx(0.0)
     plt.close(figures.dipole)
-    plt.close(figures.monopole)
 
 
 def test_binned_figure_draws_shell_edge_guides():
@@ -639,14 +635,12 @@ def test_binned_figure_draws_shell_edge_guides():
     plt.close(line.dipole)
     plt.close(line.monopole)
     plt.close(binned.dipole)
-    plt.close(binned.monopole)
 
 
 def test_binned_figure_with_no_ratios_does_not_crash():
     figures = make_frame_ratio_figure(FrameRatioConfig(), (), (), binned=True)
-    assert figures.dipole is not figures.monopole
+    assert figures.monopole is None
     plt.close(figures.dipole)
-    plt.close(figures.monopole)
 
 
 def test_line_view_output_is_unchanged_by_the_binned_parameter_existing():

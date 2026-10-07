@@ -492,6 +492,45 @@ def test_the_rocket_dipole_vanishes_in_the_distant_observer_limit():
     assert np.allclose(monopole, expected, rtol=1e-8)
 
 
+def test_both_rocket_denominators_match_their_first_order_dipoles():
+    """The fixed-`r_obs` and exact-`r_tilde` rocket dipoles, against eps = y/r_obs.
+
+    Fixed (Nusser's Fig. 1): `+(4 y / 15 r^2) Psi_-`, from the `mu_tilde` tilt
+    alone. Exact (eq. 6): `-(2 y / 3 r^2)(Psi_perp + Psi_-/5)`, dominated by
+    `1/r_tilde` weighting the near side up. The residual is O(eps^2) relative.
+    """
+    pytest.importorskip("mcfit")
+    k, pk = smooth_spectrum()
+    functions = gorski.gorski_functions(Y_TEST, k, pk, f=0.5251)
+    r_obs = 1e4
+
+    fixed = wide_angle.xi_uu_over_r_tilde_moment(
+        Y_TEST, r_obs, functions, 1,
+        rocket_denominator=wide_angle.ROCKET_DENOMINATOR_FIXED,
+    )
+    exact = wide_angle.xi_uu_over_r_tilde_moment(
+        Y_TEST, r_obs, functions, 1,
+        rocket_denominator=wide_angle.ROCKET_DENOMINATOR_EXACT,
+    )
+    scale = Y_TEST / r_obs**2
+    assert np.allclose(fixed, 4.0 / 15.0 * scale * functions.minus, rtol=1e-3)
+    assert np.allclose(
+        exact, -2.0 / 3.0 * scale * (functions.perp + functions.minus / 5.0), rtol=1e-3
+    )
+
+    # The default is Nusser's.
+    default = wide_angle.xi_uu_over_r_tilde_moment(Y_TEST, r_obs, functions, 1)
+    assert np.array_equal(default, fixed)
+
+
+def test_an_unknown_rocket_denominator_raises():
+    mu, _ = wide_angle.gauss_legendre_nodes(5)
+    geometry = wide_angle.wide_angle_geometry(np.array([1.0]), mu, r_obs=50.0)
+    functions = gorski.GorskiFunctions.__new__(gorski.GorskiFunctions)
+    with pytest.raises(ValueError, match="denominator must be one of"):
+        wide_angle.rocket_term(geometry, functions, "r_tilde")
+
+
 def test_the_finite_distance_dipole_converges_to_the_dol_as_one_over_r_squared():
     """Curve 3 -> curve 1, at the rate wide-angle corrections are supposed to.
 
