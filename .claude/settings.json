@@ -25,10 +25,47 @@
       "Bash(pip3 freeze*)",
       "Bash(.venv/bin/pip list*)",
       "Bash(.venv/bin/pip show*)",
-      "Bash(.venv/bin/pip freeze*)"
+      "Bash(.venv/bin/pip freeze*)",
+      "Bash(command -v *)"
     ],
     "ask": [
       "Bash(rm *)"
+    ]
+  },
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"$CLAUDE_PROJECT_DIR/.claude/hooks/session_start.sh\""
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write|MultiEdit|NotebookEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"$CLAUDE_PROJECT_DIR/.claude/hooks/post_edit.py\"",
+            "timeout": 330,
+            "statusMessage": "Post-edit checks (sign gate, rule 5)"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"$CLAUDE_PROJECT_DIR/.claude/hooks/stop_stale_notebooks.py\"",
+            "timeout": 30
+          }
+        ]
+      }
     ]
   }
 }

@@ -28,6 +28,11 @@ Read these for context before non-trivial work:
     (implemented in `dvcorr.theory.gorski`)
   - `1704.04477v1.pdf` — Tempel et al. (2017), the group catalog
 
+  Each PDF has a `.txt` twin with `=== page N ===` markers. **Search the `.txt` first**
+  (grep for an equation number or phrase) and read only the matching page of the PDF
+  (`Read` with `pages: "N"`) when you need an equation — the text extraction garbles
+  math, and reading a whole paper costs ~100k tokens.
+
 ## Code layout
 
 Editable-installed package (`pip install -e .`, setuptools src layout, `pyproject.toml`):
@@ -67,6 +72,8 @@ scripts/               thin drivers: plot_velocity_centered_dipole, plot_velocit
 data/                  input catalogs + DM_simulation.hdf5 (gitignored, see README)
 literature/            papers and the methodological note (gitignored, local only)
 .claude/agents/        subagent definitions with pinned models (implementer, reviewer)
+.claude/hooks/         venv activation, post-edit sign gate + rule-5 check, stale-notebook stop
+.claude/rules/         path-scoped rules, loaded only when matching files are read (plotting)
 Imports from old repo/   reference code from the bulk-flow project; not importable, read only
 ```
 
@@ -98,7 +105,10 @@ This is what keeps the same logic from being duplicated across the two.
 
 Work inside the project virtual environment (`requirements.txt` is just `-e .[dev]`;
 `pyproject.toml` is the dependency source). Create it once, then activate it for every
-session; don't `pip install` into the system interpreter.
+session; don't `pip install` into the system interpreter. Inside Claude Code a SessionStart
+hook (`.claude/hooks/session_start.sh`) activates it for every Bash call — no `source`
+prefix needed — and warns when the venv cannot import `dvcorr` (as after the Ubuntu
+24.04 upgrade removed the Python 3.10 it was first built on; it is now on 3.12).
 
 ```bash
 python -m venv .venv                    # once
@@ -160,7 +170,9 @@ reads the column, and only from `full`. Loading it is opt-in
    just the wrong sign on the growth rate. The joint gate in
    `tests/test_velocity_centered_dipole.py` asserts both signs on the same toy
    (`tests/test_geometry.py` covers the group-centered half alone); a dipole of the wrong
-   sign on an infall mock is an orientation bug, not a result.
+   sign on an infall mock is an orientation bug, not a result. A PostToolUse hook
+   (`.claude/hooks/post_edit.py`) re-runs the four gate files after every edit to
+   `conventions.py`, `geometry.py` or `estimators/` and reports a failure immediately.
 
 3. **Periodic boundary conditions everywhere simulation data is used.** The MDPL2 box is
    1000 h⁻¹ Mpc with PBC. Every spatial calculation — separations, KDTree queries, lines of
@@ -222,29 +234,13 @@ reads the column, and only from `full`. Loading it is opt-in
     from 0.5.** The default ladder is the inner bin [0, 0.5) followed by 14 geometric
     shells 0.5 · √2ⁿ ending exactly at 64 — fifteen shells in all — built by
     `ShellConfig(min_radius=0.5, max_radius=64.0, spacing=SPACING_LOG, n_bins=14,
-    include_zero_bin=True)`. Binning is a *computation* choice, not a *rendering* one:
-    the estimator accumulates per shell, but a figure draws one point per shell at the
-    shell's volume-weighted radius (`volume_weighted_shell_radii`) and joins the points
-    with a line — never a step or `stairs` curve held flat across the bin. Every figure's
-    x-axis starts at r = 0 (`set_xlim(left=0)`), whatever the innermost edge is.
-    **Every such line figure also gets a binned companion**: the same arrays, each shell
-    drawn as a flat segment spanning its own edges [r_lo, r_hi), with its r_eff point
-    marked on it, bands drawn as boxes over the same span, and the shell edges as faint
-    vertical guides. It is there so a point on the line figure can be looked up: which
-    shell it belongs to and what value was measured over it. It is a companion, never a
-    replacement: the line figure stays primary, and the binned one is the only place a
-    flat-across-the-bin rendering is allowed. Both views come from one builder called
-    with `binned=False` / `binned=True`, drawing every series through
-    `dvcorr.pipeline.shell_plotting.draw_shell_series` and `finish_shell_axis`. That way
-    the two views cannot come from different data. The binned companion draws only the
-    main signal(s) with their own bands — no null curves, no monopole figure
-    (`DipoleFigures.monopole` is None and none is created) — since the line view already
-    carries both and hard rule 6's pair. A notebook shows each binned figure right after
-    its line figure. Any run
-    that departs from this binning — **including one the user asked for** — is confirmed
-    with the user before it is executed: state the edges you are about to use and wait
-    for a yes. An axis that begins at 1 instead of 0, or a curve drawn as steps, is the
-    failure this rule exists to prevent.
+    include_zero_bin=True)`. Any run that departs from this binning — **including one the
+    user asked for** — is confirmed with the user before it is executed: state the edges
+    you are about to use and wait for a yes. Figures draw one point per shell at r_eff
+    joined by a line (never steps), with the x-axis from r = 0, and each gets a binned
+    companion; the full rendering rules are in
+    [.claude/rules/plotting.md](.claude/rules/plotting.md), which loads automatically
+    whenever pipeline code, scripts or notebooks are read.
 
 11. **A changed notebook is re-executed, top to bottom, before the work is called done.**
     A notebook's saved outputs are the figures the user reads, so an edit that leaves old
@@ -261,7 +257,10 @@ reads the column, and only from `full`. Loading it is opt-in
     applies: say which notebooks need re-running and why, ask before starting, then run
     them. What is never acceptable is silently skipping the re-run: a notebook that was
     touched but not re-executed is reported as stale in the final message, by name, so the
-    user knows its outputs are not to be trusted until it is.
+    user knows its outputs are not to be trusted until it is. A Stop hook
+    (`.claude/hooks/stop_stale_notebooks.py`) backstops this: it traces which notebooks
+    import an edited `dvcorr` module and, once per edit, lists those whose outputs
+    predate it.
 
 ## Answering questions
 
@@ -359,41 +358,18 @@ Fixed project-wide; see the README table and `conventions.py`.
 
 ## Agent workflow
 
-Delegation in this repo goes through two defined agents in `.claude/agents/`, never
-through a bare `general-purpose` spawn — the definitions pin the model, so routing is
-enforced by config rather than by remembering to pass one:
+Delegate only through the two agents in `.claude/agents/`, never a bare `general-purpose`
+spawn — their definitions pin the model, so routing is enforced by config:
 
-- **`implementer`** (Sonnet) — writing or editing code.
-- **`reviewer`** (Opus) — reviewing a non-trivial change after it lands.
+- **`implementer`** (Sonnet) — writing or editing code. It exists to move code-writing
+  onto a cheaper model, so delegate only when the task needs *discovery* (files the main
+  session has not read) **and** the main session is not itself on Sonnet. Otherwise work
+  inline: a subagent starts cold and re-reads what this context already holds.
+- **`reviewer`** (Opus) — fresh eyes on a substantial change the main agent wrote. What it
+  buys is a reader without the author's assumptions, not a cheaper model; skip it for a
+  small diff or for code the main agent did not write.
 
-### When to delegate
-
-The test is whether the agent needs to *discover* anything. Delegate when the task
-requires searching or touching files the main session has not already read — the agent
-does its own exploration and returns a conclusion instead of filling this context with
-file dumps.
-
-Do it inline when the relevant files are already open in the session. A subagent starts
-cold: it re-reads `CLAUDE.md`, re-derives the layout, and re-opens files that are already
-free in the main context, which for a small edit costs more than the edit.
-
-### The same-model exception
-
-**These routing rules do not apply when the subagent would run the same model as the main
-session.** `implementer` exists to move code-writing onto a cheaper model than the main
-agent; if the main session is already on Sonnet, there is no saving left to capture, and
-delegating just buys a second cold start. Do that work inline.
-
-`reviewer` is the deliberate exception to the exception: it runs Opus alongside an Opus
-main session, and what it buys is **fresh context rather than a cheaper model** — a
-reader who did not write the code and so does not inherit the author's assumptions. That
-is worth the spawn for a substantial change, and not worth it for a small diff or for
-code the main agent did not write itself.
-
-### Briefing discipline
-
-A subagent's cost is dominated by what it reads before doing anything. Brief it with the
-file paths it needs so it can skip discovery, and point it at the **module docstring** —
-that is the authority on any function it touches. [docs/architecture.md](docs/architecture.md)
-is a ~180-line index and is cheap to read whole; it tells an agent which file to open, not
-what the code in it does.
+Brief a subagent with the file paths it needs and point it at the module docstrings (the
+authority on any function it touches); [docs/architecture.md](docs/architecture.md) is the
+cheap index for finding files. Each agent file carries its own reading discipline and
+when-not-to-use rules.

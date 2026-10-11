@@ -43,3 +43,12 @@ where = ["src"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+# Read by the pyright language server (Claude Code's pyright-lsp plugin, editors):
+# resolve imports against the project venv, and skip the read-only reference dump.
+[tool.pyright]
+venvPath = "."
+venv = ".venv"
+include = ["src", "tests", "scripts"]
+exclude = ["Imports from old repo", ".venv*", "data", "output"]
+typeCheckingMode = "off"  # numpy/pandas stubs make "basic" ~100 false errors; keep navigation + undefined names
