@@ -4,8 +4,8 @@
 
 The simulation arm is done. The estimators, sign gates, theory (Nusser Fig. 1), the redshift-space
 and frame comparisons, robustness and bias are all in `dvcorr`. The real catalogs are already in
-`data/` (`CF4_Groups.csv`, `CF4_Groups_Velocities.csv`, `SDSS_Temple.csv`), but nothing in `dvcorr`
-reads them yet. Ofek wants a guided map from "load the data" to "every figure and number in
+`data/` (`CF4_Groups.csv`, `CF4_Groups_Velocities.csv`, `SDSS_Tempel.csv`); Stage 1 added the loader
+(`dvcorr.pipeline.real_catalogs`). Ofek wants a guided map from "load the data" to "every figure and number in
 Nusser (2017) redone with Tempel groups as the density field and CF4 as the velocities." The map
 should be built **one stage at a time**, and each stage should say what a correct result looks
 like, so a wrong plot is caught when it is made.
@@ -80,6 +80,7 @@ descriptions row into a column dictionary and read it. It is the documentation.
   **every** group.
 - CF4 is on its own H0 scale. `Vpds = fV − 74.6·D` holds exactly, and `Vcmb/D` ≈ 71.5. Distances
   `D` are in Mpc on H0 ≈ 74.6, so they are **never** used as positions.
+  *Stage 1 correction:* the exact relation is `Vpds = (fV − 74.6·D)/(1 + 74.6·D/c)`; see notebook 11.
 
 **Plots and the intuition to check them against:**
 
@@ -96,11 +97,15 @@ descriptions row into a column dictionary and read it. It is the documentation.
    in the way the formula assumes. Possible causes: the group √N reduction, or how `Vpec` is
    defined (it equals `Vpwf` for 94% of rows and differs for 2,125 nearby ones). This must be
    resolved before Stage 8.
+   *Stage 1 answer:* the published `Vpwf = fV/(1+fV/c)·log10(fV/(74.6 D))` uses log₁₀ where
+   Watkins & Feldman use ln, so it (and `Vpec` beyond Vls = 3,000) is ln 10 = 2.3× smaller than v.
+   With ln restored, std(v/σ_u) ≈ 0.91–0.98 beyond 5,000 km/s: eDM is a correct, slightly
+   conservative error. Which velocity to correlate is a Stage 2 decision (notebook 11, §7).
 5. 228 groups have `eDM = 0`, all within D < 110 Mpc. Under inverse-variance weights they would
    get infinite weight. It is harmless under Nusser's w = 1, but note it.
 
-**Naming (rule 9):** the file is `SDSS_Temple.csv`, and `config/paths.py` has that spelling as its
-default. I propose renaming both to `SDSS_Tempel.csv` before anything caches the name.
+**Naming (rule 9):** done — the file was `SDSS_Temple.csv` and has been renamed, with the
+`config/paths.py` default, to `SDSS_Tempel.csv`.
 
 **Done when:** the loader returns the three tables with the counts above; every trap is reproduced
 and explained in the notebook; and the σ_u puzzle has a written answer, or is explicitly parked

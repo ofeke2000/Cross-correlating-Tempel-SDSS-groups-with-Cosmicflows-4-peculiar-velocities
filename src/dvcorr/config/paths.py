@@ -64,7 +64,7 @@ class PathsConfig:
         `data_dir / "CF4_Groups_Velocities.csv"`.
     sdss_tempel_catalog : Path
         Tempel et al. (2017) SDSS group catalog, default
-        `data_dir / "SDSS_Temple.csv"`.
+        `data_dir / "SDSS_Tempel.csv"`.
     dm_snapshot : Path
         Gadget-4 dark-matter particle snapshot at z = 0, default
         `data_dir / "DM_simulation.hdf5"`. A 300 h^-1 Mpc box -- NOT MDPL2, and
@@ -100,7 +100,7 @@ class PathsConfig:
         if self.cf4_velocities_catalog is None:
             self.cf4_velocities_catalog = self.data_dir / "CF4_Groups_Velocities.csv"
         if self.sdss_tempel_catalog is None:
-            self.sdss_tempel_catalog = self.data_dir / "SDSS_Temple.csv"
+            self.sdss_tempel_catalog = self.data_dir / "SDSS_Tempel.csv"
         if self.dm_snapshot is None:
             self.dm_snapshot = self.data_dir / "DM_simulation.hdf5"
 

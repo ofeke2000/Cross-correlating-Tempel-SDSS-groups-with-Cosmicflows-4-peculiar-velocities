@@ -52,7 +52,7 @@ class TestPathsConfig:
         assert paths.mdpl2_catalog_mvir12.name == "mdpl2_rockstar_125_pid-1_mvir12.csv"
         assert paths.cf4_groups_catalog.name == "CF4_Groups.csv"
         assert paths.cf4_velocities_catalog.name == "CF4_Groups_Velocities.csv"
-        assert paths.sdss_tempel_catalog.name == "SDSS_Temple.csv"
+        assert paths.sdss_tempel_catalog.name == "SDSS_Tempel.csv"
         # And they sit under data_dir specifically.
         assert paths.mdpl2_catalog_full.parent == paths.data_dir
         assert paths.mdpl2_catalog_mvir12.parent == paths.data_dir

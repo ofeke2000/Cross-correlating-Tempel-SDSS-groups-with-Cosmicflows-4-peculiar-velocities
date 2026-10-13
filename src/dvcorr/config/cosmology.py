@@ -61,13 +61,15 @@ class CosmologyConfig:
         Growth-rate index gamma, used for f(z) = Om(z)^gamma.
     flat : bool
         Whether the cosmology is spatially flat.
-
-    Notes
-    -----
-    CF4's own distance-ladder H0 (Tully et al. 2023, ~74.6 km/s/Mpc) is
-    deliberately not included here -- it is out of scope for the simulation-
-    validation arm. Add an `H0_CF4` field (see the old repo's
-    `cosmology_config.py`) when the CF4 data arm starts.
+    H0_CF4 : float
+        The Hubble constant CF4's published distances and peculiar velocities
+        are on (Tully et al. 2023), km/s/Mpc. NOT a cosmology this project
+        adopts: it is the scale the catalog's `D` column was written on, and
+        the one its `Vpds` / `Vpwf` columns subtract. Verified against the
+        catalog, not taken on trust: `dvcorr.pipeline.real_catalogs`
+        reproduces both columns from `fV` and `DMzp` with this value to
+        within the file's rounding (`notebooks/11_real_catalog_audit.ipynb`).
+        Because of it, CF4 `D` is never used as a position.
     """
 
     H0: float = 67.77
@@ -78,6 +80,7 @@ class CosmologyConfig:
     ns: float = 0.96
     growth_index: float = 0.55
     flat: bool = True
+    H0_CF4: float = 74.6
 
     def __post_init__(self) -> None:
         if abs(self.h - conventions.HUBBLE_PARAM) > _H_CONSISTENCY_TOL:

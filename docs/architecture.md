@@ -145,6 +145,14 @@ multipoles relate to the pipeline's by `conventions.nusser_multipole_sign`.
   (`center_class_mask`), the per-class orchestration, the two class-contrast figures, and
   the sub-h⁻¹-Mpc occupancy histogram (`class_shell_occupancy`).
   Requires `catalog_conversion`'s `num_of_subhalos` column, so it runs on `full` only.
+- `real_catalogs.py` **[done]** — the observed catalogs (CF4 groups and velocities, the
+  Tempel galaxy table) read as EDD publishes them: the five-line-header reader
+  (`read_edd_csv`) with its column dictionary, the three loaders, sky geometry, and the
+  reverse-engineered formulas behind CF4's `fV`/`Vpds`/`Vpwf`/`Vpec` and the eDM → σ_u error.
+  Stages 2–3 of `docs/real_data_roadmap.md` (unique groups, positions) land here.
+- `real_catalog_audit.py` **[done]** — Stage 1 audit of those tables: units against ranges,
+  the two CF4 files against each other, the Tempel traps, footprint area, the rounding-judged
+  column reconstruction, the σ_u tests, and the audit figures. Only notebook 11 imports it.
 
 ### `src/dvcorr/selection/` **[empty]**
 
@@ -194,6 +202,9 @@ none contain algorithmic content (see Cross-cutting contracts below).
 - `test_halo_class_comparison.py` **[done]** — class disjointness, the unknown-count
   sentinel guard, and both class-contrast figures, on synthetic arrays.
 - `test_mass_diagnostics.py` **[done]** — mass-funnel construction guards and figure build.
+- `test_real_catalogs.py` **[done]** — the EDD reader on tiny synthetic EDD CSVs, the CF4
+  velocity formulas and their limits, the audit checks on planted defects, and (skipped when
+  `data/` lacks them) the Stage 1 counts on the real files.
 - `test_robustness.py` **[done]** — `dvcorr.pipeline.robustness`: the `restack` ==
   `normalize_stacked_dipole` contract, the subset-size divisor, ladder unbiasedness, the
   bootstrap/SEM agreement in the well-behaved regime, symmetric (|·|) trimming, an injected
@@ -241,6 +252,10 @@ none contain algorithmic content (see Cross-cutting contracts below).
   run's own n̄ and N_c. The halo counterpart of `DM_simulation.ipynb`'s §C, which ran the same
   five tests on the Gadget-4 particle field. No script twin; executed on the full catalog,
   outputs kept.
+- `11_real_catalog_audit.ipynb` **[done]** — Stage 1 of the data arm: thin consumer of
+  `pipeline.real_catalogs` / `pipeline.real_catalog_audit`; the column dictionary, the traps,
+  sky maps, n(cz), the CF4 velocity reconstruction and the σ_u puzzle. No script twin;
+  executed, outputs kept.
 
 ### `intuition/` — pedagogical parameter scans; nothing imports from here
 

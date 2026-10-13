@@ -169,6 +169,15 @@ CONVERGED_PARTICLE_COUNT: int = 100
 
 
 # --------------------------------------------------------------------------
+# Physical constants
+# --------------------------------------------------------------------------
+
+#: Speed of light, km/s (exact, SI definition). Converts redshift to velocity
+#: (cz) on the data arm; the box itself never needs it.
+SPEED_OF_LIGHT: float = 299792.458
+
+
+# --------------------------------------------------------------------------
 # Observer
 # --------------------------------------------------------------------------
 
