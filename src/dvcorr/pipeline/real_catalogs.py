@@ -1,9 +1,11 @@
 """
 real_catalogs.py
 ----------------
-The observed catalogs -- Cosmicflows-4 groups and the Tempel et al. (2017)
-SDSS galaxy table -- read exactly as the Extragalactic Distance Database (EDD)
-publishes them, plus the formulas EDD used to build CF4's velocity columns.
+The observed catalogs -- Cosmicflows-4 groups, the Tempel et al. (2017)
+SDSS galaxy table and the 2MRS K_s <= 11.75 galaxies (Huchra et al. 2012,
+Nusser 2017's density field) -- read exactly as the Extragalactic Distance
+Database (EDD) publishes them, plus the formulas EDD used to build CF4's
+velocity columns and the 2MRS sky mask.
 
 Stage 1 of `docs/real_data_roadmap.md`. Nothing here is a selection or a
 position: the tables come back raw, every row and every column, so that the
@@ -83,6 +85,22 @@ description says the measured-moduli error EXCLUDES the calibrators. Zero is
 "not given", not "exact", so `velocity_error_from_modulus_error` returns NaN
 for it rather than a zero error that would carry infinite inverse-variance
 weight.
+
+2MRS
+----
+`load_twomrs_galaxies` reads 43,526 galaxies (Huchra et al. quote 43,533),
+one row per galaxy, `pgc` and `ID_2MASXJ` unique, no missing values. Two
+things differ from the other two catalogs:
+
+- **Velocities are heliocentric only** (`Vhel`). Comparing with CF4 `Vcmb`
+  or Tempel `zcmb` needs the CMB-dipole correction (up to ~370 km/s); that
+  frame conversion is Stage 3's job and is not done here.
+- **The selection is a magnitude limit plus an analytic sky mask.** Every row
+  has the extinction-corrected TOTAL magnitude `K_tc` <= 11.75 (the isophotal
+  `K_c` exceeds it in 200 rows -- it is not the selection magnitude), and
+  every row lies inside `in_twomrs_footprint`: |b| >= 5 deg, widened to
+  8 deg toward the bulge (l < 30 or l > 330 deg). The data honour the mask
+  with no exception, which is the evidence that this is the survey's mask.
 
 Positions on the sky
 --------------------
@@ -315,6 +333,18 @@ def load_tempel_galaxies(paths: PathsConfig | None = None) -> EddCatalog:
     return read_edd_csv(paths.sdss_tempel_catalog)
 
 
+def load_twomrs_galaxies(paths: PathsConfig | None = None) -> EddCatalog:
+    """2MRS K_s <= 11.75 (Huchra et al. 2012): 43,526 galaxies, one row each.
+
+    The redshift survey Nusser (2017) used as his density field. Positions are
+    `RAJ`/`DEJ` (J2000 degrees) and `Glon`/`Glat`; the only velocity is the
+    HELIOCENTRIC `Vhel` (see the module docstring). `e_V = 0` means "not
+    given", not an exact redshift.
+    """
+    paths = paths or PathsConfig()
+    return read_edd_csv(paths.twomrs_catalog)
+
+
 # --------------------------------------------------------------------------
 # Sky geometry (observer at the origin; not periodic)
 # --------------------------------------------------------------------------
@@ -359,6 +389,52 @@ def angular_separation_deg(
     cross = np.linalg.norm(np.cross(a, b), axis=1)
     dot = np.einsum("ij,ij->i", a, b)
     return np.rad2deg(np.arctan2(cross, dot))
+
+
+@dataclass(frozen=True)
+class TwoMrsFootprint:
+    """The 2MRS Galactic-latitude mask (Huchra et al. 2012, §2).
+
+    A fact about the survey, confirmed on the file (no galaxy violates it),
+    not an analysis choice.
+
+    Attributes
+    ----------
+    min_abs_latitude : float
+        deg. |b| below this is masked everywhere.
+    bulge_min_abs_latitude : float
+        deg. The wider cut toward the Galactic bulge.
+    bulge_half_width : float
+        deg of Galactic longitude: the bulge region is l < this or
+        l > 360 - this.
+    """
+
+    min_abs_latitude: float = 5.0
+    bulge_min_abs_latitude: float = 8.0
+    bulge_half_width: float = 30.0
+
+
+def in_twomrs_footprint(
+    glon_deg: np.ndarray, glat_deg: np.ndarray, footprint: TwoMrsFootprint | None = None
+) -> np.ndarray:
+    """Whether each direction lies inside the 2MRS sky mask.
+
+    Parameters
+    ----------
+    glon_deg, glat_deg : array_like, shape (N,)
+        Galactic longitude and latitude, degrees.
+    footprint : TwoMrsFootprint, optional
+
+    Returns
+    -------
+    numpy.ndarray of bool, shape (N,)
+    """
+    f = footprint or TwoMrsFootprint()
+    glon = np.mod(np.atleast_1d(np.asarray(glon_deg, dtype=float)), 360.0)
+    abs_b = np.abs(np.atleast_1d(np.asarray(glat_deg, dtype=float)))
+    bulge = (glon < f.bulge_half_width) | (glon > 360.0 - f.bulge_half_width)
+    limit = np.where(bulge, f.bulge_min_abs_latitude, f.min_abs_latitude)
+    return abs_b >= limit
 
 
 # --------------------------------------------------------------------------

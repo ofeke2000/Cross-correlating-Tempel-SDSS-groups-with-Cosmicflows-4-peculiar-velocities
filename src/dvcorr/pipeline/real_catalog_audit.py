@@ -24,10 +24,26 @@ one guards against:
 - `linear_regime_ratio` and `velocity_noise_by_depth` -- the two tests that
   settle the sigma_u puzzle (see `real_catalogs`' module docstring).
 
-Figures: Mollweide sky maps, n(cz), Vpec against cz, the Vpwf-against-Vpds
-scale test and the noise-against-scatter comparison. Colors are categorical
-slots 1-3 of the project's palette (the same blue/orange as
-`mass_diagnostics`), in fixed order.
+Stage 1 addendum (advisor meeting 2026-10-14, `docs/advisor_notes.md`):
+
+- `twomrs_checks` / `twomrs_crossmatch` -- the 2MRS file against its survey
+  definition (magnitude limit, latitude mask) and, galaxy by galaxy via
+  `pgc`, against the heliocentric velocities Tempel and CF4 carry.
+- `SkySample`, `sky_overlap_table` -- the three catalogs reduced to
+  directions and cz, and how many of each fall inside the SDSS footprint
+  (occupied HEALPix pixels of Tempel) and the 2MRS mask.
+- `cf4_method_table`, `cf4_source_samples`, `velocity_drift_by_source`,
+  `zero_point_drift_table` -- CF4 broken down by distance method, the
+  Fundamental Plane split by sky into SDSS-like and 6dFGS-like parts, and
+  the per-source median velocity against cz whose linear trend measures a
+  distance-modulus zero-point offset.
+
+Figures: Mollweide sky maps (one catalog, or all three overlaid), n(cz),
+Vpec against cz, the Vpwf-against-Vpds scale test, the noise-against-scatter
+comparison and the per-source velocity drift. Colors are the project's
+categorical palette in fixed order, assigned per entity: CF4 slot 1 (blue),
+Tempel slot 2 (orange), 2MRS slot 3 (aqua); the CF4 sources take the slots
+in `_SOURCE_COLORS` order.
 """
 
 from __future__ import annotations
@@ -45,11 +61,13 @@ from dvcorr import conventions
 from dvcorr.pipeline.real_catalogs import (
     Cf4VelocityDefinitions,
     EddCatalog,
+    TwoMrsFootprint,
     angular_separation_deg,
     curvature_corrected_velocity,
     davis_scrimgeour_velocity,
     distance_from_modulus,
     format_half_ulp,
+    in_twomrs_footprint,
     published_vpec,
     velocity_error_from_modulus_error,
     watkins_feldman_velocity,
@@ -59,6 +77,24 @@ from dvcorr.pipeline.real_catalogs import (
 _COLOR_PRIMARY = "#2a78d6"
 _COLOR_SECONDARY = "#eb6834"
 _COLOR_TERTIARY = "#1baf7a"
+#: Categorical slots 4-7 of the project palette, after the three above.
+_COLOR_SLOT_4 = "#eda100"
+_COLOR_SLOT_5 = "#e87ba4"
+_COLOR_SLOT_6 = "#008300"
+_COLOR_SLOT_7 = "#6250d6"
+_COLOR_SLOT_8 = "#e34948"
+_COLOR_CF4 = _COLOR_PRIMARY
+_COLOR_TEMPEL = _COLOR_SECONDARY
+_COLOR_TWOMRS = _COLOR_TERTIARY
+_OVERLAP_POINT_SIZE = 1.2
+_OVERLAP_POINT_ALPHA = 0.45
+_LEGEND_MARKER_SCALE = 8.0
+#: Bottom strip of an overlap map reserved for its legend (figure fraction).
+_OVERLAP_LEGEND_STRIP = 0.07
+_PLANE_SAMPLES = 721
+_SKY_LARGE_FIGSIZE = (11.0, 6.2)
+_DRIFT_FIGSIZE = (9.0, 5.5)
+_ERRORBAR_CAPSIZE = 3.0
 _COLOR_GUIDE = "0.45"
 _LABEL_COLOR = "#111111"
 _LINE_WIDTH = 2.0
@@ -76,7 +112,8 @@ _SKY_TITLE_PAD = 14.0
 _SKY_TICK_STEP_DEG = 30
 _TICK_BACKING_ALPHA = 0.7
 _TICK_BACKING_PAD = 1.0
-_HIST_FIGSIZE = (8.0, 6.0)
+_HIST_WIDTH = 8.0
+_HIST_PANEL_HEIGHT = 2.8
 _VPEC_FIGSIZE = (9.0, 5.5)
 _DEFINITION_FIGSIZE = (6.5, 6.0)
 _NOISE_FIGSIZE = (12.0, 4.8)
@@ -85,6 +122,38 @@ _NOISE_FIGSIZE = (12.0, 4.8)
 TEMPEL_ISOLATED_IDG: int = 0
 #: The brightest-member rank in Tempel's `Rg` (the fiducial group center).
 TEMPEL_BRIGHTEST_RANK: int = 1
+
+#: The 2MRS selection magnitude limit, on the total extinction-corrected
+#: K_s (`K_tc`) -- Huchra et al. (2012), and the catalog's own title.
+TWOMRS_K_LIMIT: float = 11.75
+
+#: CF4 distance methods: label -> per-method modulus column in
+#: `CF4_Groups.csv`. A group uses a method iff that column is present
+#: (checked equal to N_method > 0 for every method that has an N column).
+CF4_METHOD_COLUMNS: tuple[tuple[str, str], ...] = (
+    ("FP", "DM_FP"),
+    ("TF", "DM_TFR"),
+    ("SNIa", "DM_SNIa"),
+    ("SNII", "DM_SNII"),
+    ("SBF optical", "DM_SBFo"),
+    ("SBF IR", "DM_SBFir"),
+)
+#: Fundamental-Plane groups split by sky -- a stand-in for the SDSS / 6dFGS
+#: split, which the group table does not record (it needs the individuals).
+SOURCE_FP_SDSS = "FP in SDSS footprint (~SDSS FP)"
+SOURCE_FP_SOUTH = "FP, DE < 0 outside SDSS (~6dFGS FP)"
+SOURCE_FP_OTHER = "FP, elsewhere"
+#: Fixed color per source (entity, not rank): slots 1-7 in this order.
+_SOURCE_COLORS: dict[str, str] = {
+    SOURCE_FP_SDSS: _COLOR_PRIMARY,
+    SOURCE_FP_SOUTH: _COLOR_SECONDARY,
+    "TF": _COLOR_TERTIARY,
+    "SNIa": _COLOR_SLOT_4,
+    SOURCE_FP_OTHER: _COLOR_SLOT_5,
+    "SNII": _COLOR_SLOT_6,
+    "SBF optical": _COLOR_SLOT_7,
+    "SBF IR": _COLOR_SLOT_8,
+}
 
 
 @dataclass(frozen=True)
@@ -114,6 +183,27 @@ class AuditConfig:
         Tempel `IDg` shown for the gVcmb trap (the roadmap's example).
     velocity_plot_limit : float
         km/s, symmetric y-range of the velocity figures.
+    overlap_nside : int
+        HEALPix resolution of the SDSS footprint used for overlap counts
+        (occupied Tempel pixels). 32 is the coarsest in `footprint_nsides`:
+        ~135 Tempel galaxies per 3.4 deg^2 pixel, so no interior pixel is
+        empty.
+    analysis_cz_max : float
+        km/s. Nusser's cz < 10,000 cut, used for the "analysis-depth"
+        overlap counts and map. A Stage 2 config will own it for the analysis.
+    velocity_match_tolerance : float
+        km/s. A pgc cross-match whose heliocentric velocities differ by more
+        than this is counted as a disagreement.
+    drift_cz_edges : tuple of float
+        km/s. Depth bins for the per-source median velocity.
+    drift_min_count : int
+        A (source, bin) cell with fewer objects is dropped from the drift
+        table: its median error would be dominated by small-number noise.
+    mask_area_nside : int
+        HEALPix resolution for the analytic-mask area (`twomrs_mask_area`).
+        The mask edges are thin latitude bands, so pixel centers must be fine:
+        nside 128 is 0.13% off the analytic band area, nside 512 (0.11 deg
+        pixels) within 0.1%.
     """
 
     cz_edges: tuple[float, ...] = (0.0, 5000.0, 10000.0, 15000.0, 20000.0, 25000.0, 35000.0)
@@ -125,6 +215,14 @@ class AuditConfig:
     linear_regime_floor: float = 200.0
     example_group: int = 1558
     velocity_plot_limit: float = 6000.0
+    overlap_nside: int = 32
+    analysis_cz_max: float = 10000.0
+    velocity_match_tolerance: float = 100.0
+    drift_cz_edges: tuple[float, ...] = (
+        0.0, 2500.0, 5000.0, 7500.0, 10000.0, 15000.0, 20000.0, 25000.0, 35000.0
+    )
+    drift_min_count: int = 20
+    mask_area_nside: int = 512
 
 
 # --------------------------------------------------------------------------
@@ -622,6 +720,482 @@ def velocity_noise_by_depth(
 
 
 # --------------------------------------------------------------------------
+# 2MRS: the file against its survey definition and against the other two
+# --------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class TwoMrsChecks:
+    """2MRS against its own definition (Huchra et al. 2012).
+
+    Attributes
+    ----------
+    n_galaxies : int
+    pgc_unique, id_unique : bool
+        Whether `pgc` and the 2MASX identifier are unique keys.
+    n_missing : int
+        Missing values anywhere in the table (expected 0).
+    max_total_magnitude : float
+        Largest `K_tc` (expected <= `TWOMRS_K_LIMIT`).
+    n_isophotal_beyond_limit : int
+        Rows with the isophotal `K_c` > the limit -- allowed, since the
+        selection is on the total magnitude.
+    n_outside_mask : int
+        Rows outside `in_twomrs_footprint` (expected 0).
+    n_nonpositive_vhel : int
+        Blueshifted (or zero) heliocentric velocities: Local Group members
+        and Virgo galaxies falling toward us, not errors.
+    n_velocity_error_not_given : int
+        Rows with `e_V = 0`.
+    median_vhel : float
+        km/s.
+    """
+
+    n_galaxies: int
+    pgc_unique: bool
+    id_unique: bool
+    n_missing: int
+    max_total_magnitude: float
+    n_isophotal_beyond_limit: int
+    n_outside_mask: int
+    n_nonpositive_vhel: int
+    n_velocity_error_not_given: int
+    median_vhel: float
+
+
+def twomrs_checks(twomrs: EddCatalog, footprint: TwoMrsFootprint | None = None) -> TwoMrsChecks:
+    """Count every way the 2MRS table could differ from its survey definition."""
+    t = twomrs.table
+    return TwoMrsChecks(
+        n_galaxies=len(t),
+        pgc_unique=bool(t["pgc"].is_unique),
+        id_unique=bool(t["ID_2MASXJ"].is_unique),
+        n_missing=int(t.isna().sum().sum()),
+        max_total_magnitude=float(t["K_tc"].max()),
+        n_isophotal_beyond_limit=int((t["K_c"] > TWOMRS_K_LIMIT).sum()),
+        n_outside_mask=int((~in_twomrs_footprint(t["Glon"], t["Glat"], footprint)).sum()),
+        n_nonpositive_vhel=int((t["Vhel"] <= 0).sum()),
+        n_velocity_error_not_given=int((t["e_V"] == 0).sum()),
+        median_vhel=float(t["Vhel"].median()),
+    )
+
+
+def twomrs_mask_area(
+    config: AuditConfig | None = None, footprint: TwoMrsFootprint | None = None
+) -> float:
+    """Sky area inside the 2MRS latitude mask, deg^2.
+
+    The fraction of HEALPix pixel centers (nside `config.mask_area_nside`)
+    inside `in_twomrs_footprint`, times the full sky. Unlike the occupied-pixel area of the galaxies themselves
+    (`footprint_area_table`), this does not depend on how densely the survey
+    samples the sky.
+    """
+    config = config or AuditConfig()
+    nside = config.mask_area_nside
+    glon, glat = hp.pix2ang(nside, np.arange(hp.nside2npix(nside)), lonlat=True)
+    full_sky = 4.0 * np.pi * np.rad2deg(1.0) ** 2
+    return float(in_twomrs_footprint(glon, glat, footprint).mean() * full_sky)
+
+
+def twomrs_crossmatch(
+    twomrs: EddCatalog,
+    tempel: EddCatalog,
+    cf4_velocities: EddCatalog,
+    config: AuditConfig | None = None,
+) -> pd.DataFrame:
+    """2MRS galaxies matched by `pgc` to Tempel and CF4, heliocentric v compared.
+
+    Heliocentric against heliocentric, so no frame conversion enters:
+    2MRS `Vhel` against Tempel c * `zobs` (a per-galaxy redshift) and against
+    CF4 `Vhel`. The CF4 value is the GROUP's velocity, keyed by the group's
+    `pgc`, so a spread there is group velocity dispersion, not disagreement.
+
+    Returns
+    -------
+    pandas.DataFrame
+        One row per partner: `n_matched`, `median_dv` and `robust_sigma_dv`
+        (1.4826 x MAD, the Gaussian-equivalent sigma) of 2MRS minus partner,
+        `n_beyond_tolerance` (|dv| > `config.velocity_match_tolerance`).
+    """
+    config = config or AuditConfig()
+    m = twomrs.table[["pgc", "Vhel"]]
+    partners = {
+        "Tempel galaxies (c zobs)": tempel.table[["pgc"]].assign(
+            v_partner=tempel.table["zobs"] * conventions.SPEED_OF_LIGHT
+        ),
+        "CF4 groups (group Vhel)": cf4_velocities.table[["pgc"]].assign(
+            v_partner=cf4_velocities.table["Vhel"].astype(float)
+        ),
+    }
+    records = []
+    for name, partner in partners.items():
+        joined = m.merge(partner, on="pgc", how="inner", validate="one_to_one")
+        dv = joined["Vhel"] - joined["v_partner"]
+        median = float(dv.median())
+        # 1.4826: MAD -> sigma for a Gaussian (1 / Phi^-1(3/4)).
+        records.append(
+            {
+                "partner": name,
+                "n_matched": len(joined),
+                "median_dv": median,
+                "robust_sigma_dv": 1.4826 * float((dv - median).abs().median()),
+                "n_beyond_tolerance": int((dv.abs() > config.velocity_match_tolerance).sum()),
+            }
+        )
+    return pd.DataFrame.from_records(records).set_index("partner")
+
+
+# --------------------------------------------------------------------------
+# The three catalogs on one sky
+# --------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class SkySample:
+    """One catalog reduced to what the overlap counts and figures need.
+
+    Attributes
+    ----------
+    name : str
+    unit : str
+        What one row is ("groups", "galaxies"), for axis labels.
+    ra, de, glon, glat : numpy.ndarray, shape (N,)
+        Degrees.
+    cz : numpy.ndarray, shape (N,)
+        km/s, in the frame `cz_frame` names.
+    cz_frame : str
+        "CMB" or "heliocentric". The two differ by up to ~370 km/s, so a
+        cz cut applied to both is approximate at that level.
+    color : str
+    cz_limit : float or None
+        A survey redshift limit (km/s) to mark on n(cz).
+    """
+
+    name: str
+    unit: str
+    ra: np.ndarray
+    de: np.ndarray
+    glon: np.ndarray
+    glat: np.ndarray
+    cz: np.ndarray
+    cz_frame: str
+    color: str
+    cz_limit: float | None = None
+
+
+def cf4_sky_sample(cf4_groups: EddCatalog) -> SkySample:
+    """CF4 groups from `CF4_Groups.csv` -- the file whose positions are right
+    for pgc 51922 (notebook 11, section 2) -- at CMB-frame `Vcmb`."""
+    t = cf4_groups.table
+    return SkySample(
+        name="CF4 groups", unit="groups",
+        ra=t["RA"].to_numpy(float), de=t["DE"].to_numpy(float),
+        glon=t["GLong"].to_numpy(float), glat=t["GLat"].to_numpy(float),
+        cz=t["Vcmb"].to_numpy(float), cz_frame="CMB", color=_COLOR_CF4,
+    )
+
+
+def tempel_sky_sample(tempel: EddCatalog, config: AuditConfig | None = None) -> SkySample:
+    """Tempel galaxies (every row, not yet collapsed to groups) at c * `zcmb`."""
+    config = config or AuditConfig()
+    t = tempel.table
+    return SkySample(
+        name="Tempel galaxies", unit="galaxies",
+        ra=t["RA"].to_numpy(float), de=t["DE"].to_numpy(float),
+        glon=t["glon"].to_numpy(float), glat=t["glat"].to_numpy(float),
+        cz=t["zcmb"].to_numpy(float) * conventions.SPEED_OF_LIGHT, cz_frame="CMB",
+        color=_COLOR_TEMPEL,
+        cz_limit=config.tempel_redshift_limit * conventions.SPEED_OF_LIGHT,
+    )
+
+
+def twomrs_sky_sample(twomrs: EddCatalog) -> SkySample:
+    """2MRS galaxies at HELIOCENTRIC `Vhel` (the only velocity it carries)."""
+    t = twomrs.table
+    return SkySample(
+        name="2MRS galaxies", unit="galaxies",
+        ra=t["RAJ"].to_numpy(float), de=t["DEJ"].to_numpy(float),
+        glon=t["Glon"].to_numpy(float), glat=t["Glat"].to_numpy(float),
+        cz=t["Vhel"].to_numpy(float), cz_frame="heliocentric", color=_COLOR_TWOMRS,
+    )
+
+
+def sdss_footprint_pixels(tempel: EddCatalog, config: AuditConfig | None = None) -> np.ndarray:
+    """HEALPix pixels (nside `config.overlap_nside`, RING) holding a Tempel galaxy.
+
+    An occupied-pixel footprint: slightly generous at the edges (see
+    `footprint_area_table`). Stage 4 builds the real angular mask.
+
+    Returns
+    -------
+    numpy.ndarray of int, shape (M,), sorted, unique.
+    """
+    config = config or AuditConfig()
+    t = tempel.table
+    return np.unique(hp.ang2pix(config.overlap_nside, t["RA"].to_numpy(float),
+                                t["DE"].to_numpy(float), lonlat=True))
+
+
+def in_sdss_footprint(
+    ra_deg: np.ndarray, de_deg: np.ndarray, pixels: np.ndarray, config: AuditConfig | None = None
+) -> np.ndarray:
+    """Whether each direction falls in one of `pixels` (`sdss_footprint_pixels`).
+
+    Returns
+    -------
+    numpy.ndarray of bool, shape (N,)
+    """
+    config = config or AuditConfig()
+    pix = hp.ang2pix(config.overlap_nside, np.asarray(ra_deg, float),
+                     np.asarray(de_deg, float), lonlat=True)
+    return np.isin(pix, pixels)
+
+
+def sky_overlap_table(
+    samples: list[SkySample],
+    sdss_pixels: np.ndarray,
+    config: AuditConfig | None = None,
+    *,
+    cz_max: float | None = None,
+) -> pd.DataFrame:
+    """How much of each catalog lies inside the SDSS footprint and the 2MRS mask.
+
+    Parameters
+    ----------
+    samples : list of SkySample
+    sdss_pixels : numpy.ndarray of int
+        `sdss_footprint_pixels(tempel)`.
+    config : AuditConfig, optional
+    cz_max : float, keyword-only, optional
+        km/s. Count only rows with cz below it (each in its own frame).
+
+    Returns
+    -------
+    pandas.DataFrame
+        One row per sample: `n`, `in_sdss`, `in_twomrs_mask`, `in_both`, and
+        the three as fractions of `n`.
+    """
+    config = config or AuditConfig()
+    records = []
+    for s in samples:
+        keep = np.ones(s.cz.size, bool) if cz_max is None else s.cz < cz_max
+        sdss = in_sdss_footprint(s.ra[keep], s.de[keep], sdss_pixels, config)
+        mrs = in_twomrs_footprint(s.glon[keep], s.glat[keep])
+        n = int(keep.sum())
+        records.append(
+            {
+                "catalog": s.name,
+                "n": n,
+                "in_sdss": int(sdss.sum()),
+                "in_twomrs_mask": int(mrs.sum()),
+                "in_both": int((sdss & mrs).sum()),
+                "frac_sdss": sdss.mean() if n else np.nan,
+                "frac_twomrs_mask": mrs.mean() if n else np.nan,
+                "frac_both": (sdss & mrs).mean() if n else np.nan,
+            }
+        )
+    return pd.DataFrame.from_records(records).set_index("catalog")
+
+
+# --------------------------------------------------------------------------
+# CF4 by distance method: counts and zero-point drift
+# --------------------------------------------------------------------------
+
+
+def cf4_method_table(cf4_groups: EddCatalog, config: AuditConfig | None = None) -> pd.DataFrame:
+    """Groups per CF4 distance method, all depths and below `analysis_cz_max`.
+
+    Returns
+    -------
+    pandas.DataFrame
+        One row per method in `CF4_METHOD_COLUMNS`: `n_groups`,
+        `n_single_method` (groups using this method only), and the same two
+        for cz < `config.analysis_cz_max`; plus a "calibrators (Nc > 0)" row.
+    """
+    config = config or AuditConfig()
+    t = cf4_groups.table
+    uses = pd.DataFrame({label: t[column].notna() for label, column in CF4_METHOD_COLUMNS})
+    single = uses.sum(axis=1) == 1
+    near = t["Vcmb"] < config.analysis_cz_max
+    records = [
+        {
+            "method": label,
+            "n_groups": int(uses[label].sum()),
+            "n_single_method": int((uses[label] & single).sum()),
+            "n_groups_near": int((uses[label] & near).sum()),
+            "n_single_method_near": int((uses[label] & single & near).sum()),
+        }
+        for label in uses.columns
+    ]
+    calibrators = t["Nc"] > 0
+    records.append(
+        {
+            "method": "calibrators (Nc > 0)",
+            "n_groups": int(calibrators.sum()),
+            "n_single_method": np.nan,
+            "n_groups_near": int((calibrators & near).sum()),
+            "n_single_method_near": np.nan,
+        }
+    )
+    return pd.DataFrame.from_records(records).set_index("method")
+
+
+def cf4_methods_per_group(cf4_groups: EddCatalog) -> pd.Series:
+    """How many groups combine 0, 1, 2, ... distance methods.
+
+    0 means calibrator-only (Cepheid/TRGB, none of the six methods).
+    """
+    t = cf4_groups.table
+    n_methods = sum(t[column].notna().astype(int) for _, column in CF4_METHOD_COLUMNS)
+    return n_methods.value_counts().sort_index().rename("groups")
+
+
+def cf4_source_samples(
+    cf4_groups: EddCatalog,
+    cf4_velocities: EddCatalog,
+    sdss_pixels: np.ndarray,
+    config: AuditConfig | None = None,
+    definitions: Cf4VelocityDefinitions | None = None,
+) -> pd.DataFrame:
+    """Single-method CF4 groups, labelled by source, with the ln-scale velocity.
+
+    Only groups measured by ONE method, so a group's velocity can be blamed
+    on one source. The FP groups are split by sky, the stand-in for the
+    SDSS / 6dFGS split the group table does not record: inside the SDSS
+    footprint (`SOURCE_FP_SDSS`), outside it at DE < 0 (`SOURCE_FP_SOUTH`;
+    6dFGS observed only the south), and the rest (`SOURCE_FP_OTHER`).
+
+    The velocity is `watkins_feldman_velocity` with the natural log (the
+    peculiar velocity; the published `Vpwf` is ln 10 too small), from the
+    velocities file's `fV` and `DMzp`; rows where it is undefined (fV <= 0)
+    are dropped, never filled (hard rule 5). Positions and `Vcmb` come from
+    `CF4_Groups.csv`.
+
+    Returns
+    -------
+    pandas.DataFrame
+        `pgc`, `source`, `Vcmb`, `v` (km/s), `RA`, `DE`.
+    """
+    config = config or AuditConfig()
+    g = cf4_groups.table
+    uses = pd.DataFrame({label: g[column].notna() for label, column in CF4_METHOD_COLUMNS})
+    single = uses.sum(axis=1) == 1
+    source = uses.idxmax(axis=1).where(single)
+    fp = source == "FP"
+    sdss = in_sdss_footprint(g["RA"], g["DE"], sdss_pixels, config)
+    source = source.mask(fp & sdss, SOURCE_FP_SDSS)
+    source = source.mask(fp & ~sdss & (g["DE"] < 0), SOURCE_FP_SOUTH)
+    source = source.mask(fp & ~sdss & (g["DE"] >= 0), SOURCE_FP_OTHER)
+    groups = g[["pgc", "Vcmb", "RA", "DE"]].assign(source=source)[single]
+    v = cf4_velocities.table
+    velocity = v[["pgc"]].assign(
+        v=watkins_feldman_velocity(v["fV"], distance_from_modulus(v["DMzp"]), definitions)
+    )
+    out = groups.merge(velocity, on="pgc", how="inner", validate="one_to_one")
+    out = out[np.isfinite(out["v"])]
+    return out[["pgc", "source", "Vcmb", "v", "RA", "DE"]].reset_index(drop=True)
+
+
+def velocity_drift_by_source(
+    sources: pd.DataFrame, config: AuditConfig | None = None
+) -> pd.DataFrame:
+    """Median velocity per source per cz bin -- the zero-point drift test.
+
+    A distance-modulus offset dm in one source shifts its log-distance
+    velocities by dv = -(ln 10 / 5) dm cz: a median that drifts LINEARLY with
+    cz, for that source only. A bulk flow seen over the source's patch of sky
+    instead shifts the median by a roughly constant amount.
+
+    Parameters
+    ----------
+    sources : pandas.DataFrame
+        `cf4_source_samples` output.
+
+    Returns
+    -------
+    pandas.DataFrame
+        One row per (source, bin) with at least `config.drift_min_count`
+        objects: `cz_lo`, `cz_hi`, `n`, `cz_median`, `v_median`, and
+        `v_median_err` = sqrt(pi/2) std / sqrt(n), the large-n standard error
+        of a median for a Gaussian.
+    """
+    config = config or AuditConfig()
+    edges = np.asarray(config.drift_cz_edges)
+    records = []
+    for name, rows in sources.groupby("source", sort=False):
+        bins = np.digitize(rows["Vcmb"], edges) - 1
+        for i in range(edges.size - 1):
+            cell = rows[bins == i]
+            if len(cell) < config.drift_min_count:
+                continue
+            records.append(
+                {
+                    "source": name,
+                    "cz_lo": edges[i],
+                    "cz_hi": edges[i + 1],
+                    "n": len(cell),
+                    "cz_median": float(cell["Vcmb"].median()),
+                    "v_median": float(cell["v"].median()),
+                    "v_median_err": float(np.sqrt(np.pi / 2.0) * cell["v"].std(ddof=1)
+                                          / np.sqrt(len(cell))),
+                }
+            )
+    return pd.DataFrame.from_records(records)
+
+
+def zero_point_drift_table(drift: pd.DataFrame) -> pd.DataFrame:
+    """Per source, fit median v = a + s cz to the drift bins (weights 1/err^2).
+
+    `a` absorbs a bulk-flow-like constant offset over the source's sky; `s`
+    is the linear drift, converted to the distance-modulus offset it implies,
+    dm = -(5 / ln 10) s (positive dm: the source puts galaxies too far away).
+
+    Parameters
+    ----------
+    drift : pandas.DataFrame
+        `velocity_drift_by_source` output.
+
+    Returns
+    -------
+    pandas.DataFrame
+        One row per source with >= 3 bins: `n_bins`, `n_objects`, `offset`
+        and `offset_err` (km/s), `slope` and `slope_err` (per km/s),
+        `modulus_offset` and `modulus_offset_err` (mag), `chi2`, `dof`.
+    """
+    records = []
+    for name, rows in drift.groupby("source", sort=False):
+        # Two parameters plus at least one degree of freedom.
+        if len(rows) < 3:
+            continue
+        x = rows["cz_median"].to_numpy()
+        y = rows["v_median"].to_numpy()
+        w = 1.0 / rows["v_median_err"].to_numpy() ** 2
+        design = np.column_stack([np.ones_like(x), x])
+        fisher = design.T @ (w[:, None] * design)
+        covariance = np.linalg.inv(fisher)
+        (offset, slope) = covariance @ (design.T @ (w * y))
+        residual = y - design @ np.array([offset, slope])
+        # 5 / ln 10: d DM / d ln D, from D = 10^((DM - 25) / 5).
+        to_modulus = -5.0 / np.log(10.0)
+        records.append(
+            {
+                "source": name,
+                "n_bins": len(rows),
+                "n_objects": int(rows["n"].sum()),
+                "offset": offset,
+                "offset_err": float(np.sqrt(covariance[0, 0])),
+                "slope": slope,
+                "slope_err": float(np.sqrt(covariance[1, 1])),
+                "modulus_offset": to_modulus * slope,
+                "modulus_offset_err": abs(to_modulus) * float(np.sqrt(covariance[1, 1])),
+                "chi2": float(np.sum(w * residual**2)),
+                "dof": len(rows) - 2,
+            }
+        )
+    return pd.DataFrame.from_records(records).set_index("source")
+
+
+# --------------------------------------------------------------------------
 # Figures
 # --------------------------------------------------------------------------
 
@@ -631,6 +1205,41 @@ def _finish(ax: plt.Axes, xlabel: str, ylabel: str, title: str) -> None:
     ax.set_ylabel(ylabel, color=_LABEL_COLOR)
     ax.set_title(title, color=_LABEL_COLOR)
     ax.grid(alpha=_GRID_ALPHA, lw=_GRID_LINE_WIDTH)
+
+
+def _sky_xy(ra_deg: np.ndarray, de_deg: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """(RA, DE) degrees -> Mollweide (x, y) radians, RA growing to the LEFT."""
+    ra = np.asarray(ra_deg, dtype=float)
+    # Wrap RA to (-180, 180] and negate so RA grows leftwards on the plot.
+    x = -np.deg2rad(np.mod(ra + 180.0, 360.0) - 180.0)
+    return x, np.deg2rad(np.asarray(de_deg, dtype=float))
+
+
+def _sky_axes(fig: plt.Figure) -> plt.Axes:
+    """A Mollweide axis with RA tick labels in degrees, sky convention."""
+    ax = fig.add_subplot(111, projection="mollweide")
+    # Every _SKY_TICK_STEP_DEG of RA, short of the +-180 edges.
+    ticks = np.arange(-180 + _SKY_TICK_STEP_DEG, 180, _SKY_TICK_STEP_DEG)
+    ax.set_xticks(np.deg2rad(ticks))
+    ax.set_xticklabels(
+        [f"{int(np.mod(-t, 360))}°" for t in ticks],
+        color=_LABEL_COLOR,
+        bbox={"facecolor": "white", "edgecolor": "none", "alpha": _TICK_BACKING_ALPHA, "pad": _TICK_BACKING_PAD},
+    )
+    ax.grid(alpha=_GRID_ALPHA, lw=_GRID_LINE_WIDTH)
+    return ax
+
+
+def _draw_galactic_latitude(ax: plt.Axes, latitude_deg: float, **style) -> None:
+    """Draw the curve b = `latitude_deg` in equatorial Mollweide coordinates,
+    broken where it wraps across the RA = 180 deg edge."""
+    glon = np.linspace(0.0, 360.0, _PLANE_SAMPLES)
+    ra, de = hp.Rotator(coord=["G", "C"])(glon, np.full_like(glon, latitude_deg), lonlat=True)
+    x, y = _sky_xy(ra, de)
+    # A jump of more than half the plot width is the wrap, not the curve.
+    breaks = np.flatnonzero(np.abs(np.diff(x)) > np.pi) + 1
+    for xs, ys in zip(np.split(x, breaks), np.split(y, breaks)):
+        ax.plot(xs, ys, **style)
 
 
 def make_sky_map(
@@ -647,52 +1256,85 @@ def make_sky_map(
     title : str, keyword-only
     color : str, keyword-only
     """
-    ra = np.asarray(ra_deg, dtype=float)
-    # Wrap RA to (-180, 180] and negate so RA grows leftwards on the plot.
-    x = -np.deg2rad(np.mod(ra + 180.0, 360.0) - 180.0)
-    y = np.deg2rad(np.asarray(de_deg, dtype=float))
+    x, y = _sky_xy(ra_deg, de_deg)
     fig = plt.figure(figsize=_SKY_FIGSIZE)
-    ax = fig.add_subplot(111, projection="mollweide")
+    ax = _sky_axes(fig)
     ax.scatter(x, y, s=_SKY_POINT_SIZE, color=color, alpha=_SKY_POINT_ALPHA,
                lw=0, rasterized=True)
-    # Every _SKY_TICK_STEP_DEG of RA, short of the +-180 edges.
-    ticks = np.arange(-180 + _SKY_TICK_STEP_DEG, 180, _SKY_TICK_STEP_DEG)
-    ax.set_xticks(np.deg2rad(ticks))
-    ax.set_xticklabels(
-        [f"{int(np.mod(-t, 360))}°" for t in ticks],
-        color=_LABEL_COLOR,
-        bbox={"facecolor": "white", "edgecolor": "none", "alpha": _TICK_BACKING_ALPHA, "pad": _TICK_BACKING_PAD},
-    )
-    ax.grid(alpha=_GRID_ALPHA, lw=_GRID_LINE_WIDTH)
-    ax.set_title(f"{title} (N = {ra.size:,})", color=_LABEL_COLOR, pad=_SKY_TITLE_PAD)
+    ax.set_title(f"{title} (N = {x.size:,})", color=_LABEL_COLOR, pad=_SKY_TITLE_PAD)
     fig.tight_layout()
     return fig
 
 
-def make_cz_histogram_figure(
-    tempel: EddCatalog, cf4_velocities: EddCatalog, config: AuditConfig | None = None
+def make_overlap_sky_map(
+    samples: list[SkySample],
+    *,
+    title: str,
+    cz_max: float | None = None,
+    footprint: TwoMrsFootprint | None = None,
 ) -> plt.Figure:
-    """n(cz) of Tempel galaxies (zcmb * c) and CF4 groups (Vcmb), two panels.
+    """Several catalogs on one equatorial Mollweide map, to see their overlap.
+
+    Drawn in list order, so the first sample is at the bottom: pass the
+    densest one first. Guides: the Galactic plane (b = 0, solid) and the 2MRS
+    mask edge at |b| = `footprint.min_abs_latitude` (dashed; the wider bulge
+    cut is not drawn).
+
+    Parameters
+    ----------
+    samples : list of SkySample
+    title : str, keyword-only
+    cz_max : float, keyword-only, optional
+        km/s. Plot only rows with cz below it, each in its own frame.
+    footprint : TwoMrsFootprint, keyword-only, optional
+    """
+    f = footprint or TwoMrsFootprint()
+    fig = plt.figure(figsize=_SKY_LARGE_FIGSIZE)
+    ax = _sky_axes(fig)
+    for s in samples:
+        keep = np.ones(s.cz.size, bool) if cz_max is None else s.cz < cz_max
+        x, y = _sky_xy(s.ra[keep], s.de[keep])
+        ax.scatter(x, y, s=_OVERLAP_POINT_SIZE, color=s.color, alpha=_OVERLAP_POINT_ALPHA,
+                   lw=0, rasterized=True, label=f"{s.name} (N = {x.size:,})")
+    _draw_galactic_latitude(ax, 0.0, color=_COLOR_GUIDE, lw=_GUIDE_LINE_WIDTH)
+    for sign in (1.0, -1.0):
+        _draw_galactic_latitude(ax, sign * f.min_abs_latitude, color=_COLOR_GUIDE,
+                                lw=_GUIDE_LINE_WIDTH, ls="--")
+    legend = fig.legend(loc="lower center", ncol=len(samples), frameon=False,
+                        markerscale=_LEGEND_MARKER_SCALE)
+    for handle in legend.legend_handles:
+        handle.set_alpha(1.0)
+    ax.set_title(title, color=_LABEL_COLOR, pad=_SKY_TITLE_PAD)
+    fig.tight_layout(rect=(0.0, _OVERLAP_LEGEND_STRIP, 1.0, 1.0))
+    return fig
+
+
+def make_cz_histogram_figure(
+    samples: list[SkySample], config: AuditConfig | None = None
+) -> plt.Figure:
+    """n(cz) of each sample in its own panel, on a shared cz axis.
 
     Separate panels with their own count axes (not one dual-axis plot): the
-    catalogs differ eightfold in size, and the question is each one's shape.
+    catalogs differ several-fold in size, and the question is each one's
+    shape. Each panel's x label states its velocity frame; a sample's
+    `cz_limit` is drawn as a dashed guide.
     """
     config = config or AuditConfig()
-    tempel_cz = tempel.table["zcmb"].to_numpy() * conventions.SPEED_OF_LIGHT
-    cf4_cz = cf4_velocities.table["Vcmb"].to_numpy(dtype=float)
-    lo = config.histogram_bin_width * np.floor(min(tempel_cz.min(), cf4_cz.min()) / config.histogram_bin_width)
-    hi = config.histogram_bin_width * np.ceil(max(tempel_cz.max(), cf4_cz.max()) / config.histogram_bin_width)
-    bins = np.arange(lo, hi + config.histogram_bin_width, config.histogram_bin_width)
-    fig, (top, bottom) = plt.subplots(2, 1, figsize=_HIST_FIGSIZE, sharex=True)
-    top.hist(tempel_cz, bins=bins, color=_COLOR_PRIMARY, alpha=_HIST_ALPHA)
-    top.axvline(config.tempel_redshift_limit * conventions.SPEED_OF_LIGHT, color=_COLOR_GUIDE,
-                ls="--", lw=_GUIDE_LINE_WIDTH, label=f"z = {config.tempel_redshift_limit}")
-    top.legend(frameon=False)
-    _finish(top, "", "galaxies per bin", f"Tempel galaxies (N = {tempel_cz.size:,})")
-    bottom.hist(cf4_cz, bins=bins, color=_COLOR_SECONDARY, alpha=_HIST_ALPHA)
-    _finish(bottom, r"$cz_{\rm CMB}$ [km/s]", "groups per bin",
-            f"CF4 groups (N = {cf4_cz.size:,})")
-    bottom.set_xlim(left=bins[0])
+    width = config.histogram_bin_width
+    lo = width * np.floor(min(s.cz.min() for s in samples) / width)
+    hi = width * np.ceil(max(s.cz.max() for s in samples) / width)
+    bins = np.arange(lo, hi + width, width)
+    fig, axes = plt.subplots(len(samples), 1, figsize=(_HIST_WIDTH, _HIST_PANEL_HEIGHT * len(samples)),
+                             sharex=True, squeeze=False)
+    for ax, s in zip(axes[:, 0], samples):
+        ax.hist(s.cz, bins=bins, color=s.color, alpha=_HIST_ALPHA)
+        if s.cz_limit is not None:
+            ax.axvline(s.cz_limit, color=_COLOR_GUIDE, ls="--", lw=_GUIDE_LINE_WIDTH,
+                       label=f"survey limit, cz = {s.cz_limit:,.0f} km/s")
+            ax.legend(frameon=False)
+        _finish(ax, "", f"{s.unit} per bin", f"{s.name} (N = {s.cz.size:,}; cz {s.cz_frame})")
+    axes[-1, 0].set_xlabel("cz [km/s]", color=_LABEL_COLOR)
+    axes[-1, 0].set_xlim(left=bins[0])
     fig.tight_layout()
     return fig
 
@@ -794,5 +1436,39 @@ def make_noise_comparison_figure(noise: pd.DataFrame) -> plt.Figure:
     right.legend(frameon=False)
     _finish(right, r"median $cz_{\rm CMB}$ of bin [km/s]", r"std($v\,/\,\sigma_u$)",
             "Per-object normalized scatter")
+    fig.tight_layout()
+    return fig
+
+
+def make_source_drift_figure(drift: pd.DataFrame, fits: pd.DataFrame) -> plt.Figure:
+    """Median ln-scale peculiar velocity against cz, one line per CF4 source.
+
+    Points at each bin's median cz with sqrt(pi/2) sigma/sqrt(n) error bars;
+    the dashed line of the same color is the `zero_point_drift_table` fit
+    a + s cz. A source whose line tilts while the others stay flat has a
+    zero-point offset of its own.
+
+    Parameters
+    ----------
+    drift : pandas.DataFrame
+        `velocity_drift_by_source` output.
+    fits : pandas.DataFrame
+        `zero_point_drift_table` output.
+    """
+    fig, ax = plt.subplots(figsize=_DRIFT_FIGSIZE)
+    for name, rows in drift.groupby("source", sort=False):
+        color = _SOURCE_COLORS[name]
+        ax.errorbar(rows["cz_median"], rows["v_median"], yerr=rows["v_median_err"], color=color,
+                    lw=_LINE_WIDTH, marker="o", ms=_MARKER_SIZE, capsize=_ERRORBAR_CAPSIZE,
+                    label=f"{name} ({int(rows['n'].sum()):,})")
+        if name in fits.index:
+            fit = fits.loc[name]
+            x = np.array([0.0, rows["cz_hi"].max()])
+            ax.plot(x, fit["offset"] + fit["slope"] * x, color=color, lw=_GUIDE_LINE_WIDTH, ls="--")
+    ax.axhline(0.0, color=_COLOR_GUIDE, lw=_GUIDE_LINE_WIDTH)
+    ax.set_xlim(left=0)
+    ax.legend(frameon=False, fontsize="small")
+    _finish(ax, r"$cz_{\rm CMB}$ = Vcmb [km/s]", "median peculiar velocity (ln form) [km/s]",
+            "CF4 single-method groups: median velocity by source")
     fig.tight_layout()
     return fig

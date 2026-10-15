@@ -36,8 +36,10 @@ from dvcorr.pipeline.real_catalogs import (
     davis_scrimgeour_velocity,
     distance_from_modulus,
     format_half_ulp,
+    in_twomrs_footprint,
     load_cf4_velocities,
     load_tempel_galaxies,
+    load_twomrs_galaxies,
     published_ramp_weight,
     published_vpec,
     radec_to_unit_vector,
@@ -166,8 +168,10 @@ class TestReadEdd:
         assert paths.sdss_tempel_catalog.name == "SDSS_Tempel.csv"
         _small_catalog(tmp_path, name=paths.sdss_tempel_catalog.name)
         _small_catalog(tmp_path, name=paths.cf4_velocities_catalog.name)
+        _small_catalog(tmp_path, name=paths.twomrs_catalog.name)
         assert len(load_tempel_galaxies(paths).table) == 3
         assert len(load_cf4_velocities(paths).table) == 3
+        assert len(load_twomrs_galaxies(paths).table) == 3
 
 
 # --------------------------------------------------------------------------
@@ -191,6 +195,14 @@ class TestSkyGeometry:
         assert tiny[0] == pytest.approx(1e-6, rel=1e-6)
         anti = angular_separation_deg([0.0], [30.0], [180.0], [-30.0])
         assert anti[0] == pytest.approx(180.0)
+
+    def test_twomrs_mask_edges(self) -> None:
+        # |b| >= 5 away from the bulge, >= 8 within 30 deg of l = 0; l wraps.
+        glon = np.array([180.0, 180.0, 10.0, 10.0, 350.0, 329.9, 29.9, -10.0])
+        glat = np.array([5.0, -4.99, 7.9, -8.0, 8.1, 5.0, 5.0, 7.0])
+        expected = [True, False, False, True, True, True, False, False]
+        assert in_twomrs_footprint(glon, glat).tolist() == expected
+        assert in_twomrs_footprint(180.0, 30.0).shape == (1,)
 
     def test_separation_across_ra_wrap(self) -> None:
         sep = angular_separation_deg([359.9], [0.0], [0.1], [0.0])
@@ -463,16 +475,160 @@ def test_figures_build(tmp_path) -> None:
     noise = audit.velocity_noise_by_depth(
         catalog, config=audit.AuditConfig(cz_edges=(4000.0, 15000.0, 30000.0))
     )
-    tempel = _catalog(pd.DataFrame({"zcmb": [0.02, 0.05, 0.09]}))
+    sample = _sky_sample(np.array([10.0, 200.0, 300.0]), np.array([0.0, 40.0, -30.0]),
+                         cz_limit=29_979.0)
+    drift = pd.DataFrame({"source": ["TF"] * 3, "cz_lo": [0.0, 5e3, 1e4], "cz_hi": [5e3, 1e4, 2e4],
+                          "n": [30, 30, 30], "cz_median": [2e3, 7e3, 15e3],
+                          "v_median": [0.0, 10.0, 20.0], "v_median_err": [5.0, 5.0, 5.0]})
     figures = [
         audit.make_sky_map(catalog.table["RA"], catalog.table["DE"], title="synthetic"),
-        audit.make_cz_histogram_figure(tempel, catalog),
+        audit.make_cz_histogram_figure([sample, sample]),
+        audit.make_overlap_sky_map([sample, sample], title="overlap", cz_max=10_000.0),
+        audit.make_source_drift_figure(drift, audit.zero_point_drift_table(drift)),
         audit.make_vpec_vs_cz_figure(catalog, noise),
         audit.make_velocity_definition_figure(catalog),
         audit.make_noise_comparison_figure(noise),
     ]
     assert all(fig.axes for fig in figures)
     matplotlib.pyplot.close("all")
+
+
+# --------------------------------------------------------------------------
+# Stage 1 addendum: 2MRS, the three-catalog overlap, CF4 by source
+# --------------------------------------------------------------------------
+
+
+def _sky_sample(ra, de, *, glat=None, cz=None, cz_limit=None):
+    n = ra.size
+    return audit.SkySample(
+        name="synthetic", unit="objects", ra=ra, de=de, glon=np.full(n, 180.0),
+        glat=np.full(n, 45.0) if glat is None else glat,
+        cz=np.full(n, 5000.0) if cz is None else cz, cz_frame="CMB", color="#2a78d6",
+        cz_limit=cz_limit,
+    )
+
+
+def test_twomrs_checks_find_planted_defects() -> None:
+    table = pd.DataFrame(
+        {
+            "pgc": [1, 2, 3, 3],
+            "ID_2MASXJ": ["a", "b", "c", "d"],
+            "K_c": [11.0, 11.8, 11.2, 11.5],
+            "K_tc": [10.9, 11.7, 11.75, 11.4],
+            "Glon": [100.0, 10.0, 200.0, 250.0],
+            "Glat": [30.0, 6.0, -20.0, 60.0],
+            "Vhel": [-100, 5000, 8000, 12000],
+            "e_V": [0, 30, 40, 0],
+        }
+    )
+    checks = audit.twomrs_checks(_catalog(table))
+    assert checks.pgc_unique is False and checks.id_unique is True
+    assert checks.n_isophotal_beyond_limit == 1
+    assert checks.n_outside_mask == 1  # l = 10 (bulge) at b = 6 < 8
+    assert checks.n_nonpositive_vhel == 1
+    assert checks.n_velocity_error_not_given == 2
+    assert checks.max_total_magnitude == 11.75
+
+
+def test_twomrs_mask_area_matches_the_spherical_band_formula() -> None:
+    # Area with |b| < b0 is 4 pi sin(b0); the bulge widens the cut over 60/360 of l.
+    sin5, sin8 = np.sin(np.deg2rad(5.0)), np.sin(np.deg2rad(8.0))
+    full_sky = 4.0 * np.pi * np.rad2deg(1.0) ** 2
+    expected = full_sky * (1.0 - sin5 - (60.0 / 360.0) * (sin8 - sin5))
+    assert audit.twomrs_mask_area() == pytest.approx(expected, rel=1e-3)
+
+
+def test_twomrs_crossmatch_compares_heliocentric_velocities() -> None:
+    c = conventions.SPEED_OF_LIGHT
+    twomrs = _catalog(pd.DataFrame({"pgc": [1, 2, 3], "Vhel": [3000, 6000, 9000]}))
+    tempel = _catalog(pd.DataFrame({"pgc": [1, 2, 9], "zobs": [3000 / c, 6500 / c, 0.01]}))
+    cf4 = _catalog(pd.DataFrame({"pgc": [3], "Vhel": [9000]}))
+    table = audit.twomrs_crossmatch(twomrs, tempel, cf4)
+    tempel_row = table.iloc[0]
+    assert tempel_row["n_matched"] == 2
+    assert tempel_row["n_beyond_tolerance"] == 1
+    assert table.iloc[1]["n_matched"] == 1 and table.iloc[1]["median_dv"] == 0.0
+
+
+def test_sky_overlap_counts_footprint_and_mask() -> None:
+    config = audit.AuditConfig(overlap_nside=8)
+    tempel = _catalog(pd.DataFrame({"RA": [180.0], "DE": [30.0]}))
+    pixels = audit.sdss_footprint_pixels(tempel, config)
+    # In the footprint and the mask; in the mask only; in neither (b = 2);
+    # in the footprint but too deep for the cz cut.
+    sample = _sky_sample(
+        np.array([180.0, 0.0, 0.0, 180.0]), np.array([30.0, -60.0, -60.0, 30.0]),
+        glat=np.array([45.0, 45.0, 2.0, 45.0]), cz=np.array([5e3, 5e3, 5e3, 2e4]),
+    )
+    table = audit.sky_overlap_table([sample], pixels, config, cz_max=1e4)
+    row = table.loc["synthetic"]
+    assert (row["n"], row["in_sdss"], row["in_twomrs_mask"], row["in_both"]) == (3, 1, 2, 1)
+
+
+def _cf4_groups_table():
+    # Five groups: FP inside the footprint, FP in the south outside it,
+    # TF, FP+TF (two methods: excluded from sources), a calibrator only.
+    nan = np.nan
+    return pd.DataFrame(
+        {
+            "pgc": [1, 2, 3, 4, 5],
+            "RA": [180.0, 0.0, 90.0, 180.0, 10.0],
+            "DE": [30.0, -40.0, 20.0, 30.0, 50.0],
+            "Vcmb": [5000, 6000, 3000, 12000, 500],
+            "Nc": [0, 0, 0, 0, 1],
+            "DM_FP": [34.0, 34.5, nan, 35.0, nan],
+            "DM_TFR": [nan, nan, 33.0, 35.1, nan],
+            "DM_SNIa": [nan] * 5,
+            "DM_SNII": [nan] * 5,
+            "DM_SBFo": [nan] * 5,
+            "DM_SBFir": [nan] * 5,
+        }
+    )
+
+
+def test_cf4_method_table_and_methods_per_group() -> None:
+    groups = _catalog(_cf4_groups_table())
+    table = audit.cf4_method_table(groups, audit.AuditConfig(analysis_cz_max=10_000.0))
+    assert table.loc["FP", ["n_groups", "n_single_method", "n_groups_near"]].tolist() == [3, 2, 2]
+    assert table.loc["TF", "n_single_method"] == 1
+    assert table.loc["calibrators (Nc > 0)", "n_groups"] == 1
+    assert audit.cf4_methods_per_group(groups).to_dict() == {0: 1, 1: 3, 2: 1}
+
+
+def test_cf4_source_samples_split_fp_by_sky_and_drop_undefined_velocity() -> None:
+    config = audit.AuditConfig(overlap_nside=8)
+    g = _cf4_groups_table()
+    pixels = audit.sdss_footprint_pixels(_catalog(pd.DataFrame({"RA": [180.0], "DE": [30.0]})), config)
+    v = pd.DataFrame({"pgc": [1, 2, 3, 4, 5], "fV": [5100.0, 6100.0, -5.0, 12300.0, 500.0],
+                      "DMzp": [34.0, 34.5, 33.0, 35.0, 30.0]})
+    sources = audit.cf4_source_samples(_catalog(g), _catalog(v), pixels, config)
+    labels = dict(zip(sources["pgc"], sources["source"]))
+    # pgc 3 (TF) has fV < 0: velocity undefined, dropped rather than filled.
+    assert labels == {1: audit.SOURCE_FP_SDSS, 2: audit.SOURCE_FP_SOUTH}
+    assert np.isfinite(sources["v"]).all()
+
+
+def test_velocity_drift_drops_small_cells() -> None:
+    rows = pd.DataFrame({"source": ["TF"] * 5, "Vcmb": [1000, 1500, 2000, 6000, 6100],
+                         "v": [10.0, 20.0, 30.0, 0.0, 0.0]})
+    drift = audit.velocity_drift_by_source(
+        rows, audit.AuditConfig(drift_cz_edges=(0.0, 5000.0, 10000.0), drift_min_count=3)
+    )
+    assert drift["cz_lo"].tolist() == [0.0]
+    assert drift.loc[0, "v_median"] == 20.0
+
+
+def test_zero_point_fit_recovers_a_planted_modulus_offset() -> None:
+    # A modulus offset dm gives dv = -(ln 10 / 5) dm cz, on top of a bulk offset.
+    dm, bulk = 0.05, 120.0
+    cz = np.array([2000.0, 5000.0, 9000.0, 14000.0, 20000.0])
+    drift = pd.DataFrame({"source": "SNIa", "cz_lo": cz - 1, "cz_hi": cz + 1, "n": 50,
+                          "cz_median": cz, "v_median": bulk - LN10 / 5.0 * dm * cz,
+                          "v_median_err": 30.0})
+    fit = audit.zero_point_drift_table(drift).loc["SNIa"]
+    assert fit["modulus_offset"] == pytest.approx(dm)
+    assert fit["offset"] == pytest.approx(bulk)
+    assert fit["chi2"] == pytest.approx(0.0, abs=1e-12)
 
 
 # --------------------------------------------------------------------------
@@ -515,3 +671,12 @@ class TestRealFiles:
         assert (traps.n_isolated, traps.n_groups) == (130_010, 49_671)
         assert traps.groups_without_brightest == 375
         assert traps.groups_dc_varies == 0
+
+
+@pytest.mark.skipif(not _PATHS.twomrs_catalog.exists(), reason="2MRS catalog not in data/")
+def test_real_twomrs_matches_its_survey_definition() -> None:
+    checks = audit.twomrs_checks(load_twomrs_galaxies())
+    assert checks.n_galaxies == 43_526
+    assert checks.pgc_unique and checks.id_unique and checks.n_missing == 0
+    assert checks.max_total_magnitude <= audit.TWOMRS_K_LIMIT
+    assert checks.n_outside_mask == 0

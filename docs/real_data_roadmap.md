@@ -20,7 +20,37 @@ Every stage has the same parts:
 - **Done when:** the exit condition before you move on.
 - **Prompt to start it:** paste-ready.
 
-Numbers marked *(measured)* came from a read-only pass over the files on 2026-10-11.
+Numbers marked *(measured)* came from a read-only pass over the files on 2026-10-11. Numbers marked
+*(measured 10-14)* came from the same kind of pass on 2026-10-14.
+
+**Advisor update (2026-10-14).** The scope now covers two density fields and two velocity phases,
+plus a Malmquist-bias correction. See [advisor_notes.md](advisor_notes.md) for what was said, how it
+was read, and the questions still open. The next section sets out the plan. Every stage below
+marks what it adds with **[2026-10-14]**.
+
+---
+
+## The advisor's plan: two density fields, two velocity phases
+
+| Axis | Options | Order |
+| --- | --- | --- |
+| Density tracer | **T** = Tempel SDSS groups (≈ 7,600 deg², north) · **M** = 2MRS K ≤ 11.75 galaxies, Nusser's own catalog (`data/2MRS_K<11.75.txt`, near all-sky, ZoA excluded) | both, run separately |
+| Velocity tracer | **Phase A** = CF4 groups (38,057) · **Phase B** = CF4 individual galaxies, **one run per source** (SDSS FP, 6dFGS FP, TF, SNIa, SBF, …) | A all the way through Stage 8 first, then B (Stage 8B) |
+| Velocity bias | Malmquist bias corrected with a selection function for each velocity sample (Stage 4) | before any Phase B comparison |
+
+- **Why 2MASS:** it was Nusser's own density field (2MRS). So **M × CF4 groups** is his
+  measurement with CF3 swapped for CF4, a direct comparison. It also covers the southern sky, where
+  6dFGS lives and where SDSS has almost no coverage. A 6dF-only run needs M.
+- **Why split by source:** CF4 combines distance indicators that each have their own zero point,
+  scatter and selection. If the sources agree on ζ₁(r), the combined result can be trusted. If one
+  source disagrees, the advisor's prime suspect is 6dF, and that source is either dropped or
+  corrected.
+- **Measured 10-14 (`CF4_Groups.csv` method counts, all / cz < 10,000):** FP 27,697 / 3,196;
+  TF 10,187 / 8,919; SNIa 945 / 554; SBF (optical + IR) 235 / 235; SNII 94; calibrators 337. 96%
+  of groups (36,693, counting SNII) use a single method, so the *groups* already split almost
+  cleanly by method.
+  However, `Nfp` combines SDSS FP and 6dFGS FP. At cz < 10,000, 1,845 FP groups are at δ < 0 and
+  1,351 at δ ≥ 0. Separating the two cleanly needs Phase B's individual table.
 
 ---
 
@@ -127,6 +157,61 @@ puzzle (read the EDD column descriptions; reproduce Vpds and, if possible, Vpwf 
 and report what you find. Explain each check so I can verify it myself.
 ```
 
+### Stage 1 addendum [2026-10-14]: audit 2MASS and the CF4 sources → extends notebook 11
+
+**What this adds.** The two new inputs get the same scrutiny as the first three files: the 2MASS
+catalog and the CF4 individual-galaxy table. CF4 also gets broken down by distance source, so the
+source split in Stage 8B starts from known counts and known quirks.
+
+**Do.**
+
+- **Get the data.** *Done for 2MRS (2026-10-14):* `data/2MRS_K<11.75.txt`, Nusser's catalog,
+  loaded by `load_twomrs_galaxies` and audited in notebook 11 §9–10. *Still to do:* download
+  the CF4 individual-galaxy table from EDD, add its path to `config/paths.py` and give it a
+  loader in `real_catalogs.py`. Check every new filename for typos (rule 9).
+- **CF4 by method, from the group table already in hand.** `CF4_Groups.csv` (the file that joins
+  row by row with the velocities) has `Nc, Nsn, Nfp, Ntf, Nsbfo, Nsbfi` and per-method
+  `DM_*`/`eDM_*`. Tabulate how many groups each method has and how many methods each group mixes.
+- **CF4 individuals.** Read the column dictionary, find the source label (or per-source DM
+  columns), and count galaxies per source. Work out how individuals map to groups (the group `pgc`
+  is presumably the principal galaxy; check it). Then check that the group DM is the
+  1/σ²-weighted mean of its members, as the group table's description says.
+
+**Expect.**
+
+- The group method counts measured 10-14 (see "The advisor's plan").
+- 2MRS *(measured 10-14, notebook 11 §9)*: 43,526 galaxies (Huchra: 43,533), `K_tc` ≤ 11.75
+  in every row, zero galaxies outside the |b| ≥ 5° (8° toward the bulge) mask, median
+  heliocentric cz 8,401 km/s. Velocities are **heliocentric only**: Stage 3 converts them. At
+  cz < 10,000 the SDSS cap holds 6,303 2MRS galaxies against 40,839 Tempel galaxies, and
+  12,077 CF4 groups lie in the 2MRS mask against 4,481 in the SDSS footprint.
+- 6dFGS FP: southern sky only (δ < 0). SDSS FP: inside the SDSS footprint.
+
+**Plots and the intuition to check them against:**
+
+1. A sky map of each CF4 source. SDSS FP should sit inside the Tempel footprint and 6dF FP in the
+   south. TF and SNIa cover the whole sky.
+2. n(cz) per source. FP reaches about 30,000. TF and SNIa should be concentrated at lower cz.
+3. **Median `Vpec` against cz, per source.** This is the cheapest 6dF test there is. A zero-point
+   offset δm in a source's distance moduli gives δv ≈ (ln10/5)·δm·cz, a median that drifts
+   linearly with cz *for that source only*. (Use the ln-restored velocity from §7 of notebook 11.)
+4. 2MASS sky map, n(cz), and its overlap with Tempel inside the SDSS footprint.
+
+**Done when:** both new files load with their counts, every source has a sky map, an n(cz) and a
+median-Vpec(cz) curve, and any source whose median drifts has been flagged.
+
+**Prompt to start it:**
+
+```text
+Do the Stage 1 addendum of docs/real_data_roadmap.md (2MASS + CF4 sources audit), extending
+notebooks/11_real_catalog_audit.ipynb. Read CLAUDE.md, docs/advisor_notes.md and that section first.
+Before writing code: tell me which 2MASS and CF4-individual files you need, and confirm the
+filenames and the 2MASS product with me. Then add loaders to src/dvcorr/pipeline/real_catalogs.py
+(with tests on tiny synthetic files), tabulate the CF4 method breakdown from CF4_Groups.csv,
+and add the per-source sky maps, n(cz), and median Vpec vs cz (ln-restored velocity) to notebook 11.
+Re-execute the notebook (rule 11). Tell me which sources, if any, show a zero-point drift.
+```
+
 ---
 
 ## Stage 2: Build the two analysis samples
@@ -152,9 +237,22 @@ Drop missing values; never fill them (rule 5).
 **Expect (measured):** 49,671 real groups + 130,010 singletons in total. At cz < 10,000 there are
 6,367 groups with Ng ≥ 2, 15,278 singletons, and 4,481 CF4 objects inside the footprint.
 
+**[2026-10-14] 2MASS and the per-source samples.**
+
+- **2MASS density sample (M):** one row per tracer. If the product is a group catalog, collapse it
+  the same way as Tempel (watch for the same singleton trap). CF4 objects are then selected inside
+  the **2MASS** mask, which is nearly all-sky, so far more CF4 centers survive than the 4,481 inside
+  SDSS.
+- **Velocity samples:** Phase A is the CF4 groups, as above. Phase B is the CF4 individuals, one
+  sample per source, each tagged by its source and cut the same way (cz, mask). A galaxy measured
+  by two sources appears in *each* source's sample, never twice in one sample. The duplicate test
+  runs per sample.
+- Every sample is a pair (density field, velocity sample), so the counts table becomes a matrix:
+  {T, M} × {groups, each source}.
+
 **Done when:** the note's duplicate test passes (one row per group and per CF4 object), the counts
 match, and a sky plot of the two samples at cz < 10,000 shows CF4 centers sitting inside the
-Tempel footprint.
+Tempel footprint. **[2026-10-14]** The same holds for M, and the counts matrix is filled in.
 
 **Prompt to start it:**
 
@@ -196,8 +294,13 @@ dipole.
   Recommendation: CMB as primary, with LG as a Stage 12 robustness run. Changing the primary frame
   means editing `conventions.py`, so discuss it before anyone touches it.
 
+- **[2026-10-14] 2MASS positions:** build s_M with the *same* χ(z) and frame. Whatever 2MASS
+  ships (heliocentric cz, a CMB cz, or a distance), convert it explicitly. Never assume it matches
+  Tempel. *Check 3:* cross-match 2MASS with Tempel inside the SDSS footprint and with CF4 by
+  `pgc`. |s_M − s_T| and |s_M − s_V| for the matches should show no trend with cz.
+
 **Done when:** both checks pass, the radius histograms of the two samples lie on the same
-h⁻¹ Mpc axis, and the frame decision is written down.
+h⁻¹ Mpc axis, and the frame decision is written down. **[2026-10-14]** Check 3 passes as well.
 
 **Prompt to start it:**
 
@@ -234,11 +337,39 @@ matters here and 2MRS was nearly full-sky.
 - **Plots and what to look for:** data/random n(s) ratio flat at 1; data/random angular ratio map
   flat apart from Poisson noise; and n̄_T(s) in groups per (h⁻¹ Mpc)³. That last curve falls
   steeply because of the flux limit. If it does not fall, the sample is not what you think it is.
-- Nusser's velocity-centered ζ only needs the **density** tracer's selection. CF4 objects are the
-  centers, and their selection only decides which centers exist. The mocks model that.
+- Nusser's velocity-centered ζ only needs the **density** tracer's selection *for its
+  normalization*. CF4 objects are the centers, and their selection only decides which centers
+  exist. The mocks model that.
+- **[2026-10-14] 2MASS randoms:** the same machinery applied to M. Its angular mask is the sky
+  minus the Zone of Avoidance, and its radial selection is its own n(s), which is shallower than
+  Tempel's.
+
+### [2026-10-14] Velocity-tracer selection and Malmquist bias
+
+The advisor wants the velocities corrected for Malmquist bias with a selection function. That is a
+second, separate use of selection: it does not normalize ζ, it **removes a bias from u itself**.
+
+- **The mechanism.** A distance indicator scatters log-distance by σ_d (roughly 0.2 dex for FP and
+  TF). The objects that scatter one way are not balanced by those that scatter the other way, for
+  two reasons. One is that the survey's selection (flux, size, depth) cuts off one side. The other
+  is that the number of objects along the line of sight changes with distance (r² n(r), and the
+  local density gradients). So at a fixed cz, the measured u is biased. Because the bias depends
+  on the selection, **each CF4 source has its own**. An uncorrected bias that differs between
+  sources would make the Stage 8B comparison fail for reasons that have nothing to do with
+  cosmology.
+- **Do.** Build a selection function S_k(cz, n̂) for each velocity sample k (the CF4 groups, and
+  each source in Phase B) from its n(cz) and its sky coverage. Then implement one correction scheme,
+  chosen with the advisor (see the open questions in the advisor notes). One option is a per-object
+  correction from S_k, homogeneous or inhomogeneous with the T/M density field. The other is a
+  forward model in the Stage 9 mocks.
+- **Validate on MDPL2 first.** Take a carved sphere, give the halos log-normal distance errors at
+  each source's σ_d, apply S_k, and run ζ₁ on the true u, the biased u and the corrected u. The
+  corrected curve must return to the true one within noise, and the biased one shows the size of
+  the effect.
 
 **Done when:** both ratio plots are flat, and the random catalog is cached (rule 7) and reproducible
-from a seed.
+from a seed. **[2026-10-14]** M has its randoms as well, every velocity sample has an S_k, and the
+MDPL2 Malmquist test recovers the true ζ₁.
 
 **Prompt to start it:**
 
@@ -251,6 +382,10 @@ size factor in config). Give the random draw its own seed and extend the seed-al
 Cache the randoms (rule 7). Notebook: footprint map and area, data/random n(s) ratio,
 data/random angular ratio map, and nbar_T(s) vs distance. Tell me what each plot should look
 like if the randoms are right, and whether ours do. Update the architecture.md index line.
+Then do the same for the 2MASS density field. Finally, for the Malmquist part: read
+docs/advisor_notes.md, propose the per-sample selection functions S_k and the correction
+scheme, and wait for my choice. Implement it and run the MDPL2 Malmquist test (true vs biased
+vs corrected zeta_1) before any correction touches real velocities.
 ```
 
 ---
@@ -327,9 +462,15 @@ monopole looks healthy.
 - The flow-signed monopole sits near ⟨|u|⟩, which is noise-dominated here, at hundreds of km/s.
   That is expected. The signed leakage from `per_center_u` should stay small. Split it by R to
   see the finite-distance term (note §7.2).
+- **[2026-10-14] Both density fields, CF4 groups only (Phase A).** Run T × CF4 groups and
+  M × CF4 groups. **M × groups is Nusser's measurement with CF4 in place of CF3.** On his
+  binning it should look like his Fig. 2 top panel, with b_2MRS = 1.12 and no rescaling needed.
+  The two fields have different biases, so compare T and M as ζ₁/b, not raw ζ₁. Apply the
+  Malmquist correction from Stage 4 to the group velocities and show the curve with and without
+  it.
 
 **Done when:** both binnings are plotted, the sign and shape are right, and the amplitude
-relative to theory has been written down.
+relative to theory has been written down. **[2026-10-14]** This holds for both T and M.
 
 **Prompt to start it:**
 
@@ -337,7 +478,8 @@ relative to theory has been written down.
 Start Stage 6 of docs/real_data_roadmap.md (first measurement on real data).
 Read CLAUDE.md, .claude/rules/plotting.md and that stage first. Using only library functions
 from Stages 1-5, build notebooks/14_first_data_dipole.ipynb: zeta^V and zeta^M with
-monopoles (separate figures), on the default binning. Then state the edges of Nusser's
+monopoles (separate figures), on the default binning, for CF4 groups against both the
+Tempel (T) and 2MASS (M) density fields, with and without the Malmquist correction. Then state the edges of Nusser's
 linear 7 h^-1 Mpc binning and wait for my yes before running it. Overlay the linear-theory
 dipole from dvcorr.theory (state the b, f, sigma8 you use). Go through the roadmap's
 "what right / what wrong looks like" list one item at a time and tell me which
@@ -402,6 +544,59 @@ per bin, and whether that matches Nusser's statement that velocity errors are su
 
 ---
 
+## Stage 8B [2026-10-14]: CF4 individuals, source by source (Phase B)  → `notebooks/15_cf4_sources.ipynb`
+
+**What this stage is for.** This is the advisor's consistency test. Phase A has a trusted
+group-velocity result with error bars. Now take apart what goes into it: rerun ζ₁ on the CF4
+**individual** galaxies, one distance source at a time, and check that every source tells the same
+story. A source that disagrees has a zero point, a selection or an error model that cannot be
+trusted. The advisor's suspect is 6dFGS.
+
+**Do.**
+
+- For each source k (SDSS FP, 6dFGS FP, TF, SNIa, SBF, and any others the Stage 1 addendum finds),
+  run ζ₁ with its own Malmquist correction (S_k from Stage 4) and its own bootstrap (Stage 8).
+  Sources with too few objects at cz < 10,000 (SBF, SNII) are reported as counts, not curves.
+- **Pair each source with a density field that covers it.** SDSS FP goes with T and M. 6dFGS FP is
+  southern, so it goes with **M only**. TF and SNIa (all-sky) go with M, and with T inside the
+  footprint.
+- Two comparisons, each shown as a ratio with its bootstrap band:
+  1. **Individuals against groups:** all individuals combined against Phase A on the same density
+     field. Grouping should change the noise, not the mean.
+  2. **Source against source on the same density field**, and where two sources overlap on the
+     sky, on the **same region**. That separates "6dF differs" from "the southern sky differs"
+     (cosmic variance).
+
+**What a problematic source looks like:**
+
+- A zero-point offset shows up first in the Stage 1 addendum's median-Vpec(cz) drift. In ζ it
+  appears as a signed monopole (`per_center_u`) that grows with R, and a dipole biased in
+  proportion to the drift.
+- A wrong error model shows up as a source whose bootstrap scatter is far below the
+  source-to-source spread.
+- A Malmquist bias left uncorrected shows up as a difference that grows with cz and shrinks when
+  the cz cut is lowered.
+
+**Done when:** every source with enough objects has a ζ₁ curve with bootstrap bars, both
+comparisons are plotted, and each source (6dF above all) is labelled *consistent*, *inconsistent,
+explained* or *inconsistent, dropped*. That verdict is written into the advisor notes. The final
+significance of any disagreement uses the per-source mocks of Stage 9.
+
+**Prompt to start it:**
+
+```text
+Start Stage 8B of docs/real_data_roadmap.md (CF4 individuals, source by source).
+Read CLAUDE.md, docs/advisor_notes.md and that stage first, and remind me what the Stage 1
+addendum found per source (counts, sky coverage, median-Vpec drift). Using only library
+functions, build notebooks/15_cf4_sources.ipynb: zeta_1 per source with its own Malmquist
+correction and bootstrap, each paired with a density field that covers it (6dF with 2MASS only).
+Plot individuals vs groups and source vs source as ratios with bands, comparing on the same sky
+region where sources overlap. Tell me plainly whether 6dF agrees with the others, and how sure we
+can be before the Stage 9 mocks.
+```
+
+---
+
 ## Stage 9: Mock observers in MDPL2  → `src/dvcorr/mocks/` (currently empty)
 
 **What this stage is for.** Build fake versions of the Tempel × CF4 survey inside MDPL2, with the
@@ -421,6 +616,10 @@ is compared against.
   r; the mock spread gives the shaded band of Nusser's Fig. 2.
 - Nusser's Fig. 4 (the v–δ dipole in mocks) is the existing `velocity_frame_comparison` pipeline
   run on these mocks.
+- **[2026-10-14]** Each mock also gets an **M-like** density tracer (2MASS mask and n(s), matched to
+  b_M) and a **CF4-like velocity sample per source**: each source's sky, n(cz), σ_d and
+  selection S_k, with the Malmquist correction applied exactly as on the data. The mock spread
+  per source is what makes a Stage 8B disagreement significant or not.
 
 **Done when:** you have Nusser's Fig. 2 top panel: data points with bootstrap bars, mock mean in
 redshift and real space, and the mock 1σ band.
@@ -504,6 +703,9 @@ velocity object sits inside its own density field at y ≈ 0); velocity definiti
 and 15k; CMB against LG frame; and a north/south split. Report each one as a ratio against the
 primary, with the bootstrap band.
 
+**[2026-10-14]** Also: T against M as the density field; groups against individuals; each CF4
+source (Stage 8B, now with the mock bands); and the Malmquist correction on against off.
+
 **Done when:** a table of all variants exists, with each one either consistent with the primary
 or explained.
 
@@ -545,7 +747,8 @@ and wait for my decision before writing code.
 | Nusser | Ours | Status |
 | --- | --- | --- |
 | Fig. 1 theory | `intuition/nusser_dipole_real_and_redshift_space.ipynb` | done |
-| Fig. 2 top (data + mocks) | Stages 6, 8, 9 | to do |
+| Fig. 2 top (data + mocks) | Stages 6, 8, 9 (M × CF4 groups is the like-for-like version) | to do |
+| — (advisor, 2026-10-14) CF4 source consistency | Stage 8B | to do |
 | χ² null / ΛCDM | Stage 10 | to do |
 | Fig. 3 fσ8, β | Stage 11 | to do |
 | Fig. 4 v–δ in mocks | `velocity_frame_comparison` on Stage 9 mocks | machinery done |
@@ -557,7 +760,11 @@ and wait for my decision before writing code.
   `src/dvcorr/selection/` (footprint, n(s), randoms); the masked-sky normalization next to
   `estimators/shell_dipole.py`; `src/dvcorr/mocks/` (observers, mock selection); and the notebooks
   numbered 11 onward.
-- Config: `config/cosmology.py` gains `H0_CF4`; `config/paths.py` gets the Tempel filename fix.
+- **[2026-10-14]** New data: a 2MASS catalog and the CF4 individual-galaxy table (EDD), with
+  loaders in `real_catalogs.py`. The selection functions S_k and the Malmquist correction go in
+  `src/dvcorr/selection/`, and per-source mock selection goes in `src/dvcorr/mocks/`.
+- Config: `config/cosmology.py` gains `H0_CF4`; `config/paths.py` gets the Tempel filename fix
+  **[2026-10-14]** and the 2MASS and CF4-individual paths.
 - Docs: a one-line entry in `docs/architecture.md` per new file. The "n̄ is the box mean"
   contract gains its sky counterpart (n̄V_b → α_R × random count).
 
@@ -567,4 +774,6 @@ and wait for my decision before writing code.
 - `pytest` passes, including the sky sign gates and the bridge test from Stage 5, before any data
   ζ is plotted.
 - Stage 11's mock-recovery test (fσ8 ≈ 0.43 on mocks) passes before the data fit is quoted.
+- **[2026-10-14]** The MDPL2 Malmquist test (Stage 4) passes before any corrected real velocity is
+  plotted.
 - Every edited notebook is re-executed headlessly (rule 11).

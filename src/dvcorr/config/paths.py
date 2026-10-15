@@ -65,6 +65,11 @@ class PathsConfig:
     sdss_tempel_catalog : Path
         Tempel et al. (2017) SDSS group catalog, default
         `data_dir / "SDSS_Tempel.csv"`.
+    twomrs_catalog : Path
+        The 2MASS Redshift Survey (Huchra et al. 2012), K_s <= 11.75, as EDD
+        publishes it -- the density field of Nusser (2017). Default
+        `data_dir / "2MRS_K<11.75.txt"`, the name it was downloaded under
+        (EDD CSV content despite the `.txt`; the `<` needs quoting in a shell).
     dm_snapshot : Path
         Gadget-4 dark-matter particle snapshot at z = 0, default
         `data_dir / "DM_simulation.hdf5"`. A 300 h^-1 Mpc box -- NOT MDPL2, and
@@ -84,6 +89,7 @@ class PathsConfig:
     cf4_groups_catalog: Path | None = None
     cf4_velocities_catalog: Path | None = None
     sdss_tempel_catalog: Path | None = None
+    twomrs_catalog: Path | None = None
     dm_snapshot: Path | None = None
 
     def __post_init__(self) -> None:
@@ -101,6 +107,8 @@ class PathsConfig:
             self.cf4_velocities_catalog = self.data_dir / "CF4_Groups_Velocities.csv"
         if self.sdss_tempel_catalog is None:
             self.sdss_tempel_catalog = self.data_dir / "SDSS_Tempel.csv"
+        if self.twomrs_catalog is None:
+            self.twomrs_catalog = self.data_dir / "2MRS_K<11.75.txt"
         if self.dm_snapshot is None:
             self.dm_snapshot = self.data_dir / "DM_simulation.hdf5"
 
