@@ -48,6 +48,9 @@ extra (`pytest`), and `testpaths = ["tests"]`. `requirements.txt` is `-e .[dev]`
 - `selection.py` **[done]** — `SelectionConfig`: placeholder knobs for `mocks/`/`selection/`.
 - `catalog.py` **[done]** — `CatalogConfig`: which halo catalog a run reads (`CATALOG_FULL`,
   `CATALOG_MVIR12`) and which halos it keeps from it (mass bounds, subhalos).
+- `samples.py` **[done]** — `SampleConfig`: the Stage 2 cuts that build the real-data analysis
+  samples (CF4 cz cut, Tempel richness, footprint nside, which CF4 velocity is u), and the
+  velocity-definition names (`VALID_VELOCITY_DEFINITIONS`).
 - `settings.py` **[done]** — `Settings` aggregator + `default_settings()` factory.
 - `__init__.py` **[done]** — re-export surface over the above.
 
@@ -149,13 +152,16 @@ multipoles relate to the pipeline's by `conventions.nusser_multipole_sign`.
   Tempel galaxy table, the 2MRS K ≤ 11.75 galaxies) read as EDD publishes them: the
   five-line-header reader (`read_edd_csv`) with its column dictionary, the four loaders, sky
   geometry (including the 2MRS latitude mask), and the
-  reverse-engineered formulas behind CF4's `fV`/`Vpds`/`Vpwf`/`Vpec` and the eDM → σ_u error.
-  Stages 2–3 of `docs/real_data_roadmap.md` (unique groups, positions) land here.
+  reverse-engineered formulas behind CF4's `fV`/`Vpds`/`Vpwf`/`Vpec` and the eDM → σ_u error;
+  and Stage 2, the two analysis samples: Tempel collapsed to one row per group/singleton, the
+  CF4 velocity sample (cz cut, occupied-pixel footprint, ln-restored u), the duplicate test and
+  the counts. Stage 3 (positions) lands here too.
 - `real_catalog_audit.py` **[done]** — Stage 1 audit of those tables: units against ranges,
   the two CF4 files against each other, the Tempel traps, footprint area, the rounding-judged
   column reconstruction, the σ_u tests, and (Stage 1 addendum) the 2MRS checks and
   cross-match, the three-catalog sky overlap, and CF4 by distance method with its
-  zero-point drift test; plus the audit figures. Only notebook 11 imports it.
+  zero-point drift test, the four-velocity test (published `Vpwf`/`Vpec` against the ln and
+  log₁₀ rebuilds); plus the audit figures. Only notebooks 11 and 12 import it.
 
 ### `src/dvcorr/selection/` **[empty]**
 
@@ -206,8 +212,9 @@ none contain algorithmic content (see Cross-cutting contracts below).
   sentinel guard, and both class-contrast figures, on synthetic arrays.
 - `test_mass_diagnostics.py` **[done]** — mass-funnel construction guards and figure build.
 - `test_real_catalogs.py` **[done]** — the EDD reader on tiny synthetic EDD CSVs, the CF4
-  velocity formulas and their limits, the audit checks on planted defects, and (skipped when
-  `data/` lacks them) the Stage 1 counts on the real files.
+  velocity formulas and their limits, the audit checks on planted defects, the Stage 2 sample
+  builders (singletons, Rg fallback, duplicate test, no velocity filled), and (skipped when
+  `data/` lacks them) the Stage 1 and Stage 2 counts on the real files.
 - `test_robustness.py` **[done]** — `dvcorr.pipeline.robustness`: the `restack` ==
   `normalize_stacked_dipole` contract, the subset-size divisor, ladder unbiasedness, the
   bootstrap/SEM agreement in the well-behaved regime, symmetric (|·|) trimming, an injected
@@ -258,8 +265,11 @@ none contain algorithmic content (see Cross-cutting contracts below).
 - `11_real_catalog_audit.ipynb` **[done]** — Stage 1 of the data arm: thin consumer of
   `pipeline.real_catalogs` / `pipeline.real_catalog_audit`; the column dictionary, the traps,
   sky maps, n(cz), the CF4 velocity reconstruction and the σ_u puzzle, and (addendum) the 2MRS
-  audit, the three-catalog overlap maps and CF4 by distance method. No script twin;
-  executed, outputs kept.
+  audit, the three-catalog overlap maps and CF4 by distance method; §13 the peculiar-velocities
+  test. No script twin; executed, outputs kept.
+- `12_analysis_samples.ipynb` **[done]** — Stage 2: thin consumer of `pipeline.real_catalogs`;
+  the Tempel density tracers and the CF4 velocity sample, the duplicate test, the counts
+  against the roadmap, and their sky map and n(cz). No script twin; executed, outputs kept.
 
 ### `intuition/` — pedagogical parameter scans; nothing imports from here
 

@@ -43,7 +43,8 @@ pyproject.toml        package metadata, deps, pytest config — the one dependen
 src/dvcorr/
   conventions.py       frozen conventions — sign, pair orientation, observer, box, columns
   config/              tunable settings, one dataclass per file — paths, cosmology (+ f(z),
-                       aH), shell binning, selection, catalog — plus a Settings aggregator
+                       aH), shell binning, selection, catalog, real-data samples — plus a
+                       Settings aggregator
   geometry.py          pure geometry primitives (unit_vector, pair_separation,
                        radial_flow_axis, mu_cosine)
   redshift_space.py    the redshift-space coordinate transform (displace along own LOS)
@@ -63,7 +64,7 @@ src/dvcorr/
   selection/           masks, selection functions, random catalogs (still empty)
   mocks/               MDPL2 observers, halo selection, mock covariance (still empty)
 tests/                 unit tests, including the spherical-infall sign gates
-notebooks/             exploration only — nothing load-bearing (04 … 10, DM_simulation)
+notebooks/             exploration only — nothing load-bearing (04 … 12, DM_simulation)
 intuition/             pedagogical parameter-scan notebooks; consume the library, no script
                        twin, nothing imports from them
 scripts/               thin drivers: plot_velocity_centered_dipole, plot_velocity_frame_

@@ -27,9 +27,27 @@ import pytest
 from dvcorr import conventions
 from dvcorr.config.paths import PathsConfig
 from dvcorr.pipeline import real_catalog_audit as audit
+from dvcorr.config.samples import (
+    VELOCITY_VPDS,
+    VELOCITY_VPEC_LN,
+    VELOCITY_VPEC_PUBLISHED,
+    VELOCITY_VPWF_LN,
+    SampleConfig,
+)
 from dvcorr.pipeline.real_catalogs import (
+    TEMPEL_ISOLATED_IDG,
     Cf4VelocityDefinitions,
+    Cf4VelocitySample,
     EddCatalog,
+    cf4_peculiar_velocity,
+    collapse_tempel_groups,
+    duplicate_test,
+    footprint_pixels,
+    in_pixel_footprint,
+    load_cf4_groups,
+    sample_counts,
+    select_cf4_velocities,
+    select_tempel_tracers,
     angular_separation_deg,
     column_descriptions,
     curvature_corrected_velocity,
@@ -384,6 +402,72 @@ class TestReconstruction:
         np.testing.assert_allclose(noise["zstd_vpwf_ln"], 1.0, atol=0.05)
         np.testing.assert_allclose(noise["zstd_vpec_published"], 1.0 / LN10, atol=0.03)
 
+    def test_velocity_test_separates_ln_from_log10(self, tmp_path) -> None:
+        """Pure noise, EDD's log10 columns: the four-velocity test must find
+        the ln rebuild at unit noise and scale 1, and the three log10 columns
+        (published Vpwf, published Vpec past the ramp, log10 rebuild) all
+        ln 10 low -- the published Vpwf matched by its log10 rebuild."""
+        catalog = _synthetic_velocities(tmp_path, n=6000, true_rms=0.0)
+        table = audit.velocity_test_table(catalog)
+        summary = audit.velocity_test_summary(table)
+        ln, log10 = summary.loc[audit.VELOCITY_VPWF_LN], summary.loc[audit.VELOCITY_VPWF_LOG10]
+        assert ln["median_ratio_to_published_vpwf"] == pytest.approx(LN10, rel=1e-3)
+        assert log10["median_ratio_to_published_vpwf"] == pytest.approx(1.0, rel=1e-3)
+        assert ln["std_normalized_noise_dominated"] == pytest.approx(1.0, abs=0.05)
+        for label in (audit.VELOCITY_VPWF_PUBLISHED, audit.VELOCITY_VPEC_PUBLISHED,
+                      audit.VELOCITY_VPWF_LOG10):
+            assert summary.loc[label, "std_normalized_noise_dominated"] == pytest.approx(
+                1.0 / LN10, abs=0.03), label
+        by_depth = audit.velocity_test_by_depth(
+            table, audit.AuditConfig(cz_edges=(4000.0, 15000.0, 30000.0)))
+        np.testing.assert_allclose(by_depth[audit.VELOCITY_VPWF_LN], 1.0, atol=0.05)
+
+    def test_velocity_test_drops_undefined_rows_without_filling(self, tmp_path) -> None:
+        """fV <= 0 (published Vpwf is a filler 0) and eDM = 0 (no sigma_u)
+        are dropped (hard rule 5), and nothing left is NaN."""
+        catalog = _synthetic_velocities(tmp_path, n=50)
+        table = catalog.table.copy()
+        table.loc[0, ["Vcmb", "fV", "Vpwf"]] = (-100.0, -100.0, 0.0)
+        table.loc[1, "eDM"] = 0.0
+        planted = EddCatalog(catalog.path, catalog.title, table, catalog.columns)
+        result = audit.velocity_test_table(planted)
+        assert len(result) == 48
+        assert not set(table.loc[:1, "pgc"]) & set(result["pgc"])
+        assert not result.isna().any().any()
+
+    def test_velocity_binned_drops_sparse_bins(self, tmp_path) -> None:
+        """One row per (kept bin, velocity); a bin below the count floor is
+        absent; within one bin the ln column is ln 10 wider than the log10 one."""
+        catalog = _synthetic_velocities(tmp_path, n=2000, true_rms=0.0)
+        table = audit.velocity_test_table(catalog)
+        config = audit.AuditConfig(distance_bin_width=100.0, distance_plot_max=600.0,
+                                   scatter_min_count=50)
+        binned = audit.velocity_test_binned(table, audit.VELOCITY_TEST_X_DISTANCE, config)
+        counts = binned.groupby("x_lo")["velocity"].count()
+        assert (counts == len(audit.VELOCITY_TEST_LABELS)).all()
+        assert (binned["n"] >= config.scatter_min_count).all()
+        edges = np.arange(0.0, 700.0, 100.0)
+        expected = [lo for lo in edges[:-1]
+                    if ((table["D"] >= lo) & (table["D"] < lo + 100.0)).sum() >= 50]
+        assert sorted(counts.index) == expected
+        width = binned.pivot(index="x_lo", columns="velocity", values="std")
+        np.testing.assert_allclose(
+            width[audit.VELOCITY_VPWF_LN] / width[audit.VELOCITY_VPWF_LOG10], LN10, rtol=1e-6)
+
+    def test_velocity_binned_on_cz_is_unbiased_noise(self, tmp_path) -> None:
+        """Binned on cz, the distance error enters v only: for pure noise the
+        ln median sits at 0 within its standard error and its spread is sigma_u."""
+        catalog = _synthetic_velocities(tmp_path, n=6000, true_rms=0.0)
+        table = audit.velocity_test_table(catalog)
+        config = audit.AuditConfig(redshift_bin_width=6500.0, redshift_plot_max=32500.0)
+        binned = audit.velocity_test_binned(table, audit.VELOCITY_TEST_X_REDSHIFT, config)
+        ln = binned[binned["velocity"] == audit.VELOCITY_VPWF_LN]
+        assert len(ln) >= 3
+        # 4 standard errors of a median, sqrt(pi/2) sigma / sqrt(n).
+        bound = 4.0 * np.sqrt(np.pi / 2.0) * ln["std"] / np.sqrt(ln["n"])
+        assert (ln["median"].abs() < bound).all()
+        np.testing.assert_allclose(ln["std"] / ln["sigma_u_rms"], 1.0, atol=0.08)
+
     def test_signal_shows_up_as_excess_scatter(self, tmp_path) -> None:
         catalog = _synthetic_velocities(tmp_path, n=6000, true_rms=600.0, edm=0.1)
         config = audit.AuditConfig(cz_edges=(4000.0, 10000.0))
@@ -488,6 +572,16 @@ def test_figures_build(tmp_path) -> None:
         audit.make_vpec_vs_cz_figure(catalog, noise),
         audit.make_velocity_definition_figure(catalog),
         audit.make_noise_comparison_figure(noise),
+        audit.make_velocity_test_histogram_figure(audit.velocity_test_table(catalog)),
+        audit.make_velocity_test_depth_figure(audit.velocity_test_by_depth(
+            audit.velocity_test_table(catalog),
+            audit.AuditConfig(cz_edges=(4000.0, 15000.0, 30000.0)))),
+        *(audit.make_velocity_test_scatter_figure(
+            audit.velocity_test_table(catalog),
+            audit.velocity_test_binned(audit.velocity_test_table(catalog), x_column,
+                                       audit.AuditConfig(scatter_min_count=1)),
+            x_column)
+          for x_column in (audit.VELOCITY_TEST_X_DISTANCE, audit.VELOCITY_TEST_X_REDSHIFT)),
     ]
     assert all(fig.axes for fig in figures)
     matplotlib.pyplot.close("all")
@@ -635,6 +729,179 @@ def test_zero_point_fit_recovers_a_planted_modulus_offset() -> None:
 # The real files: the roadmap's Stage 1 numbers
 # --------------------------------------------------------------------------
 
+# --------------------------------------------------------------------------
+# Stage 2: the analysis samples
+# --------------------------------------------------------------------------
+
+
+def _tempel_table():
+    """Three groups and four singletons, one trap each.
+
+    IDg 10: the Rg = 1 member (ID 100) is listed AFTER Rg 2 -- the center is
+    found by rank, not row order. IDg 20: no Rg = 1 row (Trap 2) -- centers
+    on Rg 2 (ID 200). IDg 30: Ng = 2 but one row left -- still a group.
+    Singletons IDs 1, 2, 3 and 10: the last collides with group IDg 10 as a
+    number, which must not merge them.
+    """
+    c = conventions.SPEED_OF_LIGHT
+    rows = [
+        # ID,  IDg, Ng, Rg, dc,   zcmb,    RA,    DE
+        (101, 10, 3, 2, 50.0, 0.0110, 150.0, 20.0),
+        (100, 10, 3, 1, 50.0, 0.0100, 151.0, 21.0),
+        (102, 10, 3, 3, 50.0, 0.0120, 152.0, 22.0),
+        (201, 20, 4, 3, 80.0, 0.0200, 160.0, 30.0),
+        (200, 20, 4, 2, 80.0, 0.0190, 161.0, 31.0),
+        (300, 30, 2, 1, 90.0, 0.0210, 170.0, 40.0),
+        (1, 0, 1, 1, 30.0, 0.0070, 180.0, 10.0),
+        (2, 0, 1, 1, 31.0, 0.0071, 181.0, 11.0),
+        (3, 0, 1, 1, 32.0, 0.0072, 182.0, 12.0),
+        (10, 0, 1, 1, 33.0, 0.0073, 183.0, 13.0),
+    ]
+    t = pd.DataFrame(rows, columns=["ID", "IDg", "Ng", "Rg", "dc", "zcmb", "RA", "DE"])
+    return t.assign(
+        pgc=t["ID"] + 5000, gVcmb=(t["zcmb"] * c).round(), glon=t["RA"] - 100.0,
+        glat=t["DE"] + 5.0,
+    )
+
+
+class TestTempelCollapse:
+    def test_one_row_per_group_and_per_singleton(self) -> None:
+        tracers = collapse_tempel_groups(_catalog(_tempel_table()))
+        assert len(tracers) == 3 + 4
+        groups = tracers[~tracers["is_singleton"]]
+        assert list(groups["IDg"]) == [10, 20, 30]
+
+    def test_singletons_kept_separate_and_keyed_by_id(self) -> None:
+        tracers = collapse_tempel_groups(_catalog(_tempel_table()))
+        single = tracers[tracers["is_singleton"]]
+        assert sorted(single["ID"]) == [1, 2, 3, 10]
+        assert (single["IDg"] == TEMPEL_ISOLATED_IDG).all()
+        assert (single["n_members"] == 1).all()
+        # Singleton ID 10 and group IDg 10 are different tracers.
+        assert 10 in set(tracers.loc[~tracers["is_singleton"], "IDg"])
+
+    def test_center_is_lowest_rank_present(self) -> None:
+        tracers = collapse_tempel_groups(_catalog(_tempel_table())).set_index("IDg")
+        assert tracers.loc[10, "ID"] == 100 and tracers.loc[10, "center_Rg"] == 1
+        assert (tracers.loc[10, "RA"], tracers.loc[10, "DE"]) == (151.0, 21.0)
+
+    def test_missing_brightest_falls_back_to_next_rank(self) -> None:
+        tracers = collapse_tempel_groups(_catalog(_tempel_table())).set_index("IDg")
+        assert tracers.loc[20, "ID"] == 200 and tracers.loc[20, "center_Rg"] == 2
+        assert (tracers.loc[20, "RA"], tracers.loc[20, "DE"]) == (161.0, 31.0)
+
+    def test_single_row_group_stays_a_group(self) -> None:
+        tracers = collapse_tempel_groups(_catalog(_tempel_table())).set_index("IDg")
+        row = tracers.loc[30]
+        assert not row["is_singleton"] and row["n_members"] == 1 and row["Ng"] == 2
+
+    def test_radius_from_dc_and_redshift_from_member_mean(self) -> None:
+        tracers = collapse_tempel_groups(_catalog(_tempel_table())).set_index("IDg")
+        assert tracers.loc[10, "dc"] == 50.0
+        expected = np.mean([0.0110, 0.0100, 0.0120]) * conventions.SPEED_OF_LIGHT
+        assert tracers.loc[10, "cz_cmb"] == pytest.approx(expected)
+
+    def test_dc_varying_within_a_group_raises(self) -> None:
+        table = _tempel_table()
+        table.loc[0, "dc"] = 51.0
+        with pytest.raises(ValueError, match="dc"):
+            collapse_tempel_groups(_catalog(table))
+
+    def test_richness_cut(self) -> None:
+        tracers = collapse_tempel_groups(_catalog(_tempel_table()))
+        assert len(select_tempel_tracers(tracers)) == 7
+        assert list(select_tempel_tracers(tracers, SampleConfig(min_richness=2))["IDg"]) == [10, 20, 30]
+        assert list(select_tempel_tracers(tracers, SampleConfig(min_richness=3))["IDg"]) == [10, 20]
+
+
+def _cf4_pair(tmp_path, n=300):
+    """Synthetic velocities file plus a groups file with the same pgc order."""
+    velocities = _synthetic_velocities(tmp_path, n=n)
+    table = velocities.table.copy()
+    planted = {
+        0: {"Vcmb": 0, "fV": 0, "Vls": 94, "Vpwf": 0},  # fV = 0: Vpwf a filler 0
+        1: {"Vcmb": -50, "fV": -50, "Vls": 100, "Vpwf": 0},  # fV < 0: EDD takes Vpds
+    }
+    for row, values in planted.items():
+        for column, value in values.items():
+            table.loc[row, column] = value
+    table.loc[[0, 1], "RA"], table.loc[[0, 1], "DE"] = 180.0, 30.0
+    velocities = EddCatalog(velocities.path, velocities.title, table, velocities.columns)
+    groups = _catalog(table[["pgc", "RA", "DE", "Vcmb"]].assign(GLong=0.0, GLat=50.0))
+    return velocities, groups
+
+
+class TestCf4Selection:
+    def test_never_fills_a_velocity(self, tmp_path) -> None:
+        velocities, groups = _cf4_pair(tmp_path)
+        config = SampleConfig(footprint_nside=8, velocity_cz_max=40_000.0)
+        pixels = footprint_pixels(velocities.table["RA"], velocities.table["DE"], 8)
+        sample = select_cf4_velocities(velocities, groups, pixels, config)
+        pgc = velocities.table["pgc"]
+        assert pgc[0] not in set(sample.table["pgc"])  # fV = 0: dropped, not u = 0
+        assert sample.n_undefined_velocity == 1
+        assert sample.undefined_pgc == (int(pgc[0]),)
+        assert np.isfinite(sample.table["u"]).all()
+        kept = sample.table.set_index("pgc").loc[pgc[1]]  # fV < 0: Vpds, not 0
+        distance = distance_from_modulus(velocities.table.loc[1, "DMzp"])
+        assert kept["u"] == pytest.approx(float(davis_scrimgeour_velocity(-50.0, distance)))
+        assert kept["u"] != 0.0
+
+    def test_cz_cut_and_footprint(self, tmp_path) -> None:
+        velocities, groups = _cf4_pair(tmp_path)
+        t = velocities.table
+        cap = t["DE"] > 0  # footprint = pixels of the northern rows
+        pixels = footprint_pixels(t.loc[cap, "RA"], t.loc[cap, "DE"], 8)
+        config = SampleConfig(footprint_nside=8, velocity_cz_max=15_000.0)
+        sample = select_cf4_velocities(velocities, groups, pixels, config)
+        inside = in_pixel_footprint(t["RA"], t["DE"], pixels, 8)
+        assert sample.n_cz == int((t["Vcmb"] < 15_000.0).sum())
+        assert sample.n_footprint == int(((t["Vcmb"] < 15_000.0) & inside).sum())
+        assert (sample.table["Vcmb"] < 15_000.0).all()
+        assert in_pixel_footprint(sample.table["RA"], sample.table["DE"], pixels, 8).all()
+        assert len(sample.table) == sample.n_footprint - sample.n_undefined_velocity
+
+    def test_row_order_mismatch_raises(self, tmp_path) -> None:
+        velocities, groups = _cf4_pair(tmp_path)
+        shuffled = _catalog(groups.table.iloc[::-1].reset_index(drop=True))
+        with pytest.raises(ValueError, match="row order"):
+            select_cf4_velocities(velocities, shuffled, np.array([0]), SampleConfig())
+
+    def test_vpec_ln_ramp(self) -> None:
+        """Vls = 0: pure Vpds; Vls >= 3000: pure ln-WF; half-way: the mean."""
+        fv, modulus = 2000.0, 25.0 + 5.0 * np.log10(1900.0 / DEFS.h0)
+        frame = pd.DataFrame({"fV": fv, "DMzp": modulus, "Vls": [0.0, 1500.0, 3000.0, 5000.0],
+                              "Vpec": 1.0, "Vpds": 2.0})
+        u = cf4_peculiar_velocity(frame, VELOCITY_VPEC_LN)
+        distance = distance_from_modulus(modulus)
+        ds = float(davis_scrimgeour_velocity(fv, distance))
+        wf = float(watkins_feldman_velocity(fv, distance))
+        np.testing.assert_allclose(u, [ds, 0.5 * (ds + wf), wf, wf])
+        np.testing.assert_allclose(cf4_peculiar_velocity(frame, VELOCITY_VPWF_LN), wf)
+        assert (cf4_peculiar_velocity(frame, VELOCITY_VPEC_PUBLISHED) == 1.0).all()
+        assert (cf4_peculiar_velocity(frame, VELOCITY_VPDS) == 2.0).all()
+
+    def test_unknown_velocity_definition_raises(self) -> None:
+        with pytest.raises(ValueError, match="velocity_definition"):
+            SampleConfig(velocity_definition="vpec")
+
+
+def test_footprint_membership() -> None:
+    pixels = footprint_pixels(np.array([180.0]), np.array([30.0]), 16)
+    assert in_pixel_footprint([180.0, 0.0], [30.0, -30.0], pixels, 16).tolist() == [True, False]
+
+
+def test_duplicate_test_passes_and_catches_a_duplicate() -> None:
+    tracers = collapse_tempel_groups(_catalog(_tempel_table()))
+    cf4 = Cf4VelocitySample(table=pd.DataFrame({"pgc": [1, 2, 3]}), velocity_definition=VELOCITY_VPEC_LN,
+                            n_catalog=3, n_cz=3, n_footprint=3, n_undefined_velocity=0)
+    assert (duplicate_test(tracers, cf4)["duplicates"] == 0).all()
+    doubled = pd.concat([tracers, tracers.iloc[[0]]], ignore_index=True)
+    result = duplicate_test(doubled, cf4)
+    assert result.loc["Tempel groups, by IDg", "duplicates"] == 1
+    assert result.loc["Tempel tracers, by center ID", "duplicates"] == 1
+
+
 _PATHS = PathsConfig()
 _HAVE_REAL = all(
     p.exists()
@@ -665,6 +932,33 @@ class TestRealFiles:
     def test_published_vpwf_is_ln10_low(self, velocities) -> None:
         ratio = audit.linear_regime_ratio(velocities)
         assert ratio.median_published_ratio == pytest.approx(1.0 / LN10, abs=0.01)
+
+    def test_velocity_test_on_the_real_file(self, velocities) -> None:
+        """Only the ln rebuild is on the scale of Vpds and of its own errors."""
+        summary = audit.velocity_test_summary(audit.velocity_test_table(velocities))
+        ln = summary.loc[audit.VELOCITY_VPWF_LN]
+        assert ln["median_ratio_to_vpds_linear"] == pytest.approx(1.0, abs=0.02)
+        assert 0.9 < ln["std_normalized_noise_dominated"] < 1.0
+        for label in (audit.VELOCITY_VPWF_PUBLISHED, audit.VELOCITY_VPEC_PUBLISHED,
+                      audit.VELOCITY_VPWF_LOG10):
+            assert summary.loc[label, "median_ratio_to_vpds_linear"] == pytest.approx(
+                1.0 / LN10, abs=0.01), label
+
+    def test_stage2_samples(self, velocities) -> None:
+        tempel = load_tempel_galaxies()
+        config = SampleConfig()
+        tracers = select_tempel_tracers(collapse_tempel_groups(tempel), config)
+        pixels = footprint_pixels(tempel.table["RA"], tempel.table["DE"], config.footprint_nside)
+        cf4 = select_cf4_velocities(velocities, load_cf4_groups(), pixels, config)
+        assert (duplicate_test(tracers, cf4)["duplicates"] == 0).all()
+        counts = sample_counts(tracers, cf4, config)["count"]
+        assert counts["Tempel real groups (IDg > 0)"] == 49_671
+        assert counts["Tempel singletons (IDg = 0)"] == 130_010
+        assert counts["Tempel groups centered on Rg > 1 (Trap 2 fallback)"] == 375
+        assert counts["Tempel groups at cz < 10,000"] == 6_360
+        assert counts["Tempel singletons at cz < 10,000"] == 15_272
+        assert cf4.n_footprint == 4_481
+        assert len(cf4.table) == 4_480
 
     def test_tempel_traps(self) -> None:
         traps = audit.tempel_traps(load_tempel_galaxies())

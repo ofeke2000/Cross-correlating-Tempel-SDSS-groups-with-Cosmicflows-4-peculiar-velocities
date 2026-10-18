@@ -6,7 +6,7 @@ frozen conventions. See `dvcorr/config/settings.py` for the full split
 rationale.
 
 One dataclass per file (`paths.py`, `cosmology.py`, `shells.py`,
-`selection.py`, `catalog.py`), aggregated by `Settings` (`settings.py`).
+`selection.py`, `catalog.py`, `samples.py`), aggregated by `Settings` (`settings.py`).
 `shells.py` also carries the pure shell-edge and volume-weighted-abscissa
 builders (`linear_shell_edges`, `log_shell_edges`,
 `volume_weighted_shell_radii`) that back `ShellConfig`'s properties, and
@@ -17,7 +17,7 @@ derived-background free functions (`matter_density_parameter`, `growth_rate`,
 `f` and `a H` every velocity prediction needs. Re-exported here for a
 clean import surface: `from dvcorr.config import Settings, default_settings,
 PathsConfig, CosmologyConfig, ShellConfig, SelectionConfig, CatalogConfig,
-CATALOG_FULL, CATALOG_MVIR12, VALID_CATALOGS, SPACING_LINEAR, SPACING_LOG,
+SampleConfig, CATALOG_FULL, CATALOG_MVIR12, VALID_CATALOGS, SPACING_LINEAR, SPACING_LOG,
 linear_shell_edges, log_shell_edges, volume_weighted_shell_radii,
 matter_density_parameter, growth_rate, hubble_h_units, scale_factor_hubble`.
 """
@@ -40,6 +40,14 @@ from dvcorr.config.cosmology import (
     scale_factor_hubble,
 )
 from dvcorr.config.paths import PathsConfig
+from dvcorr.config.samples import (
+    VALID_VELOCITY_DEFINITIONS,
+    VELOCITY_VPDS,
+    VELOCITY_VPEC_LN,
+    VELOCITY_VPEC_PUBLISHED,
+    VELOCITY_VPWF_LN,
+    SampleConfig,
+)
 from dvcorr.config.selection import SelectionConfig
 from dvcorr.config.settings import Settings, default_settings
 from dvcorr.config.shells import (
@@ -63,6 +71,12 @@ __all__ = [
     "ShellConfig",
     "SelectionConfig",
     "CatalogConfig",
+    "SampleConfig",
+    "VALID_VELOCITY_DEFINITIONS",
+    "VELOCITY_VPEC_LN",
+    "VELOCITY_VPWF_LN",
+    "VELOCITY_VPEC_PUBLISHED",
+    "VELOCITY_VPDS",
     "CATALOG_FULL",
     "CATALOG_MVIR12",
     "VALID_CATALOGS",

@@ -22,7 +22,7 @@ CLAUDE.md's coding conventions ask for, and the mechanism behind hard rule 4
 (no bare numbers): every literal lives on a dataclass field, not inline in
 analysis code.
 
-Five small dataclasses, one per file, plus this aggregator:
+Six small dataclasses, one per file, plus this aggregator:
 
     PathsConfig      (paths.py)     -- catalog and output file locations,
                                         repo-root-relative
@@ -36,6 +36,9 @@ Five small dataclasses, one per file, plus this aggregator:
                                         mocks/ and selection/ arms
     CatalogConfig    (catalog.py)   -- which halo catalog a run reads, and
                                         which halos it keeps from it
+    SampleConfig     (samples.py)   -- the cuts that build the real-data
+                                        analysis samples (Tempel groups,
+                                        CF4 velocities)
 
     Settings         (here)         -- aggregates one instance of each; use
                                         `default_settings()` to obtain a
@@ -50,6 +53,7 @@ from dataclasses import dataclass, field
 from dvcorr.config.catalog import CatalogConfig
 from dvcorr.config.cosmology import CosmologyConfig
 from dvcorr.config.paths import PathsConfig
+from dvcorr.config.samples import SampleConfig
 from dvcorr.config.selection import SelectionConfig
 from dvcorr.config.shells import ShellConfig
 
@@ -69,6 +73,7 @@ class Settings:
     shells : ShellConfig
     selection : SelectionConfig
     catalog : CatalogConfig
+    samples : SampleConfig
     """
 
     paths: PathsConfig = field(default_factory=PathsConfig)
@@ -76,6 +81,7 @@ class Settings:
     shells: ShellConfig = field(default_factory=ShellConfig)
     selection: SelectionConfig = field(default_factory=SelectionConfig)
     catalog: CatalogConfig = field(default_factory=CatalogConfig)
+    samples: SampleConfig = field(default_factory=SampleConfig)
 
 
 def default_settings() -> Settings:

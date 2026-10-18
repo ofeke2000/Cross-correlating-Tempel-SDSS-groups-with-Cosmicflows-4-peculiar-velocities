@@ -7,11 +7,12 @@ Nusser 2017's density field) -- read exactly as the Extragalactic Distance
 Database (EDD) publishes them, plus the formulas EDD used to build CF4's
 velocity columns and the 2MRS sky mask.
 
-Stage 1 of `docs/real_data_roadmap.md`. Nothing here is a selection or a
-position: the tables come back raw, every row and every column, so that the
-audit (`dvcorr.pipeline.real_catalog_audit`, `notebooks/11_real_catalog_audit.ipynb`)
-sees the files as they are. Collapsing Tempel to one row per group (Stage 2)
-and building redshift-space positions (Stage 3) will land in this module.
+Stage 1 of `docs/real_data_roadmap.md`: the loaders return the tables raw,
+every row and every column, so that the audit
+(`dvcorr.pipeline.real_catalog_audit`, `notebooks/11_real_catalog_audit.ipynb`)
+sees the files as they are. Stage 2 builds the two analysis samples from them
+(see below; `notebooks/12_analysis_samples.ipynb`). Redshift-space positions
+(Stage 3) will land here too.
 
 The EDD CSV format
 ------------------
@@ -102,6 +103,23 @@ things differ from the other two catalogs:
   8 deg toward the bulge (l < 30 or l > 330 deg). The data honour the mask
   with no exception, which is the evidence that this is the survey's mask.
 
+Stage 2: the analysis samples
+-----------------------------
+Cuts live in `dvcorr.config.samples.SampleConfig` (hard rule 4).
+
+- **Density tracer** (`collapse_tempel_groups`, `select_tempel_tracers`):
+  one row per Tempel group (keyed by `IDg`) and per singleton (keyed by
+  its galaxy `ID` -- the shared `IDg = 0` is not an identity), centered on
+  the lowest `Rg` present, at radius `dc`. Primary sample: every tracer,
+  singletons included (`min_richness = 1`). No depth cut.
+- **Velocity tracer** (`select_cf4_velocities`): CF4 groups at
+  `Vcmb` < 10,000 km/s inside the SDSS footprint (`footprint_pixels` of the
+  Tempel galaxies, `in_pixel_footprint`), with u = EDD's `Vpec` ramp rebuilt
+  with the natural log (`cf4_peculiar_velocity`). A group whose u is
+  undefined is dropped, never given u = 0 (hard rule 5).
+- `duplicate_test` (the methodological note's section 6.2) and
+  `sample_counts` check the result.
+
 Positions on the sky
 --------------------
 Not periodic (CLAUDE.md hard rule 3 does not apply to real data). The
@@ -116,12 +134,20 @@ import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
+import healpy as hp
 import numpy as np
 import pandas as pd
 
 from dvcorr import conventions
 from dvcorr.config.cosmology import CosmologyConfig
 from dvcorr.config.paths import PathsConfig
+from dvcorr.config.samples import (
+    VALID_VELOCITY_DEFINITIONS,
+    VELOCITY_VPDS,
+    VELOCITY_VPEC_PUBLISHED,
+    VELOCITY_VPWF_LN,
+    SampleConfig,
+)
 
 #: Line indices of the five-line EDD header (see the module docstring).
 EDD_TITLE_LINE: int = 0
@@ -636,3 +662,382 @@ def velocity_error_from_modulus_error(edm: np.ndarray, fv: np.ndarray) -> np.nda
     # ln(10)/5: d ln(D) / d DM, from D = 10^((DM-25)/5).
     sigma = (np.log(10.0) / 5.0) * edm * fv / (1.0 + fv / conventions.SPEED_OF_LIGHT)
     return np.where(edm > 0, sigma, np.nan)
+
+
+# --------------------------------------------------------------------------
+# Stage 2: the two analysis samples
+# --------------------------------------------------------------------------
+
+#: Tempel's `IDg` for an isolated galaxy. Shared by all 130,010 of them, so
+#: it is NOT a group identity (Trap 1): a singleton is keyed by its `ID`.
+TEMPEL_ISOLATED_IDG: int = 0
+#: Tempel's `Rg` of a group's brightest member, the fiducial center. 375
+#: groups lost it to the clipping (Trap 2); they center on their lowest `Rg`.
+TEMPEL_BRIGHTEST_RANK: int = 1
+
+
+def footprint_pixels(ra_deg: np.ndarray, de_deg: np.ndarray, nside: int) -> np.ndarray:
+    """HEALPix pixels (RING, `nside`) holding at least one of the directions.
+
+    An occupied-pixel footprint: built from Tempel galaxies it is the SDSS
+    footprint, slightly generous at the edges (an edge pixel counts whole).
+
+    Parameters
+    ----------
+    ra_deg, de_deg : array_like, shape (N,)
+    nside : int
+
+    Returns
+    -------
+    numpy.ndarray of int, shape (M,), sorted, unique.
+    """
+    ra = np.asarray(ra_deg, dtype=float)
+    de = np.asarray(de_deg, dtype=float)
+    return np.unique(hp.ang2pix(nside, ra, de, lonlat=True))
+
+
+def in_pixel_footprint(
+    ra_deg: np.ndarray, de_deg: np.ndarray, pixels: np.ndarray, nside: int
+) -> np.ndarray:
+    """Whether each direction falls in one of `pixels` (from `footprint_pixels`
+    at the same `nside`).
+
+    Returns
+    -------
+    numpy.ndarray of bool, shape (N,)
+    """
+    ra = np.atleast_1d(np.asarray(ra_deg, dtype=float))
+    de = np.atleast_1d(np.asarray(de_deg, dtype=float))
+    return np.isin(hp.ang2pix(nside, ra, de, lonlat=True), pixels)
+
+
+def collapse_tempel_groups(tempel: EddCatalog) -> pd.DataFrame:
+    """The Tempel galaxy table collapsed to one row per density tracer.
+
+    - **Real groups** (`IDg > 0`): one row per `IDg`. The center is the
+      member with the lowest `Rg` present -- the brightest (`Rg = 1`) where
+      the clipped table kept it, the next brightest in the 375 groups where it
+      did not (Trap 2). A group with `Ng >= 2` but a single row left after
+      clipping stays a group: rows are grouped by `IDg`, never by row count.
+    - **Singletons** (`IDg = 0`): one row per galaxy `ID`, never merged into
+      the one fake 130,010-member "group" a `groupby("IDg")` makes (Trap 1).
+
+    The radius is `dc`, which is constant within every group (Trap 4); this
+    raises if it is not, or if `Ng` varies within a group. `gVcmb` is not
+    used: it differs between members of one group in 19% of groups, and for
+    243 singletons it is more than 500 km/s from the galaxy's own c zcmb.
+
+    Parameters
+    ----------
+    tempel : EddCatalog
+        `load_tempel_galaxies()`.
+
+    Returns
+    -------
+    pandas.DataFrame
+        One row per tracer, groups first (ascending `IDg`) then singletons
+        (ascending `ID`). Columns:
+
+        - `IDg` -- the group id; `TEMPEL_ISOLATED_IDG` (0) for a singleton.
+        - `ID`, `pgc` -- the CENTER galaxy's. `ID` is a unique key over all
+          tracers (every galaxy belongs to exactly one tracer).
+        - `is_singleton` -- bool.
+        - `Ng` -- Tempel+14 parent richness (1 for a singleton).
+        - `n_members` -- rows present in the clipped table (<= `Ng`).
+        - `center_Rg` -- the center's `Rg` (1 unless Trap 2).
+        - `RA`, `DE`, `glon`, `glat` -- the center's direction, degrees.
+        - `dc` -- comoving distance, Mpc (H0 = 67.8), the radius.
+        - `cz_cmb` -- c x the mean `zcmb` of the members present, km/s: the
+          group redshift `dc` encodes (equal to it to ~2 km/s wherever no
+          member was clipped). For a singleton, c x its own `zcmb`.
+    """
+    t = tempel.table
+    isolated = t["IDg"] == TEMPEL_ISOLATED_IDG
+    members = t[~isolated].sort_values(["IDg", "Rg", "ID"], kind="mergesort")
+    by_group = members.groupby("IDg", sort=True)
+    for column in ("dc", "Ng"):
+        varies = by_group[column].nunique() > 1
+        if varies.any():
+            raise ValueError(
+                f"collapse_tempel_groups: `{column}` varies within {int(varies.sum())} "
+                f"groups (first IDg {varies.idxmax()}); one value per group is assumed."
+            )
+    centers = members.drop_duplicates("IDg", keep="first").set_index("IDg")
+    groups = pd.DataFrame(
+        {
+            "IDg": centers.index.to_numpy(),
+            "ID": centers["ID"].to_numpy(),
+            "pgc": centers["pgc"].to_numpy(),
+            "is_singleton": False,
+            "Ng": centers["Ng"].to_numpy(),
+            "n_members": by_group.size().loc[centers.index].to_numpy(),
+            "center_Rg": centers["Rg"].to_numpy(),
+            "RA": centers["RA"].to_numpy(float),
+            "DE": centers["DE"].to_numpy(float),
+            "glon": centers["glon"].to_numpy(float),
+            "glat": centers["glat"].to_numpy(float),
+            "dc": centers["dc"].to_numpy(float),
+            "cz_cmb": by_group["zcmb"].mean().loc[centers.index].to_numpy()
+            * conventions.SPEED_OF_LIGHT,
+        }
+    )
+    single = t[isolated].sort_values("ID", kind="mergesort")
+    singletons = pd.DataFrame(
+        {
+            "IDg": single["IDg"].to_numpy(),
+            "ID": single["ID"].to_numpy(),
+            "pgc": single["pgc"].to_numpy(),
+            "is_singleton": True,
+            "Ng": single["Ng"].to_numpy(),
+            "n_members": 1,
+            "center_Rg": single["Rg"].to_numpy(),
+            "RA": single["RA"].to_numpy(float),
+            "DE": single["DE"].to_numpy(float),
+            "glon": single["glon"].to_numpy(float),
+            "glat": single["glat"].to_numpy(float),
+            "dc": single["dc"].to_numpy(float),
+            "cz_cmb": single["zcmb"].to_numpy(float) * conventions.SPEED_OF_LIGHT,
+        }
+    )
+    return pd.concat([groups, singletons], ignore_index=True)
+
+
+def select_tempel_tracers(groups: pd.DataFrame, config: SampleConfig | None = None) -> pd.DataFrame:
+    """The density-tracer sample: `collapse_tempel_groups` rows with `Ng` >=
+    `config.min_richness`. No depth cut (see `SampleConfig.velocity_cz_max`).
+
+    Returns
+    -------
+    pandas.DataFrame
+        Same columns, index reset.
+    """
+    config = config or SampleConfig()
+    return groups[groups["Ng"] >= config.min_richness].reset_index(drop=True)
+
+
+def cf4_peculiar_velocity(
+    velocities: pd.DataFrame,
+    definition: str,
+    definitions: Cf4VelocityDefinitions | None = None,
+) -> np.ndarray:
+    """The CF4 group peculiar velocity u under one of the `config.samples`
+    velocity definitions, km/s.
+
+    - `VELOCITY_VPEC_LN`: EDD's ramp with the natural log restored,
+      w Vpds + (1 - w) v_WF, w = `published_ramp_weight(Vls)`, w = 1 where
+      fV < 0 (EDD's rule). Vpds and v_WF are both rebuilt from `fV` and
+      `DMzp` (no published rounding). Undefined (NaN) where fV = 0 exactly
+      with w < 1: EDD blends a filler 0 there, which is not a velocity.
+    - `VELOCITY_VPWF_LN`: v_WF with ln everywhere; NaN where fV <= 0.
+    - `VELOCITY_VPEC_PUBLISHED`, `VELOCITY_VPDS`: the published columns.
+
+    NaN marks "undefined"; it is never replaced by a number here (hard
+    rule 5) -- the sample builder drops those rows.
+
+    Parameters
+    ----------
+    velocities : pandas.DataFrame
+        Rows of `load_cf4_velocities().table` (columns `fV`, `DMzp`, `Vls`,
+        `Vpec`, `Vpds`).
+    definition : str
+        One of `config.samples.VALID_VELOCITY_DEFINITIONS`.
+    definitions : Cf4VelocityDefinitions, optional
+
+    Returns
+    -------
+    numpy.ndarray, shape (N,)
+    """
+    if definition not in VALID_VELOCITY_DEFINITIONS:
+        raise ValueError(
+            f"cf4_peculiar_velocity: definition must be one of "
+            f"{sorted(VALID_VELOCITY_DEFINITIONS)}, got {definition!r}."
+        )
+    if definition == VELOCITY_VPEC_PUBLISHED:
+        return velocities["Vpec"].to_numpy(dtype=float)
+    if definition == VELOCITY_VPDS:
+        return velocities["Vpds"].to_numpy(dtype=float)
+    d = definitions or Cf4VelocityDefinitions()
+    fv = velocities["fV"].to_numpy(dtype=float)
+    distance = distance_from_modulus(velocities["DMzp"])
+    wf = watkins_feldman_velocity(fv, distance, d)
+    if definition == VELOCITY_VPWF_LN:
+        return wf
+    w = np.where(fv < 0, 1.0, published_ramp_weight(velocities["Vls"], d))
+    ds = davis_scrimgeour_velocity(fv, distance, d)
+    # Pure Vpds where w = 1, so an undefined v_WF there never enters as 0 * NaN.
+    blended = w * ds + (1.0 - w) * wf
+    return np.where(w == 1.0, ds, blended)
+
+
+@dataclass(frozen=True)
+class Cf4VelocitySample:
+    """The CF4 velocity-tracer sample and the funnel that built it.
+
+    Attributes
+    ----------
+    table : pandas.DataFrame
+        One row per CF4 group kept. Columns `pgc`; `RA`, `DE`, `glon`, `glat`
+        (degrees, from `CF4_Groups.csv` -- the velocities file has pgc 51922
+        41 deg off, notebook 11 section 2); `Vcmb`, `Vls`, `fV` (km/s, from
+        the velocities file, which `fV` was built from); `DMzp`, `eDM` (mag);
+        `u` (km/s, `velocity_definition`); `sigma_u` (km/s, the eDM error of
+        the ln velocity, `velocity_error_from_modulus_error`; NaN for the
+        eDM = 0 calibrator groups, whose error is not given -- they are kept,
+        since Nusser's w = 1 needs no error).
+    velocity_definition : str
+    n_catalog : int
+        Groups in the files.
+    n_cz : int
+        Of those, `Vcmb` < `velocity_cz_max`.
+    n_footprint : int
+        Of those, inside the footprint.
+    n_undefined_velocity : int
+        Of those, dropped because u is undefined (never filled, rule 5).
+    undefined_pgc : tuple of int
+        Their `pgc`, so the drop can be inspected.
+    """
+
+    table: pd.DataFrame
+    velocity_definition: str
+    n_catalog: int
+    n_cz: int
+    n_footprint: int
+    n_undefined_velocity: int
+    undefined_pgc: tuple[int, ...] = ()
+
+
+def select_cf4_velocities(
+    velocities: EddCatalog,
+    groups: EddCatalog,
+    pixels: np.ndarray,
+    config: SampleConfig | None = None,
+    definitions: Cf4VelocityDefinitions | None = None,
+) -> Cf4VelocitySample:
+    """The CF4 velocity-tracer sample: groups at `Vcmb` < `velocity_cz_max`,
+    inside the footprint `pixels`, with u defined.
+
+    The two CF4 files are joined row by row and must list the same `pgc` in
+    the same order (raises otherwise). The cz cut uses the velocities file's
+    `Vcmb` (the one `fV` and u are built from; it differs from the groups
+    file's in 7 rows, none near the cut); membership uses the groups file's
+    position.
+
+    Parameters
+    ----------
+    velocities, groups : EddCatalog
+        `load_cf4_velocities()`, `load_cf4_groups()`.
+    pixels : numpy.ndarray of int
+        `footprint_pixels(...)` of the Tempel galaxies at
+        `config.footprint_nside`.
+    config : SampleConfig, optional
+    definitions : Cf4VelocityDefinitions, optional
+
+    Returns
+    -------
+    Cf4VelocitySample
+    """
+    config = config or SampleConfig()
+    v = velocities.table
+    g = groups.table
+    if len(v) != len(g) or not np.array_equal(v["pgc"].to_numpy(), g["pgc"].to_numpy()):
+        raise ValueError(
+            "select_cf4_velocities: the velocities and groups files do not list the "
+            "same pgc in the same row order; they cannot be joined row by row."
+        )
+    near = v["Vcmb"].to_numpy(dtype=float) < config.velocity_cz_max
+    inside = in_pixel_footprint(g["RA"], g["DE"], pixels, config.footprint_nside)
+    kept = near & inside
+    u = cf4_peculiar_velocity(v, config.velocity_definition, definitions)
+    defined = np.isfinite(u)
+    rows = kept & defined
+    fv = v["fV"].to_numpy(dtype=float)
+    table = pd.DataFrame(
+        {
+            "pgc": v["pgc"].to_numpy(),
+            "RA": g["RA"].to_numpy(float),
+            "DE": g["DE"].to_numpy(float),
+            "glon": g["GLong"].to_numpy(float),
+            "glat": g["GLat"].to_numpy(float),
+            "Vcmb": v["Vcmb"].to_numpy(float),
+            "Vls": v["Vls"].to_numpy(float),
+            "fV": fv,
+            "DMzp": v["DMzp"].to_numpy(float),
+            "eDM": v["eDM"].to_numpy(float),
+            "u": u,
+            "sigma_u": velocity_error_from_modulus_error(v["eDM"], fv),
+        }
+    )[rows].reset_index(drop=True)
+    return Cf4VelocitySample(
+        table=table,
+        velocity_definition=config.velocity_definition,
+        n_catalog=len(v),
+        n_cz=int(near.sum()),
+        n_footprint=int(kept.sum()),
+        n_undefined_velocity=int((kept & ~defined).sum()),
+        undefined_pgc=tuple(int(x) for x in v.loc[kept & ~defined, "pgc"]),
+    )
+
+
+def duplicate_test(tracers: pd.DataFrame, cf4: Cf4VelocitySample) -> pd.DataFrame:
+    """The methodological note's duplicate test (section 6.2): one Tempel row
+    per group identifier and one CF4 row per identifier.
+
+    Returns
+    -------
+    pandas.DataFrame
+        One row per key checked -- Tempel groups by `IDg`, Tempel singletons
+        by `ID`, all Tempel tracers by center `ID`, CF4 by `pgc` -- with
+        `rows`, `unique_keys` and `duplicates` (= rows - unique keys; must be
+        0 everywhere).
+    """
+    singleton = tracers["is_singleton"].to_numpy()
+    checks = {
+        "Tempel groups, by IDg": tracers.loc[~singleton, "IDg"],
+        "Tempel singletons, by ID": tracers.loc[singleton, "ID"],
+        "Tempel tracers, by center ID": tracers["ID"],
+        "CF4 groups, by pgc": cf4.table["pgc"],
+    }
+    records = [
+        {"key": name, "rows": len(keys), "unique_keys": int(keys.nunique()),
+         "duplicates": len(keys) - int(keys.nunique())}
+        for name, keys in checks.items()
+    ]
+    return pd.DataFrame.from_records(records).set_index("key")
+
+
+def sample_counts(
+    tracers: pd.DataFrame, cf4: Cf4VelocitySample, config: SampleConfig | None = None
+) -> pd.DataFrame:
+    """The Stage 2 counts table: the density-tracer and velocity-tracer funnels.
+
+    Tempel rows at "cz < cut" use `cz_cmb` (the group redshift `dc`
+    encodes), for comparison only: the density sample is not cut in depth.
+
+    Returns
+    -------
+    pandas.DataFrame
+        Indexed by a description of each count; one column `count`.
+    """
+    config = config or SampleConfig()
+    singleton = tracers["is_singleton"].to_numpy()
+    near = tracers["cz_cmb"].to_numpy() < config.velocity_cz_max
+    cut = f"{config.velocity_cz_max:,.0f}"
+    counts = {
+        "Tempel real groups (IDg > 0)": int((~singleton).sum()),
+        "Tempel singletons (IDg = 0)": int(singleton.sum()),
+        f"Tempel density tracers, Ng >= {config.min_richness}": len(tracers),
+        f"Tempel groups at cz < {cut}": int((~singleton & near).sum()),
+        f"Tempel singletons at cz < {cut}": int((singleton & near).sum()),
+        "Tempel groups centered on Rg > 1 (Trap 2 fallback)": int(
+            (tracers["center_Rg"] > TEMPEL_BRIGHTEST_RANK).sum()
+        ),
+        "CF4 groups (files)": cf4.n_catalog,
+        f"CF4 groups at Vcmb < {cut}": cf4.n_cz,
+        f"CF4 groups at Vcmb < {cut}, inside the SDSS footprint": cf4.n_footprint,
+        f"  dropped: u undefined ({cf4.velocity_definition})": cf4.n_undefined_velocity,
+        "CF4 velocity sample": len(cf4.table),
+        "  of which calibrators (eDM = 0, sigma_u not given)": int(
+            cf4.table["sigma_u"].isna().sum()
+        ),
+    }
+    return pd.DataFrame({"count": counts}).rename_axis("sample")

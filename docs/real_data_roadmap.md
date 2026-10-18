@@ -236,6 +236,13 @@ Drop missing values; never fill them (rule 5).
 
 **Expect (measured):** 49,671 real groups + 130,010 singletons in total. At cz < 10,000 there are
 6,367 groups with Ng ≥ 2, 15,278 singletons, and 4,481 CF4 objects inside the footprint.
+*Stage 2 result (notebook 12):* 49,671 + 130,010 = 179,681 tracers and 4,481 CF4 groups reproduce.
+The cz < 10,000 Tempel counts are **6,360 groups / 15,272 singletons**: the 6,367 / 15,278 above were
+cut on `gVcmb`, which is not the Tempel group velocity (243 singletons differ from their own c·zcmb by
+> 500 km/s). The group redshift is the mean member `zcmb`, which `dc` encodes. The velocity sample
+is **4,480**: pgc 39346 (fV = 0, `Vpwf` a filler 0) has no defined u and is dropped (rule 5).
+u = EDD's `Vpec` ramp with the natural log restored (decided 2026-10-18); primary richness = all
+groups and singletons (decided 2026-10-15).
 
 **[2026-10-14] 2MASS and the per-source samples.**
 
