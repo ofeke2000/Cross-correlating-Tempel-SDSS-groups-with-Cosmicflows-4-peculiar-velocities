@@ -112,8 +112,9 @@ Cuts live in `dvcorr.config.samples.SampleConfig` (hard rule 4).
   its galaxy `ID` -- the shared `IDg = 0` is not an identity), centered on
   the lowest `Rg` present, at radius `dc`. Primary sample: every tracer,
   singletons included (`min_richness = 1`). No depth cut.
-- **Velocity tracer** (`select_cf4_velocities`): CF4 groups at
-  `Vcmb` < 10,000 km/s inside the SDSS footprint (`footprint_pixels` of the
+- **Velocity tracer** (`select_cf4_velocities`): CF4 groups inside the
+  SDSS footprint, at every depth unless `SampleConfig.velocity_cz_max` is
+  set (default: no cz cut) (`footprint_pixels` of the
   Tempel galaxies, `in_pixel_footprint`), with u = EDD's `Vpec` ramp rebuilt
   with the natural log (`cf4_peculiar_velocity`). A group whose u is
   undefined is dropped, never given u = 0 (hard rule 5).
@@ -888,7 +889,8 @@ class Cf4VelocitySample:
     n_catalog : int
         Groups in the files.
     n_cz : int
-        Of those, `Vcmb` < `velocity_cz_max`.
+        Of those, `Vcmb` < `velocity_cz_max` (all of them when the cut is
+        None).
     n_footprint : int
         Of those, inside the footprint.
     n_undefined_velocity : int
@@ -913,8 +915,8 @@ def select_cf4_velocities(
     config: SampleConfig | None = None,
     definitions: Cf4VelocityDefinitions | None = None,
 ) -> Cf4VelocitySample:
-    """The CF4 velocity-tracer sample: groups at `Vcmb` < `velocity_cz_max`,
-    inside the footprint `pixels`, with u defined.
+    """The CF4 velocity-tracer sample: groups inside the footprint `pixels`,
+    at `Vcmb` < `velocity_cz_max` when that cut is set, with u defined.
 
     The two CF4 files are joined row by row and must list the same `pgc` in
     the same order (raises otherwise). The cz cut uses the velocities file's
@@ -944,7 +946,11 @@ def select_cf4_velocities(
             "select_cf4_velocities: the velocities and groups files do not list the "
             "same pgc in the same row order; they cannot be joined row by row."
         )
-    near = v["Vcmb"].to_numpy(dtype=float) < config.velocity_cz_max
+    vcmb = v["Vcmb"].to_numpy(dtype=float)
+    near = (
+        np.ones(vcmb.size, bool) if config.velocity_cz_max is None
+        else vcmb < config.velocity_cz_max
+    )
     inside = in_pixel_footprint(g["RA"], g["DE"], pixels, config.footprint_nside)
     kept = near & inside
     u = cf4_peculiar_velocity(v, config.velocity_definition, definitions)
@@ -1010,8 +1016,10 @@ def sample_counts(
 ) -> pd.DataFrame:
     """The Stage 2 counts table: the density-tracer and velocity-tracer funnels.
 
-    Tempel rows at "cz < cut" use `cz_cmb` (the group redshift `dc`
-    encodes), for comparison only: the density sample is not cut in depth.
+    When `config.velocity_cz_max` is set, the Tempel rows at "cz < cut" use
+    `cz_cmb` (the group redshift `dc` encodes), for comparison only: the
+    density sample is not cut in depth. With no cut (the default) those
+    rows are left out and the CF4 rows say "all depths".
 
     Returns
     -------
@@ -1020,20 +1028,29 @@ def sample_counts(
     """
     config = config or SampleConfig()
     singleton = tracers["is_singleton"].to_numpy()
-    near = tracers["cz_cmb"].to_numpy() < config.velocity_cz_max
-    cut = f"{config.velocity_cz_max:,.0f}"
     counts = {
         "Tempel real groups (IDg > 0)": int((~singleton).sum()),
         "Tempel singletons (IDg = 0)": int(singleton.sum()),
         f"Tempel density tracers, Ng >= {config.min_richness}": len(tracers),
-        f"Tempel groups at cz < {cut}": int((~singleton & near).sum()),
-        f"Tempel singletons at cz < {cut}": int((singleton & near).sum()),
+    }
+    if config.velocity_cz_max is None:
+        depth = "all depths"
+    else:
+        near = tracers["cz_cmb"].to_numpy() < config.velocity_cz_max
+        depth = f"Vcmb < {config.velocity_cz_max:,.0f}"
+        counts[f"Tempel groups at cz < {config.velocity_cz_max:,.0f}"] = int(
+            (~singleton & near).sum()
+        )
+        counts[f"Tempel singletons at cz < {config.velocity_cz_max:,.0f}"] = int(
+            (singleton & near).sum()
+        )
+    counts |= {
         "Tempel groups centered on Rg > 1 (Trap 2 fallback)": int(
             (tracers["center_Rg"] > TEMPEL_BRIGHTEST_RANK).sum()
         ),
         "CF4 groups (files)": cf4.n_catalog,
-        f"CF4 groups at Vcmb < {cut}": cf4.n_cz,
-        f"CF4 groups at Vcmb < {cut}, inside the SDSS footprint": cf4.n_footprint,
+        f"CF4 groups at {depth}": cf4.n_cz,
+        f"CF4 groups at {depth}, inside the SDSS footprint": cf4.n_footprint,
         f"  dropped: u undefined ({cf4.velocity_definition})": cf4.n_undefined_velocity,
         "CF4 velocity sample": len(cf4.table),
         "  of which calibrators (eDM = 0, sigma_u not given)": int(

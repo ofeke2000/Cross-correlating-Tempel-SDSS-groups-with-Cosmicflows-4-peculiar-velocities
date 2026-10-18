@@ -71,7 +71,9 @@ variance, fσ8 fitted only on the 7 points at r > 15.
 
 **Same-size sample:** at cz < 10,000 there are **4,481 CF4 groups inside the Tempel footprint**
 *(measured)*. That is almost exactly Nusser's ~4,600, so his error budget is a fair first guess
-for yours.
+for yours. **[2026-10-18]** The primary sample no longer uses this cut (Stage 2): with no cz cut there
+are 26,302 CF4 groups in the footprint, and the same-size comparison holds only for the cz < 10,000
+variant.
 
 ---
 
@@ -231,16 +233,21 @@ singletons, would silently corrupt everything downstream.
   analogue of Nusser's all-galaxy 2MRS field. Richness cuts (`Ng ≥ 2`, `Ng ≥ 6`) come later as
   splits.
 
-**CF4 velocities:** keep cz < 10,000 km/s (Nusser's cut) and objects inside the Tempel footprint.
-Drop missing values; never fill them (rule 5).
+**CF4 velocities:** keep objects inside the Tempel footprint, **at every depth: no cz cut for now**
+(decided 2026-10-18; `SampleConfig.velocity_cz_max = None`). Nusser's cz < 10,000 km/s stays available
+as a variant (`velocity_cz_max=10_000.0`). Drop missing values; never fill them (rule 5).
 
 **Expect (measured):** 49,671 real groups + 130,010 singletons in total. At cz < 10,000 there are
 6,367 groups with Ng ≥ 2, 15,278 singletons, and 4,481 CF4 objects inside the footprint.
-*Stage 2 result (notebook 12):* 49,671 + 130,010 = 179,681 tracers and 4,481 CF4 groups reproduce.
-The cz < 10,000 Tempel counts are **6,360 groups / 15,272 singletons**: the 6,367 / 15,278 above were
-cut on `gVcmb`, which is not the Tempel group velocity (243 singletons differ from their own c·zcmb by
-> 500 km/s). The group redshift is the mean member `zcmb`, which `dc` encodes. The velocity sample
-is **4,480**: pgc 39346 (fV = 0, `Vpwf` a filler 0) has no defined u and is dropped (rule 5).
+*Stage 2 result (notebook 12):* 49,671 + 130,010 = 179,681 tracers reproduce. **With no cz cut**
+(2026-10-18), 26,303 CF4 groups lie inside the footprint and the velocity sample is **26,302**: pgc 39346
+(fV = 0, `Vpwf` a filler 0) has no defined u and is dropped (rule 5). The sample reaches `Vcmb` =
+31,105 km/s (median 21,120; median σ_u 4,430 km/s), and 9,473 centers lie within 64 h⁻¹ Mpc of the
+end of the Tempel field (cz 29,979), so their outer shells are incomplete; Stage 4's randoms must carry
+that. *cz < 10,000 variant (checked in the tests):* 4,481 CF4 groups in the footprint, 4,480 in the
+sample, and **6,360 Tempel groups / 15,272 singletons**: the 6,367 / 15,278 above were cut on `gVcmb`,
+which is not the Tempel group velocity (243 singletons differ from their own c·zcmb by > 500 km/s). The
+group redshift is the mean member `zcmb`, which `dc` encodes.
 u = EDD's `Vpec` ramp with the natural log restored (decided 2026-10-18); primary richness = all
 groups and singletons (decided 2026-10-15).
 
@@ -258,8 +265,8 @@ groups and singletons (decided 2026-10-15).
   {T, M} × {groups, each source}.
 
 **Done when:** the note's duplicate test passes (one row per group and per CF4 object), the counts
-match, and a sky plot of the two samples at cz < 10,000 shows CF4 centers sitting inside the
-Tempel footprint. **[2026-10-14]** The same holds for M, and the counts matrix is filled in.
+match, and a sky plot of the two samples (all depths since 2026-10-18; cz < 10,000 before) shows
+CF4 centers sitting inside the Tempel footprint. **[2026-10-14]** The same holds for M, and the counts matrix is filled in.
 
 **Prompt to start it:**
 

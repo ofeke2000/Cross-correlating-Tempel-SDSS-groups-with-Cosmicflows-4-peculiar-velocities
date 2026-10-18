@@ -197,9 +197,9 @@ class AuditConfig:
         (occupied Tempel pixels). Defaults to `SampleConfig.footprint_nside`
         (32), so the audit counts the same footprint the analysis sample uses.
     analysis_cz_max : float
-        km/s. Nusser's cz < 10,000 cut, used for the "analysis-depth"
-        overlap counts and map. Defaults to `SampleConfig.velocity_cz_max`,
-        which owns it for the analysis.
+        km/s. Nusser's cz < 10,000 cut, used for the audit's "Nusser-depth"
+        overlap counts and map. The audit's own number: the analysis sample
+        has no cz cut by default (`SampleConfig.velocity_cz_max` = None).
     velocity_match_tolerance : float
         km/s. A pgc cross-match whose heliocentric velocities differ by more
         than this is counted as a disagreement.
@@ -253,7 +253,7 @@ class AuditConfig:
     example_group: int = 1558
     velocity_plot_limit: float = 6000.0
     overlap_nside: int = field(default_factory=lambda: SampleConfig().footprint_nside)
-    analysis_cz_max: float = field(default_factory=lambda: SampleConfig().velocity_cz_max)
+    analysis_cz_max: float = 10000.0
     velocity_match_tolerance: float = 100.0
     drift_cz_edges: tuple[float, ...] = (
         0.0, 2500.0, 5000.0, 7500.0, 10000.0, 15000.0, 20000.0, 25000.0, 35000.0

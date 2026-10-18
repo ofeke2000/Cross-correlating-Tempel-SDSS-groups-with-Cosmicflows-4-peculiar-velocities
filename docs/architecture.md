@@ -154,7 +154,7 @@ multipoles relate to the pipeline's by `conventions.nusser_multipole_sign`.
   geometry (including the 2MRS latitude mask), and the
   reverse-engineered formulas behind CF4's `fV`/`Vpds`/`Vpwf`/`Vpec` and the eDM → σ_u error;
   and Stage 2, the two analysis samples: Tempel collapsed to one row per group/singleton, the
-  CF4 velocity sample (cz cut, occupied-pixel footprint, ln-restored u), the duplicate test and
+  CF4 velocity sample (optional cz cut, occupied-pixel footprint, ln-restored u), the duplicate test and
   the counts. Stage 3 (positions) lands here too.
 - `real_catalog_audit.py` **[done]** — Stage 1 audit of those tables: units against ranges,
   the two CF4 files against each other, the Tempel traps, footprint area, the rounding-judged

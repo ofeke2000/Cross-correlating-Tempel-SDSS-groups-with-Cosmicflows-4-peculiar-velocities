@@ -861,6 +861,16 @@ class TestCf4Selection:
         assert in_pixel_footprint(sample.table["RA"], sample.table["DE"], pixels, 8).all()
         assert len(sample.table) == sample.n_footprint - sample.n_undefined_velocity
 
+    def test_no_cz_cut_by_default(self, tmp_path) -> None:
+        velocities, groups = _cf4_pair(tmp_path)
+        t = velocities.table
+        pixels = footprint_pixels(t["RA"], t["DE"], 8)
+        sample = select_cf4_velocities(velocities, groups, pixels, SampleConfig(footprint_nside=8))
+        assert SampleConfig().velocity_cz_max is None
+        assert sample.n_cz == sample.n_catalog == len(t)
+        assert len(sample.table) == len(t) - sample.n_undefined_velocity
+        assert sample.table["Vcmb"].max() == t["Vcmb"].max()
+
     def test_row_order_mismatch_raises(self, tmp_path) -> None:
         velocities, groups = _cf4_pair(tmp_path)
         shuffled = _catalog(groups.table.iloc[::-1].reset_index(drop=True))
@@ -949,16 +959,24 @@ class TestRealFiles:
         config = SampleConfig()
         tracers = select_tempel_tracers(collapse_tempel_groups(tempel), config)
         pixels = footprint_pixels(tempel.table["RA"], tempel.table["DE"], config.footprint_nside)
-        cf4 = select_cf4_velocities(velocities, load_cf4_groups(), pixels, config)
+        cf4_groups = load_cf4_groups()
+        cf4 = select_cf4_velocities(velocities, cf4_groups, pixels, config)
         assert (duplicate_test(tracers, cf4)["duplicates"] == 0).all()
         counts = sample_counts(tracers, cf4, config)["count"]
         assert counts["Tempel real groups (IDg > 0)"] == 49_671
         assert counts["Tempel singletons (IDg = 0)"] == 130_010
         assert counts["Tempel groups centered on Rg > 1 (Trap 2 fallback)"] == 375
-        assert counts["Tempel groups at cz < 10,000"] == 6_360
-        assert counts["Tempel singletons at cz < 10,000"] == 15_272
-        assert cf4.n_footprint == 4_481
-        assert len(cf4.table) == 4_480
+        assert cf4.n_cz == cf4.n_catalog == 38_057  # no cz cut by default
+        assert cf4.n_footprint == 26_303
+        assert len(cf4.table) == 26_302
+        # Nusser's cz < 10,000, kept as a switchable variant.
+        nusser = SampleConfig(velocity_cz_max=10_000.0)
+        cf4_near = select_cf4_velocities(velocities, cf4_groups, pixels, nusser)
+        counts_near = sample_counts(tracers, cf4_near, nusser)["count"]
+        assert counts_near["Tempel groups at cz < 10,000"] == 6_360
+        assert counts_near["Tempel singletons at cz < 10,000"] == 15_272
+        assert cf4_near.n_footprint == 4_481
+        assert len(cf4_near.table) == 4_480
 
     def test_tempel_traps(self) -> None:
         traps = audit.tempel_traps(load_tempel_galaxies())

@@ -43,10 +43,12 @@ class SampleConfig:
 
     Attributes
     ----------
-    velocity_cz_max : float
-        km/s. CF4 groups are kept at CMB-frame `Vcmb` below this: Nusser
-        (2017)'s cz < 10,000 km/s. Applied to the velocity tracer only; the
-        density tracer is not cut in depth (it must reach past the deepest
+    velocity_cz_max : float or None
+        km/s. When set, CF4 groups are kept at CMB-frame `Vcmb` below this
+        (Nusser 2017 used cz < 10,000 km/s). Default None: **no depth cut**
+        (decided 2026-10-18, for now), so every CF4 group in the footprint is
+        a velocity center. Applied to the velocity tracer only; the density
+        tracer is never cut in depth (it must reach past the deepest
         velocity center by the largest shell radius).
     min_richness : int
         Tempel tracers are kept at `Ng` >= this. `Ng` is the Tempel+14
@@ -65,7 +67,7 @@ class SampleConfig:
         Default `VELOCITY_VPEC_LN`.
     """
 
-    velocity_cz_max: float = 10000.0
+    velocity_cz_max: float | None = None
     min_richness: int = 1
     footprint_nside: int = 32
     velocity_definition: str = VELOCITY_VPEC_LN
@@ -81,7 +83,7 @@ class SampleConfig:
                 f"SampleConfig: min_richness must be >= 1 (Ng of a singleton), got "
                 f"{self.min_richness}."
             )
-        if self.velocity_cz_max <= 0:
+        if self.velocity_cz_max is not None and self.velocity_cz_max <= 0:
             raise ValueError(
                 f"SampleConfig: velocity_cz_max must be positive, got {self.velocity_cz_max}."
             )
