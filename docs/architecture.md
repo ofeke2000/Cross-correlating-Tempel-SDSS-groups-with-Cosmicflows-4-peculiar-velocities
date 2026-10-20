@@ -40,9 +40,11 @@ extra (`pytest`), and `testpaths = ["tests"]`. `requirements.txt` is `-e .[dev]`
   is named by its own field, not through `halo_catalog` — it is a particle snapshot of a
   different box, not one of `VALID_CATALOGS`.
 - `cosmology.py` **[done]** — `CosmologyConfig`: MDPL2 cosmology metadata; self-checks
-  against `conventions.HUBBLE_PARAM`. Also the derived-background free functions
+  against `conventions.HUBBLE_PARAM`; plus the observed catalogs' metadata (`H0_CF4`,
+  `H0_TEMPEL`, `Om0_TEMPEL`). Also the derived-background free functions
   (`matter_density_parameter`, `growth_rate`, `hubble_h_units`, `scale_factor_hubble`) —
-  the single definition of `f(z)` and of the `a H` that converts h⁻¹ Mpc to km/s.
+  the single definition of `f(z)` and of the `a H` that converts h⁻¹ Mpc to km/s — and
+  `comoving_distance_h_units`, the one χ(z) of the data arm.
 - `shells.py` **[done]** — `ShellConfig` + free builders (`linear_shell_edges`,
   `log_shell_edges`, `volume_weighted_shell_radii`): radial shell binning.
 - `selection.py` **[done]** — `SelectionConfig`: placeholder knobs for `mocks/`/`selection/`.
@@ -153,15 +155,25 @@ multipoles relate to the pipeline's by `conventions.nusser_multipole_sign`.
   five-line-header reader (`read_edd_csv`) with its column dictionary, the four loaders, sky
   geometry (including the 2MRS latitude mask), and the
   reverse-engineered formulas behind CF4's `fV`/`Vpds`/`Vpwf`/`Vpec` and the eDM → σ_u error;
-  and Stage 2, the two analysis samples: Tempel collapsed to one row per group/singleton, the
-  CF4 velocity sample (optional cz cut, occupied-pixel footprint, ln-restored u), the duplicate test and
-  the counts. Stage 3 (positions) lands here too.
+  and Stage 2, the analysis samples: Tempel collapsed to one row per group/singleton and the
+  2MRS galaxies as the two density fields, the CF4 velocity sample for each (optional cz cut,
+  SDSS occupied-pixel footprint or 2MRS mask, ln-restored u), the duplicate tests and the
+  {T, M} counts matrix. Stage 3's positions are in `sky_positions.py`.
 - `real_catalog_audit.py` **[done]** — Stage 1 audit of those tables: units against ranges,
   the two CF4 files against each other, the Tempel traps, footprint area, the rounding-judged
   column reconstruction, the σ_u tests, and (Stage 1 addendum) the 2MRS checks and
   cross-match, the three-catalog sky overlap, and CF4 by distance method with its
-  zero-point drift test, the four-velocity test (published `Vpwf`/`Vpec` against the ln and
-  log₁₀ rebuilds); plus the audit figures. Only notebooks 11 and 12 import it.
+  zero-point drift test, the four-velocity test (published `Vpwf`/`Vpec`, or `Vpds`, against
+  the ln and log₁₀ rebuilds); plus the audit figures. Only notebooks 11, 12 and 13, and
+  `vpwf_error_figures.py`, import it.
+- `sky_positions.py` **[done]** — Stage 3: the three catalogs in one redshift-space system
+  (CMB frame, h⁻¹ Mpc, one χ(z), observer at the origin): s_T from `dc` × Tempel's h, s_V =
+  χ(`Vcmb`/c), s_M via Tempel's additive CMB correction; the CMB-apex dipole fits.
+- `coordinate_checks.py` **[done]** — Stage 3's Checks 0–3 on those positions (apex fits,
+  `dc` rebuilt, pgc-match residual trends) and their figures. Only notebook 14 imports it.
+- `vpwf_error_figures.py` **[done]** — notebook 13's figures of the `Vpwf` log₁₀ error, drawn
+  from `real_catalog_audit`'s tables in a publication style (Okabe–Ito, lettered panels)
+  that deliberately departs from the project's audit figures; computes nothing.
 
 ### `src/dvcorr/selection/` **[empty]**
 
@@ -213,8 +225,13 @@ none contain algorithmic content (see Cross-cutting contracts below).
 - `test_mass_diagnostics.py` **[done]** — mass-funnel construction guards and figure build.
 - `test_real_catalogs.py` **[done]** — the EDD reader on tiny synthetic EDD CSVs, the CF4
   velocity formulas and their limits, the audit checks on planted defects, the Stage 2 sample
-  builders (singletons, Rg fallback, duplicate test, no velocity filled), and (skipped when
+  builders for T and M (singletons, Rg fallback, duplicate tests, the 2MRS mask, no velocity
+  filled), and (skipped when
   `data/` lacks them) the Stage 1 and Stage 2 counts on the real files.
+- `test_sky_positions.py` **[done]** — χ(z) against quadrature and closed forms, Tempel's h
+  and Ωm, the apex fit and the additive/exact forms, the three position builders (h, `fV`/`D`
+  ignored, z ≤ 0 flagged, CMB-frame guard), the `dc` rebuild; and (skipped without `data/`)
+  the Stage 3 numbers on the real files.
 - `test_robustness.py` **[done]** — `dvcorr.pipeline.robustness`: the `restack` ==
   `normalize_stacked_dipole` contract, the subset-size divisor, ladder unbiasedness, the
   bootstrap/SEM agreement in the well-behaved regime, symmetric (|·|) trimming, an injected
@@ -268,8 +285,15 @@ none contain algorithmic content (see Cross-cutting contracts below).
   audit, the three-catalog overlap maps and CF4 by distance method; §13 the peculiar-velocities
   test. No script twin; executed, outputs kept.
 - `12_analysis_samples.ipynb` **[done]** — Stage 2: thin consumer of `pipeline.real_catalogs`;
-  the Tempel density tracers and the CF4 velocity sample, the duplicate test, the counts
-  against the roadmap, and their sky map and n(cz). No script twin; executed, outputs kept.
+  the Tempel (T) and 2MRS (M) density tracers with their CF4 velocity samples, the duplicate
+  tests, the counts against the roadmap, and each pair's sky map and n(cz). No script twin; executed, outputs kept.
+- `13_cf4_vpwf_error.ipynb` **[done]** — the CF4 `Vpwf` log₁₀ error, standalone for the
+  advisor: notebook 11 §13's test with `Vpds` in place of `Vpec`, plus published `Vpwf`
+  against `Vpds` and both rebuilds. Thin consumer of `pipeline.real_catalog_audit` (numbers)
+  and `pipeline.vpwf_error_figures` (figures); no script twin; executed, outputs kept.
+- `14_redshift_space_positions.ipynb` **[done]** — Stage 3: thin consumer of
+  `pipeline.sky_positions` / `pipeline.coordinate_checks`; χ(z), Checks 0–3, the positioned
+  samples on one h⁻¹ Mpc axis, the verdict. No script twin; executed, outputs kept.
 
 ### `intuition/` — pedagogical parameter scans; nothing imports from here
 
@@ -298,6 +322,12 @@ no script twin and produce no science product.
   geometry validated by its own `r_obs⁻²` convergence. Also the demonstration that mcfit's
   default FFTLog bias fails at `k_power ≠ 1`. Figures are cell outputs; nothing is written
   to `intuition/figures/`.
+
+### `roadmap_site/` — the roadmap as a local HTML page; not part of `dvcorr`
+
+- `build_roadmap.py` **[done]** — renders `docs/real_data_roadmap.md` into `roadmap.html`;
+  the stage-metadata format is in its docstring. Imports nothing from `dvcorr`. The page
+  and `roadmap_assets/` (plots, vendored KaTeX and fonts) are gitignored.
 
 ### `Imports from old repo/` — reference dump, read only
 

@@ -1,7 +1,9 @@
 """
 cosmology.py
 ------------
-MDPL2 simulation cosmology metadata.
+MDPL2 simulation cosmology metadata, plus the catalog metadata of the
+observed tables (CF4's H0 scale, Tempel's flat Planck 2015) and the one
+chi(z) of the data arm (`comoving_distance_h_units`).
 
 Part of the `dvcorr.config` package -- the tunable-settings counterpart to
 `dvcorr.conventions`'s frozen conventions. `CosmologyConfig` is simulation
@@ -70,6 +72,16 @@ class CosmologyConfig:
         reproduces both columns from `fV` and `DMzp` with this value to
         within the file's rounding (`notebooks/11_real_catalog_audit.ipynb`).
         Because of it, CF4 `D` is never used as a position.
+    H0_TEMPEL : float
+        The Hubble constant Tempel et al. (2017, §1) wrote their distances on,
+        km/s/Mpc: flat Planck 2015. Catalog metadata like `H0_CF4`, NOT an
+        adopted cosmology. Tempel's `dc` is in Mpc on this scale, so it enters
+        h^-1 Mpc through `h_tempel` and never through `h` (MDPL2's 0.6777,
+        a +4.4e-4 fractional offset; `docs/real_data_roadmap.md` Stage 3).
+    Om0_TEMPEL : float
+        Tempel's matter density (flat, Omega_Lambda = 1 - Om0_TEMPEL = 0.692).
+        The Omega_m of the one chi(z) that places all three catalogs
+        (`comoving_distance_h_units`), so that `dc` is rebuilt to rounding.
     """
 
     H0: float = 67.77
@@ -81,6 +93,8 @@ class CosmologyConfig:
     growth_index: float = 0.55
     flat: bool = True
     H0_CF4: float = 74.6
+    H0_TEMPEL: float = 67.8
+    Om0_TEMPEL: float = 0.308
 
     def __post_init__(self) -> None:
         if abs(self.h - conventions.HUBBLE_PARAM) > _H_CONSISTENCY_TOL:
@@ -103,6 +117,15 @@ class CosmologyConfig:
         hard rule 4's pure-mathematics exemption).
         """
         return self.H0 / 100.0
+
+    @property
+    def h_tempel(self) -> float:
+        """Tempel's reduced Hubble parameter, `H0_TEMPEL / 100` = 0.678.
+
+        The factor that turns Tempel's `dc` (Mpc) into h^-1 Mpc. Not `h`: that
+        is MDPL2's and is tied to `dvcorr.conventions.HUBBLE_PARAM`.
+        """
+        return self.H0_TEMPEL / 100.0
 
     def to_colossus_dict(self) -> dict:
         """Return the cosmology as a flat dict in colossus's constructor shape."""
@@ -215,3 +238,88 @@ def scale_factor_hubble(cosmology: CosmologyConfig, z: float) -> float:
         km/s per comoving h^-1 Mpc.
     """
     return hubble_h_units(cosmology, z) / (1.0 + z)
+
+
+#: Gauss-Legendre nodes for the chi(z) integral. 1/E(z) is analytic and
+#: slowly varying on [0, z] for the z <= 0.2 of every catalog here, so 16
+#: nodes are exact to double precision (checked against adaptive quadrature
+#: in `tests/test_sky_positions.py` out to z = 1).
+_CHI_QUADRATURE_NODES: int = 16
+
+
+def flat_lcdm_expansion_rate(z: np.ndarray, om0: float) -> np.ndarray:
+    """`E(z) = H(z) / H0` for a flat LCDM background, dimensionless.
+
+    Parameters
+    ----------
+    z : array_like, shape (N,)
+        Redshift.
+    om0 : float
+        Matter density today; Omega_Lambda = 1 - om0 (flat).
+
+    Returns
+    -------
+    numpy.ndarray, shape (N,)
+    """
+    z = np.atleast_1d(np.asarray(z, dtype=float))
+    return np.sqrt(om0 * (1.0 + z) ** 3 + (1.0 - om0))
+
+
+def comoving_distance_h_units(z: np.ndarray, om0: float) -> np.ndarray:
+    """Line-of-sight comoving distance chi(z), h^-1 Mpc, flat LCDM.
+
+    chi = (c / 100) * integral_0^z dz' / E(z'). In h^-1 Mpc the Hubble
+    constant cancels -- the 100 is the definition of h (km/s per h^-1 Mpc,
+    the same one `hubble_h_units` returns at z = 0) -- so chi depends on
+    `om0` alone. The one chi(z) of the data arm: Stage 3 places Tempel
+    (through `dc`), CF4 and 2MRS with it at `CosmologyConfig.Om0_TEMPEL`.
+
+    Parameters
+    ----------
+    z : array_like, shape (N,)
+        Redshift, >= 0. A negative redshift has no distance; the caller
+        decides what to do with it (`dvcorr.pipeline.sky_positions` leaves the
+        position undefined), so this raises rather than returning a negative
+        chi.
+    om0 : float
+
+    Returns
+    -------
+    numpy.ndarray, shape (N,)
+        h^-1 Mpc. Shape (N,) even for N = 1.
+
+    Raises
+    ------
+    ValueError
+        If any z is negative or not finite.
+    """
+    z = np.atleast_1d(np.asarray(z, dtype=float))
+    if not np.all(np.isfinite(z)) or np.any(z < 0):
+        raise ValueError(
+            "comoving_distance_h_units: z must be finite and >= 0; mask negative "
+            "or missing redshifts before asking for a distance."
+        )
+    nodes, weights = np.polynomial.legendre.leggauss(_CHI_QUADRATURE_NODES)
+    # Map the nodes from [-1, 1] onto [0, z] for every z at once: (N, nodes).
+    half = 0.5 * z[:, None]
+    zp = half * (nodes[None, :] + 1.0)
+    integral = np.sum(weights[None, :] / flat_lcdm_expansion_rate(zp, om0), axis=1) * half[:, 0]
+    return conventions.SPEED_OF_LIGHT / 100.0 * integral
+
+
+def comoving_distance_derivative_h_units(z: np.ndarray, om0: float) -> np.ndarray:
+    """d chi / dz = (c / 100) / E(z), h^-1 Mpc per unit redshift.
+
+    What a redshift error becomes in distance: the rounding allowance of a
+    chi built from a printed redshift is this times the redshift's half-ulp.
+
+    Parameters
+    ----------
+    z : array_like, shape (N,)
+    om0 : float
+
+    Returns
+    -------
+    numpy.ndarray, shape (N,)
+    """
+    return conventions.SPEED_OF_LIGHT / 100.0 / flat_lcdm_expansion_rate(z, om0)

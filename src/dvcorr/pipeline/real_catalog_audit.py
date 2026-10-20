@@ -5,8 +5,10 @@ Stage 1 of `docs/real_data_roadmap.md`: the checks and figures that say
 whether the raw EDD tables (`dvcorr.pipeline.real_catalogs`) are what we think
 they are. Consumed by `notebooks/11_real_catalog_audit.ipynb`, and by
 `notebooks/12_analysis_samples.ipynb` for its sky map and n(cz)
-(`tempel_tracer_sky_sample`, `cf4_velocity_sky_sample`); no library module
-imports it.
+(`tempel_tracer_sky_sample`, `cf4_velocity_sky_sample`), and by
+`notebooks/13_cf4_vpwf_error.ipynb`, which re-runs the peculiar-velocities
+test on its own for the advisor. The only library module importing it is
+`vpwf_error_figures` (notebook 13's figures).
 
 Every check returns numbers or tables rather than printing, so the notebook
 can show them next to the roadmap's expectations. The checks, and what each
@@ -30,6 +32,9 @@ one guards against:
   Watkins & Feldman's estimator rebuilt with ln and with log10, each put
   through identity, scale (against `Vpds`) and noise (v / sigma_u, Watkins
   & Feldman 2015 Fig. 1) checks, and shown against cz and measured distance.
+  All but the table take a `labels` tuple: `VELOCITY_TEST_LABELS` (notebook
+  11 §13) or `VPWF_ERROR_LABELS` (`Vpds` in place of `Vpec`, notebook 13,
+  whose figures `dvcorr.pipeline.vpwf_error_figures` draws).
 
 Stage 1 addendum (advisor meeting 2026-10-14, `docs/advisor_notes.md`):
 
@@ -778,14 +783,22 @@ def velocity_noise_by_depth(
 #: in display order. Each is a column of `velocity_test_table`.
 VELOCITY_VPWF_PUBLISHED = "Vpwf (published)"
 VELOCITY_VPEC_PUBLISHED = "Vpec (published)"
+VELOCITY_VPDS_PUBLISHED = "Vpds (published)"
 VELOCITY_VPWF_LN = "Vpwf rebuilt, ln"
 VELOCITY_VPWF_LOG10 = "Vpwf rebuilt, log10"
 VELOCITY_TEST_LABELS: tuple[str, ...] = (
     VELOCITY_VPWF_PUBLISHED, VELOCITY_VPEC_PUBLISHED, VELOCITY_VPWF_LN, VELOCITY_VPWF_LOG10,
 )
+#: The same test with `Vpds` in place of `Vpec` (notebook 13): the
+#: Davis-Scrimgeour estimator, which carries no log and so is on the right
+#: scale by construction -- the reference the other three are held against.
+VPWF_ERROR_LABELS: tuple[str, ...] = (
+    VELOCITY_VPDS_PUBLISHED, VELOCITY_VPWF_PUBLISHED, VELOCITY_VPWF_LN, VELOCITY_VPWF_LOG10,
+)
 _VELOCITY_TEST_COLORS: dict[str, str] = {
     VELOCITY_VPWF_PUBLISHED: _COLOR_SLOT_4,
     VELOCITY_VPEC_PUBLISHED: _COLOR_SECONDARY,
+    VELOCITY_VPDS_PUBLISHED: _COLOR_TERTIARY,
     VELOCITY_VPWF_LN: _COLOR_PRIMARY,
     VELOCITY_VPWF_LOG10: _COLOR_SLOT_7,
 }
@@ -814,9 +827,9 @@ _VELOCITY_TEST_X_NAMES: dict[str, str] = {
 def velocity_test_table(
     velocities: EddCatalog, definitions: Cf4VelocityDefinitions | None = None
 ) -> pd.DataFrame:
-    """The four candidate peculiar velocities side by side, one row per group.
+    """The candidate peculiar velocities side by side, one row per group.
 
-    The two published columns as EDD ships them, and Watkins & Feldman's
+    The three published columns as EDD ships them, and Watkins & Feldman's
     estimator rebuilt from `fV` and `DMzp` twice: with the natural log their
     eq. 7 needs, and with the log10 that reproduces EDD's `Vpwf`.
 
@@ -830,8 +843,9 @@ def velocity_test_table(
     pandas.DataFrame
         Columns `pgc`, `Vcmb`, `fV`, `D` (Mpc, from `DMzp`, on CF4's
         H0 = 74.6 scale), `Vpds` and `sigma_u` (the eDM error of the
-        natural-log velocity, `velocity_error_from_modulus_error`), then the
-        four `VELOCITY_TEST_LABELS` columns, km/s.
+        natural-log velocity, `velocity_error_from_modulus_error`), then one
+        column per label of `VELOCITY_TEST_LABELS` and `VPWF_ERROR_LABELS`
+        (`VELOCITY_VPDS_PUBLISHED` repeats `Vpds` under its label), km/s.
     """
     d = definitions or Cf4VelocityDefinitions()
     t = velocities.table
@@ -848,6 +862,7 @@ def velocity_test_table(
             "sigma_u": sigma,
             VELOCITY_VPWF_PUBLISHED: t["Vpwf"].to_numpy(dtype=float),
             VELOCITY_VPEC_PUBLISHED: t["Vpec"].to_numpy(dtype=float),
+            VELOCITY_VPDS_PUBLISHED: t["Vpds"].to_numpy(dtype=float),
             VELOCITY_VPWF_LN: watkins_feldman_velocity(fv, distance, d),
             VELOCITY_VPWF_LOG10: watkins_feldman_velocity(fv, distance, d, as_published=True),
         }
@@ -856,8 +871,12 @@ def velocity_test_table(
     return table[defined].reset_index(drop=True)
 
 
-def velocity_test_summary(table: pd.DataFrame, config: AuditConfig | None = None) -> pd.DataFrame:
-    """Three checks on each of the four velocities of `velocity_test_table`.
+def velocity_test_summary(
+    table: pd.DataFrame,
+    config: AuditConfig | None = None,
+    labels: tuple[str, ...] = VELOCITY_TEST_LABELS,
+) -> pd.DataFrame:
+    """Three checks on each of the velocities `labels` of `velocity_test_table`.
 
     - `median_ratio_to_published_vpwf`: identity. Over rows with
       |published Vpwf| > `linear_regime_floor` (so 1 km/s rounding does not
@@ -876,7 +895,7 @@ def velocity_test_summary(table: pd.DataFrame, config: AuditConfig | None = None
     Returns
     -------
     pandas.DataFrame
-        One row per `VELOCITY_TEST_LABELS` entry, plus the row counts
+        One row per `labels` entry, plus the row counts
         `n_identity`, `n_linear` and `n_noise_dominated`.
     """
     config = config or AuditConfig()
@@ -887,7 +906,7 @@ def velocity_test_summary(table: pd.DataFrame, config: AuditConfig | None = None
     sigma = table["sigma_u"].to_numpy()
     noisy = sigma > config.noise_dominated_sigma
     records = []
-    for label in VELOCITY_TEST_LABELS:
+    for label in labels:
         v = table[label].to_numpy()
         records.append(
             {
@@ -904,8 +923,12 @@ def velocity_test_summary(table: pd.DataFrame, config: AuditConfig | None = None
     return pd.DataFrame.from_records(records).set_index("velocity")
 
 
-def velocity_test_by_depth(table: pd.DataFrame, config: AuditConfig | None = None) -> pd.DataFrame:
-    """std(v / sigma_u) per cz bin for each of the four velocities.
+def velocity_test_by_depth(
+    table: pd.DataFrame,
+    config: AuditConfig | None = None,
+    labels: tuple[str, ...] = VELOCITY_TEST_LABELS,
+) -> pd.DataFrame:
+    """std(v / sigma_u) per cz bin for each of the velocities `labels`.
 
     Unlike `std_normalized_noise_dominated`, every object is used, so the
     nearby bins carry cosmic signal on top of the noise and sit above 1 for
@@ -916,7 +939,7 @@ def velocity_test_by_depth(table: pd.DataFrame, config: AuditConfig | None = Non
     -------
     pandas.DataFrame
         One row per bin of `AuditConfig.cz_edges`: `cz_lo`, `cz_hi`,
-        `cz_median`, `n`, and one column per `VELOCITY_TEST_LABELS` entry.
+        `cz_median`, `n`, and one column per `labels` entry.
     """
     config = config or AuditConfig()
     cz = table["Vcmb"].to_numpy()
@@ -927,7 +950,7 @@ def velocity_test_by_depth(table: pd.DataFrame, config: AuditConfig | None = Non
         rows = (cz >= lo) & (cz < hi)
         record = {"cz_lo": lo, "cz_hi": hi, "cz_median": float(np.median(cz[rows])),
                   "n": int(rows.sum())}
-        for label in VELOCITY_TEST_LABELS:
+        for label in labels:
             record[label] = float(np.std(table[label].to_numpy()[rows] / sigma[rows]))
         records.append(record)
     return pd.DataFrame.from_records(records)
@@ -943,9 +966,12 @@ def _velocity_test_edges(x_column: str, config: AuditConfig) -> np.ndarray:
 
 
 def velocity_test_binned(
-    table: pd.DataFrame, x_column: str, config: AuditConfig | None = None
+    table: pd.DataFrame,
+    x_column: str,
+    config: AuditConfig | None = None,
+    labels: tuple[str, ...] = VELOCITY_TEST_LABELS,
 ) -> pd.DataFrame:
-    """Median and spread of each of the four velocities in bins of `x_column`.
+    """Median and spread of each of the velocities `labels` in bins of `x_column`.
 
     Parameters
     ----------
@@ -957,6 +983,8 @@ def velocity_test_binned(
         D, bins of `distance_bin_width` up to `distance_plot_max`). Bins with
         fewer than `scatter_min_count` groups are left out.
     config : AuditConfig, optional
+    labels : tuple of str, optional
+        `velocity_test_table` columns to bin; default `VELOCITY_TEST_LABELS`.
 
     The two axes answer different questions:
 
@@ -991,7 +1019,7 @@ def velocity_test_binned(
         n = int(rows.sum())
         if n < config.scatter_min_count:
             continue
-        for label in VELOCITY_TEST_LABELS:
+        for label in labels:
             v = table[label].to_numpy()[rows]
             records.append(
                 {
@@ -1217,6 +1245,17 @@ def tempel_tracer_sky_sample(tracers: pd.DataFrame) -> SkySample:
         ra=tracers["RA"].to_numpy(float), de=tracers["DE"].to_numpy(float),
         glon=tracers["glon"].to_numpy(float), glat=tracers["glat"].to_numpy(float),
         cz=tracers["cz_cmb"].to_numpy(float), cz_frame="CMB", color=_COLOR_TEMPEL,
+    )
+
+
+def twomrs_tracer_sky_sample(tracers: pd.DataFrame) -> SkySample:
+    """The Stage 2 2MRS density tracers (`real_catalogs.select_twomrs_tracers`)
+    at HELIOCENTRIC `cz_hel`."""
+    return SkySample(
+        name="2MRS tracers", unit="galaxies",
+        ra=tracers["RA"].to_numpy(float), de=tracers["DE"].to_numpy(float),
+        glon=tracers["glon"].to_numpy(float), glat=tracers["glat"].to_numpy(float),
+        cz=tracers["cz_hel"].to_numpy(float), cz_frame="heliocentric", color=_COLOR_TWOMRS,
     )
 
 
@@ -1750,11 +1789,13 @@ def make_noise_comparison_figure(noise: pd.DataFrame) -> plt.Figure:
 
 
 def make_velocity_test_histogram_figure(
-    table: pd.DataFrame, config: AuditConfig | None = None
+    table: pd.DataFrame,
+    config: AuditConfig | None = None,
+    labels: tuple[str, ...] = VELOCITY_TEST_LABELS,
 ) -> plt.Figure:
-    """Watkins & Feldman's Fig. 1 test for each of the four velocities.
+    """Watkins & Feldman's Fig. 1 test for each of the four velocities `labels`.
 
-    One panel per `VELOCITY_TEST_LABELS` entry: the histogram of v / sigma_u
+    One panel per `labels` entry, on a 2 x 2 grid: the histogram of v / sigma_u
     over noise-dominated objects (sigma_u > `noise_dominated_sigma`),
     normalized to unit area, against the unit Gaussian (solid) the right
     velocity must follow and the width-1/ln 10 Gaussian (dashed) a log10
@@ -1765,6 +1806,8 @@ def make_velocity_test_histogram_figure(
     table : pandas.DataFrame
         `velocity_test_table` output.
     config : AuditConfig, optional
+    labels : tuple of four str, optional
+        Default `VELOCITY_TEST_LABELS`.
     """
     config = config or AuditConfig()
     noisy = table["sigma_u"].to_numpy() > config.noise_dominated_sigma
@@ -1777,7 +1820,7 @@ def make_velocity_test_histogram_figure(
     unit = np.exp(-0.5 * x**2) / np.sqrt(2.0 * np.pi)
     log10_scale = np.exp(-0.5 * (x / narrow) ** 2) / (narrow * np.sqrt(2.0 * np.pi))
     fig, axes = plt.subplots(2, 2, figsize=_VELOCITY_HIST_FIGSIZE, sharex=True, sharey=True)
-    for ax, label in zip(axes.flat, VELOCITY_TEST_LABELS):
+    for ax, label in zip(axes.flat, labels, strict=True):
         z = table[label].to_numpy()[noisy] / sigma
         ax.hist(z, bins=bins, density=True, color=_VELOCITY_TEST_COLORS[label], alpha=_HIST_ALPHA)
         ax.plot(x, unit, color=_LABEL_COLOR, lw=_LINE_WIDTH, label="unit Gaussian")
@@ -1795,18 +1838,22 @@ def make_velocity_test_histogram_figure(
     return fig
 
 
-def make_velocity_test_depth_figure(by_depth: pd.DataFrame) -> plt.Figure:
-    """std(v / sigma_u) against depth for the four velocities, guides at 1
+def make_velocity_test_depth_figure(
+    by_depth: pd.DataFrame, labels: tuple[str, ...] = VELOCITY_TEST_LABELS
+) -> plt.Figure:
+    """std(v / sigma_u) against depth for the velocities `labels`, guides at 1
     and 1/ln 10.
 
     Parameters
     ----------
     by_depth : pandas.DataFrame
-        `velocity_test_by_depth` output.
+        `velocity_test_by_depth(..., labels=labels)` output.
+    labels : tuple of str, optional
+        Default `VELOCITY_TEST_LABELS`.
     """
     x = by_depth["cz_median"]
     fig, ax = plt.subplots(figsize=_VPEC_FIGSIZE)
-    for label in VELOCITY_TEST_LABELS:
+    for label in labels:
         color = _VELOCITY_TEST_COLORS[label]
         dashed = label in _VELOCITY_TEST_DASHED
         ax.plot(x, by_depth[label], color=color, lw=_LINE_WIDTH, ls="--" if dashed else "-",
@@ -1824,9 +1871,13 @@ def make_velocity_test_depth_figure(by_depth: pd.DataFrame) -> plt.Figure:
 
 
 def make_velocity_test_scatter_figure(
-    table: pd.DataFrame, binned: pd.DataFrame, x_column: str, config: AuditConfig | None = None
+    table: pd.DataFrame,
+    binned: pd.DataFrame,
+    x_column: str,
+    config: AuditConfig | None = None,
+    labels: tuple[str, ...] = VELOCITY_TEST_LABELS,
 ) -> plt.Figure:
-    """The four velocities against cz or measured distance, one panel each.
+    """The four velocities `labels` against cz or measured distance, one panel each.
 
     Each panel: a hexbin of every group (grey), the binned median (solid)
     and median ± observed σ (dashed) in the velocity's color, and median ±
@@ -1841,17 +1892,19 @@ def make_velocity_test_scatter_figure(
     table : pandas.DataFrame
         `velocity_test_table` output.
     binned : pandas.DataFrame
-        `velocity_test_binned(table, x_column, config)` output.
+        `velocity_test_binned(table, x_column, config, labels)` output.
     x_column : str
         `VELOCITY_TEST_X_REDSHIFT` or `VELOCITY_TEST_X_DISTANCE`.
     config : AuditConfig, optional
+    labels : tuple of four str, optional
+        Default `VELOCITY_TEST_LABELS`; filled into a 2 x 2 grid.
     """
     config = config or AuditConfig()
     lim = config.scatter_velocity_limit
     x_max = _velocity_test_edges(x_column, config)[-1]
     extent = (0.0, x_max, -lim, lim)
     fig, axes = plt.subplots(2, 2, figsize=_VELOCITY_HIST_FIGSIZE, sharex=True, sharey=True)
-    for ax, label in zip(axes.flat, VELOCITY_TEST_LABELS):
+    for ax, label in zip(axes.flat, labels, strict=True):
         color = _VELOCITY_TEST_COLORS[label]
         ax.hexbin(table[x_column], table[label], gridsize=_HEXBIN_GRID, bins="log",
                   cmap=_SCATTER_HEXBIN_CMAP, mincnt=1, extent=extent)

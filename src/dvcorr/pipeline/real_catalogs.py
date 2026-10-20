@@ -12,7 +12,7 @@ every row and every column, so that the audit
 (`dvcorr.pipeline.real_catalog_audit`, `notebooks/11_real_catalog_audit.ipynb`)
 sees the files as they are. Stage 2 builds the two analysis samples from them
 (see below; `notebooks/12_analysis_samples.ipynb`). Redshift-space positions
-(Stage 3) will land here too.
+(Stage 3) are built from these samples in `dvcorr.pipeline.sky_positions`.
 
 The EDD CSV format
 ------------------
@@ -95,7 +95,7 @@ things differ from the other two catalogs:
 
 - **Velocities are heliocentric only** (`Vhel`). Comparing with CF4 `Vcmb`
   or Tempel `zcmb` needs the CMB-dipole correction (up to ~370 km/s); that
-  frame conversion is Stage 3's job and is not done here.
+  frame conversion is Stage 3's (`sky_positions.twomrs_positions`), not done here.
 - **The selection is a magnitude limit plus an analytic sky mask.** Every row
   has the extinction-corrected TOTAL magnitude `K_tc` <= 11.75 (the isophotal
   `K_c` exceeds it in 200 rows -- it is not the selection magnitude), and
@@ -113,13 +113,24 @@ Cuts live in `dvcorr.config.samples.SampleConfig` (hard rule 4).
   the lowest `Rg` present, at radius `dc`. Primary sample: every tracer,
   singletons included (`min_richness = 1`). No depth cut.
 - **Velocity tracer** (`select_cf4_velocities`): CF4 groups inside the
-  SDSS footprint, at every depth unless `SampleConfig.velocity_cz_max` is
-  set (default: no cz cut) (`footprint_pixels` of the
-  Tempel galaxies, `in_pixel_footprint`), with u = EDD's `Vpec` ramp rebuilt
-  with the natural log (`cf4_peculiar_velocity`). A group whose u is
-  undefined is dropped, never given u = 0 (hard rule 5).
+  SDSS footprint (`footprint_pixels` of the Tempel galaxies,
+  `in_pixel_footprint`), at every depth unless
+  `SampleConfig.velocity_cz_max` is set (default: no cz cut), with u =
+  EDD's `Vpec` ramp rebuilt with the natural log (`cf4_peculiar_velocity`).
+  A group whose u is undefined is dropped, never given u = 0 (hard rule 5).
 - `duplicate_test` (the methodological note's section 6.2) and
   `sample_counts` check the result.
+
+The second density field, 2MRS (M; advisor meeting 2026-10-14):
+
+- **Density tracer** (`select_twomrs_tracers`): every 2MRS galaxy, one row
+  each, keyed by `pgc`. A galaxy catalog, not a group catalog, so there is
+  nothing to collapse and no singleton trap.
+- **Velocity tracer** (`select_cf4_velocities_in_twomrs`): the same CF4
+  selection, with the analytic 2MRS mask (`in_twomrs_footprint`) in place
+  of the SDSS pixels.
+- `twomrs_duplicate_test` checks it; `counts_matrix` puts the T and M
+  funnels side by side, the roadmap's {T, M} x {CF4 groups} matrix.
 
 Positions on the sky
 --------------------
@@ -816,6 +827,50 @@ def select_tempel_tracers(groups: pd.DataFrame, config: SampleConfig | None = No
     return groups[groups["Ng"] >= config.min_richness].reset_index(drop=True)
 
 
+def select_twomrs_tracers(twomrs: EddCatalog) -> pd.DataFrame:
+    """The 2MRS density-tracer sample (M): every galaxy, one row each.
+
+    Nusser (2017)'s density field. No richness, magnitude or depth cut: the
+    file already is the K_tc <= 11.75 survey inside its own mask (notebook
+    11 section 9), and the density tracer is never cut in depth. Galaxies
+    with negative `Vhel` (Local Group neighbours, down to -300 km/s) are
+    kept: `cz_hel` is a position here, not a peculiar velocity, and Stage 3
+    decides what distance it maps to.
+
+    Parameters
+    ----------
+    twomrs : EddCatalog
+        `load_twomrs_galaxies()`.
+
+    Returns
+    -------
+    pandas.DataFrame
+        One row per galaxy, in file order. Columns: `pgc` (the key), `RA`,
+        `DE`, `glon`, `glat` (degrees), `cz_hel` (km/s, the HELIOCENTRIC
+        `Vhel`; the CMB-frame conversion is Stage 3's), `K_tc` (mag, the
+        selection magnitude, for the 1/phi weights of Stage 4).
+
+    Raises
+    ------
+    ValueError
+        If a `pgc` appears twice.
+    """
+    t = twomrs.table
+    if t["pgc"].duplicated().any():
+        raise ValueError("select_twomrs_tracers: pgc is not unique in the 2MRS table.")
+    return pd.DataFrame(
+        {
+            "pgc": t["pgc"].to_numpy(),
+            "RA": t["RAJ"].to_numpy(float),
+            "DE": t["DEJ"].to_numpy(float),
+            "glon": t["Glon"].to_numpy(float),
+            "glat": t["Glat"].to_numpy(float),
+            "cz_hel": t["Vhel"].to_numpy(float),
+            "K_tc": t["K_tc"].to_numpy(float),
+        }
+    )
+
+
 def cf4_peculiar_velocity(
     velocities: pd.DataFrame,
     definition: str,
@@ -915,14 +970,14 @@ def select_cf4_velocities(
     config: SampleConfig | None = None,
     definitions: Cf4VelocityDefinitions | None = None,
 ) -> Cf4VelocitySample:
-    """The CF4 velocity-tracer sample: groups inside the footprint `pixels`,
-    at `Vcmb` < `velocity_cz_max` when that cut is set, with u defined.
+    """The CF4 velocity-tracer sample for the Tempel field (T): groups inside
+    the SDSS footprint `pixels`, at `Vcmb` < `velocity_cz_max` when that
+    cut is set, with u defined.
 
     The two CF4 files are joined row by row and must list the same `pgc` in
     the same order (raises otherwise). The cz cut uses the velocities file's
     `Vcmb` (the one `fV` and u are built from; it differs from the groups
-    file's in 7 rows, none near the cut); membership uses the groups file's
-    position.
+    file's in 7 rows); membership uses the groups file's position.
 
     Parameters
     ----------
@@ -939,19 +994,63 @@ def select_cf4_velocities(
     Cf4VelocitySample
     """
     config = config or SampleConfig()
-    v = velocities.table
+    _check_cf4_row_order(velocities, groups)
     g = groups.table
+    inside = in_pixel_footprint(g["RA"], g["DE"], pixels, config.footprint_nside)
+    return _select_cf4_inside(velocities, groups, inside, config, definitions)
+
+
+def select_cf4_velocities_in_twomrs(
+    velocities: EddCatalog,
+    groups: EddCatalog,
+    config: SampleConfig | None = None,
+    definitions: Cf4VelocityDefinitions | None = None,
+    footprint: TwoMrsFootprint | None = None,
+) -> Cf4VelocitySample:
+    """The CF4 velocity-tracer sample for the 2MRS field (M): as
+    `select_cf4_velocities`, with the analytic 2MRS latitude mask
+    (`in_twomrs_footprint` of the groups file's `GLong`, `GLat`) in place of
+    the SDSS pixels. `config.footprint_nside` is not used.
+
+    Returns
+    -------
+    Cf4VelocitySample
+        `n_footprint` counts the groups inside the 2MRS mask.
+    """
+    config = config or SampleConfig()
+    _check_cf4_row_order(velocities, groups)
+    g = groups.table
+    inside = in_twomrs_footprint(g["GLong"], g["GLat"], footprint)
+    return _select_cf4_inside(velocities, groups, inside, config, definitions)
+
+
+def _check_cf4_row_order(velocities: EddCatalog, groups: EddCatalog) -> None:
+    """Raise unless the two CF4 files list the same `pgc` in the same order."""
+    v, g = velocities.table, groups.table
     if len(v) != len(g) or not np.array_equal(v["pgc"].to_numpy(), g["pgc"].to_numpy()):
         raise ValueError(
             "select_cf4_velocities: the velocities and groups files do not list the "
             "same pgc in the same row order; they cannot be joined row by row."
         )
+
+
+def _select_cf4_inside(
+    velocities: EddCatalog,
+    groups: EddCatalog,
+    inside: np.ndarray,
+    config: SampleConfig,
+    definitions: Cf4VelocityDefinitions | None,
+) -> Cf4VelocitySample:
+    """The shared CF4 selection: the cz cut, the sky membership `inside`
+    ((N,) bool, one per row of the joined files), then u, dropping (never
+    filling) the groups whose u is undefined."""
+    v = velocities.table
+    g = groups.table
     vcmb = v["Vcmb"].to_numpy(dtype=float)
     near = (
         np.ones(vcmb.size, bool) if config.velocity_cz_max is None
         else vcmb < config.velocity_cz_max
     )
-    inside = in_pixel_footprint(g["RA"], g["DE"], pixels, config.footprint_nside)
     kept = near & inside
     u = cf4_peculiar_velocity(v, config.velocity_definition, definitions)
     defined = np.isfinite(u)
@@ -964,7 +1063,7 @@ def select_cf4_velocities(
             "DE": g["DE"].to_numpy(float),
             "glon": g["GLong"].to_numpy(float),
             "glat": g["GLat"].to_numpy(float),
-            "Vcmb": v["Vcmb"].to_numpy(float),
+            "Vcmb": vcmb,
             "Vls": v["Vls"].to_numpy(float),
             "fV": fv,
             "DMzp": v["DMzp"].to_numpy(float),
@@ -985,8 +1084,9 @@ def select_cf4_velocities(
 
 
 def duplicate_test(tracers: pd.DataFrame, cf4: Cf4VelocitySample) -> pd.DataFrame:
-    """The methodological note's duplicate test (section 6.2): one Tempel row
-    per group identifier and one CF4 row per identifier.
+    """The methodological note's duplicate test (section 6.2) for the Tempel
+    field: one Tempel row per group identifier and one CF4 row per
+    identifier.
 
     Returns
     -------
@@ -997,12 +1097,26 @@ def duplicate_test(tracers: pd.DataFrame, cf4: Cf4VelocitySample) -> pd.DataFram
         0 everywhere).
     """
     singleton = tracers["is_singleton"].to_numpy()
-    checks = {
-        "Tempel groups, by IDg": tracers.loc[~singleton, "IDg"],
-        "Tempel singletons, by ID": tracers.loc[singleton, "ID"],
-        "Tempel tracers, by center ID": tracers["ID"],
-        "CF4 groups, by pgc": cf4.table["pgc"],
-    }
+    return _duplicate_table(
+        {
+            "Tempel groups, by IDg": tracers.loc[~singleton, "IDg"],
+            "Tempel singletons, by ID": tracers.loc[singleton, "ID"],
+            "Tempel tracers, by center ID": tracers["ID"],
+            "CF4 groups, by pgc": cf4.table["pgc"],
+        }
+    )
+
+
+def twomrs_duplicate_test(tracers: pd.DataFrame, cf4: Cf4VelocitySample) -> pd.DataFrame:
+    """`duplicate_test` for the 2MRS field: one row per 2MRS galaxy (`pgc`)
+    and one per CF4 group (`pgc`). Same columns."""
+    return _duplicate_table(
+        {"2MRS galaxies, by pgc": tracers["pgc"], "CF4 groups, by pgc": cf4.table["pgc"]}
+    )
+
+
+def _duplicate_table(checks: dict[str, pd.Series]) -> pd.DataFrame:
+    """rows / unique_keys / duplicates for each named key column."""
     records = [
         {"key": name, "rows": len(keys), "unique_keys": int(keys.nunique()),
          "duplicates": len(keys) - int(keys.nunique())}
@@ -1058,3 +1172,33 @@ def sample_counts(
         ),
     }
     return pd.DataFrame({"count": counts}).rename_axis("sample")
+
+
+def counts_matrix(
+    pairs: dict[str, tuple[pd.DataFrame, Cf4VelocitySample]],
+) -> pd.DataFrame:
+    """The roadmap's Stage 2 counts matrix: one row per (density field,
+    velocity sample) pair, e.g. {"T": (tempel_tracers, cf4),
+    "M": (twomrs_tracers, cf4_m)}.
+
+    Returns
+    -------
+    pandas.DataFrame
+        Indexed by the pair's name. Columns: `density_tracers`;
+        `cf4_in_footprint` (CF4 groups past the cz cut, if any, inside that
+        field's sky); `cf4_undefined_u` (of those, dropped, never filled);
+        `cf4_velocity_sample`; `cf4_calibrators` (eDM = 0, sigma_u not
+        given).
+    """
+    records = [
+        {
+            "pair": name,
+            "density_tracers": len(tracers),
+            "cf4_in_footprint": cf4.n_footprint,
+            "cf4_undefined_u": cf4.n_undefined_velocity,
+            "cf4_velocity_sample": len(cf4.table),
+            "cf4_calibrators": int(cf4.table["sigma_u"].isna().sum()),
+        }
+        for name, (tracers, cf4) in pairs.items()
+    ]
+    return pd.DataFrame.from_records(records).set_index("pair")

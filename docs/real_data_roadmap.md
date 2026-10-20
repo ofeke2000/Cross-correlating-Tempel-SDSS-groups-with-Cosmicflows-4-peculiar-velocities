@@ -79,6 +79,14 @@ variant.
 
 ## Stage 1: Read and audit the catalogs  → `notebooks/11_real_catalog_audit.ipynb`
 
+<!-- roadmap
+missions: |
+  [x] EDD loader for the three files, with the column dictionary and tests
+  [x] The four traps reproduced and explained in notebook 11
+  [x] Sky maps, n(cz) histograms and `Vpec` against cz
+  [x] The $\sigma_u$ puzzle answered: `Vpwf` uses log₁₀ where ln is meant
+-->
+
 **What this stage is for.** Get to know the raw data before trusting any of it. Load the three
 EDD files exactly as they are and read what every column means. Confirm that the units, ranges and
 counts are what you think they are. Find the traps (shared IDs, mislabeled units, columns that
@@ -161,6 +169,14 @@ and report what you find. Explain each check so I can verify it myself.
 
 ### Stage 1 addendum [2026-10-14]: audit 2MASS and the CF4 sources → extends notebook 11
 
+<!-- roadmap
+missions: |
+  [x] 2MRS ($K \le 11.75$) loaded and audited (notebook 11 §9–10)
+  [x] CF4 method breakdown tabulated from `CF4_Groups.csv` (§11)
+  [x] Per-method sky maps, n(cz) and median-`Vpec` drift; no source drifts (§11)
+  [ ] CF4 individual-galaxy table downloaded from EDD, loaded and counted per source
+-->
+
 **What this adds.** The two new inputs get the same scrutiny as the first three files: the 2MASS
 catalog and the CF4 individual-galaxy table. CF4 also gets broken down by distance source, so the
 source split in Stage 8B starts from known counts and known quirks.
@@ -218,6 +234,15 @@ Re-execute the notebook (rule 11). Tell me which sources, if any, show a zero-po
 
 ## Stage 2: Build the two analysis samples
 
+<!-- roadmap
+missions: |
+  [x] Tempel collapsed to one row per group, singletons kept; the duplicate test passes
+  [x] CF4 velocity sample inside the footprint at all depths (26,302 objects)
+  [x] Counts match the roadmap, with the cz < 10,000 differences explained
+  [x] 2MRS (M) pair built, counts matrix filled, sky plots of both pairs
+  [ ] Phase B per-source velocity samples (waits for the CF4 individual table)
+-->
+
 **What this stage is for.** Turn the raw tables into the two lists the estimator actually uses.
 The first is **one row per Tempel group**, with a single center: the density tracer. The second is
 **one row per CF4 object** that passes the cuts: the velocity tracer. Every later stage reads only
@@ -247,7 +272,12 @@ end of the Tempel field (cz 29,979), so their outer shells are incomplete; Stage
 that. *cz < 10,000 variant (checked in the tests):* 4,481 CF4 groups in the footprint, 4,480 in the
 sample, and **6,360 Tempel groups / 15,272 singletons**: the 6,367 / 15,278 above were cut on `gVcmb`,
 which is not the Tempel group velocity (243 singletons differ from their own c·zcmb by > 500 km/s). The
-group redshift is the mean member `zcmb`, which `dc` encodes.
+group redshift is the mean member `zcmb`, which `dc` encodes. *M pair (notebook 12 §6):* 43,526 2MRS
+galaxies, one row each; 38,007 of the 38,057 CF4 groups lie inside the 2MRS mask, and the velocity
+sample is **38,003** (4 calibrators at `Vcmb` = 0 with undefined u dropped, pgc 39346 among them).
+Every T velocity center is also an M center. At cz < 10,000 the mask holds 12,077, as notebook 11 §10
+found. Without a cz cut, 38% of the M velocity centers lie beyond 20,000 km/s, where 2MRS has only
+~1,100 galaxies: a depth cut for M is worth revisiting once the estimator runs.
 u = EDD's `Vpec` ramp with the natural log restored (decided 2026-10-18); primary richness = all
 groups and singletons (decided 2026-10-15).
 
@@ -287,52 +317,139 @@ explain any difference. Ask me before choosing the primary richness cut.
 
 ## Stage 3: Put both catalogs in the same redshift-space coordinate system
 
+<!-- roadmap
+current: true
+missions: |
+  [ ] Tempel's cosmology (`H0_TEMPEL`, `Om0_TEMPEL`) in `config/cosmology.py`; `H0_CF4` is already there
+  [ ] $s_T$, $s_V$ and $s_M$ in h⁻¹ Mpc from one χ(z) in Tempel's Ωm; `dc` converted with Tempel's h = 0.678
+  [ ] Check 0: Tempel and CF4 use the same CMB apex (dipole fits to `zcmb − zobs` and `Vcmb − Vhel`)
+  [ ] Check 1: `dc` rebuilt as the mean member χ(`zcmb`), agreeing to rounding except for the 750 incomplete groups
+  [ ] Check 2: pgc matches show no trend with cz or with the cosine to the CMB apex, at group and galaxy level
+  [ ] Check 3: 2MRS converted to the CMB frame with Tempel's additive formula and checked against Tempel and CF4
+  [ ] Frame decision written down (CMB primary, LG as a Stage 12 run)
+-->
+
 **What this stage is for.** Check, and make sure, that Tempel positions and CF4 positions are
 **the same kind of coordinate**. That means the same frame (CMB), the same redshift-to-distance
 formula, the same units (h⁻¹ Mpc), and the same observer at the origin. The pair separation
 r = s_V − s_T only means something if both ends of it live in one coordinate system. A mismatch
 here (Mpc against h⁻¹ Mpc, or χ(z) against cz/100) shifts every separation and produces a fake
-dipole.
+dipole. At z = 0.1, cz/100 and χ differ by 7 h⁻¹ Mpc (2.4%).
 
-- Use **one** redshift–distance convention for both catalogs (note §4.1). Tempel's `dc` is already
-  a cosmological comoving distance χ(z_cmb) in Mpc with H0 = 67.8, so the matching choice is the
-  note's eq. 14. Tempel: s_T = `dc` × 0.678 h⁻¹ Mpc. CF4: s_V = χ(`Vcmb`/c) in the same cosmology.
-  Get n̂ from (RA, DE) and keep the observer at the origin.
-- *Check 1:* rebuild `dc` from each group's mean `zcmb` with your χ(z). It should agree within the
-  group's velocity spread. A fixed fractional offset means your cosmology differs from Tempel's.
-- *Check 2:* 25,439 Tempel galaxies are also CF4 `pgc` entries *(measured)*. For those matches,
-  |s_T − s_V| should be a few h⁻¹ Mpc at most. An offset that grows with cz means the two
-  catalogs use different conventions.
+**[2026-10-20] What Tempel did (Tempel et al. 2017, `literature/1704.04477v1`).** These are all
+checked against `SDSS_Tempel.csv`.
+
+- **Cosmology (§1):** flat Planck 2015, **H0 = 67.8, Ωm = 0.308, ΩΛ = 0.692**. Distances are in
+  **Mpc**, not h⁻¹ Mpc.
+- **`dc` (= `groupdist`, Appendix A) is the mean of the members' χ(z_cmb), taken over all
+  members**, not χ of the mean redshift. Members missing from the clipped EDD table still count.
+- **CMB correction (footnote 3) is additive:** z_cmb = z_obs − v_p/c, not the exact
+  (1 + z_cmb) = (1 + z_obs)/(1 + v_p/c). The two differ by about z·v_p/c, which is at most
+  0.37 h⁻¹ Mpc at z = 0.1 and varies with sky direction. That is far below redshift-space noise,
+  so **use Tempel's `zcmb` as published; do not "fix" it**. The paper does not name its dipole,
+  so it is fitted in Check 0.
+
+**Do.**
+
+- **One χ(z), in h⁻¹ Mpc.** In these units H0 cancels: χ = (c/100)∫dz/E(z) depends only on Ωm.
+  H0 enters only through the factor that converts `dc` from Mpc. That factor is **Tempel's
+  h = 0.678, never `conventions.HUBBLE_PARAM` = 0.6777**. Using MDPL2's h is a +4.4×10⁻⁴ fixed
+  fractional offset *(measured)*, exactly what Check 1 exists to catch.
+  - Compute χ in Tempel's Ωm = 0.308, so that Check 1 can pass at the rounding level. MDPL2's
+    Ωm would move χ by only 0.02 h⁻¹ Mpc at z = 0.1, but there is no reason to take even that.
+  - Store the values next to `H0_CF4` as `H0_TEMPEL = 67.8` and `Om0_TEMPEL = 0.308` (rule 4).
+    They are catalog metadata, like `H0_CF4`, not a cosmology the project adopts.
+    `CosmologyConfig.h` stays MDPL2's, because it is tied to `conventions.HUBBLE_PARAM`.
+- **The three positions:**
+  - Tempel: s_T = `dc` × 0.678 h⁻¹ Mpc.
+  - CF4: s_V = χ(`Vcmb`/c). `Vcmb` is c·z_cmb. **Never use `fV`**, the curvature-adjusted
+    velocity, which is not a redshift, even though the note's column table offers it. Never use
+    `D` (Stage 1).
+  - 2MRS: s_M = χ(z_cmb), with z_cmb built as described under 2MASS positions below.
+  - All three get n̂ from (RA, DE), with the observer at the origin.
+
+**Checks.**
+
+- *Check 0 (the same CMB frame):* fit c·(`zcmb` − `zobs`) for Tempel and `Vcmb` − `Vhel` for CF4
+  as a dipole v·n̂.
+  - *Measured:* Tempel gives 368.9 km/s toward (l, b) = (263.3°, 47.9°) with 1.2 km/s rms, which
+    is the rounding of `zcmb`. The additive form fits; the exact form leaves a trend with z.
+  - CF4 gives 367.8 km/s toward (263.8°, 48.6°) with 24 km/s rms. Its `Vcmb` and `Vhel` are group
+    averages, so its formula cannot be determined, and at this size it does not matter.
+  - Pass: the two apexes agree within about 1° and a few km/s.
+- *Check 1:* rebuild `dc` as the **mean of χ(`zcmb`) over the member rows**, in Mpc with
+  H0 = 67.8 and Ωm = 0.308.
+  - *Expect (measured):* agreement to the file's rounding for every group whose rows are all
+    present. The median is 0.006 Mpc, 90% are within 0.014 Mpc, and `zcmb`'s half-ulp of 5×10⁻⁶
+    allows about 0.02 Mpc.
+  - The exceptions are exactly the **750 groups (1.5%) with fewer EDD rows than `Ng`**, off by up
+    to 24 Mpc. Their members beyond the clip still count in `dc`, which is why Stage 2 takes the
+    radius from `dc` and not from the rows.
+  - A fixed fractional offset means the cosmology or the h used differs from Tempel's. Any
+    disagreement outside the 750 is a bug.
+- *Check 2:* 25,439 Tempel galaxies are also CF4 `pgc` entries *(measured)*. Run it at two
+  levels.
+  - **Galaxy level** (the sharp test): c·`zcmb` of the matched Tempel galaxy against CF4 `Vcmb`,
+    or the χ values built from them.
+  - **Group level:** s_T from `dc` against s_V. Here a scatter of a few h⁻¹ Mpc, larger in rich
+    clusters, is legitimate. CF4's `Vcmb` is averaged over the Tully (2015) 2MRS group, while `dc`
+    is averaged over the Tempel friends-of-friends group, so the two group definitions differ.
+  - Plot the residual against cz **and against the cosine of the angle to the CMB apex**. A
+    residual that grows with cz means a distance-convention mismatch. One that grows with
+    cz × cos θ_apex means a CMB-formula or apex mismatch.
 - **Decision for you and Adi (rule 1):** `conventions.REFERENCE_FRAME = "cmb"`, and the
   methodological note says CMB. Nusser deliberately used **LG**-frame redshifts (§4.3).
   Recommendation: CMB as primary, with LG as a Stage 12 robustness run. Changing the primary frame
   means editing `conventions.py`, so discuss it before anyone touches it.
 
-- **[2026-10-14] 2MASS positions:** build s_M with the *same* χ(z) and frame. Whatever 2MASS
-  ships (heliocentric cz, a CMB cz, or a distance), convert it explicitly. Never assume it matches
-  Tempel. *Check 3:* cross-match 2MASS with Tempel inside the SDSS footprint and with CF4 by
-  `pgc`. |s_M − s_T| and |s_M − s_V| for the matches should show no trend with cz.
+- **[2026-10-14] 2MASS positions:** build s_M with the *same* χ(z) and frame. The 2MRS velocities
+  are **heliocentric only** (Stage 1 addendum).
+  - **[2026-10-20]** Convert them with **Tempel's additive formula and the apex from Check 0**, so
+    that s_M lands in Tempel's system. Never assume it already matches Tempel.
+  - *Check 3:* cross-match 2MASS with Tempel inside the SDSS footprint and with CF4 by `pgc`.
+    |s_M − s_T| and |s_M − s_V| for the matches should show no trend with cz or with the cosine
+    to the CMB apex.
 
-**Done when:** both checks pass, the radius histograms of the two samples lie on the same
-h⁻¹ Mpc axis, and the frame decision is written down. **[2026-10-14]** Check 3 passes as well.
+**Minor, for later stages:** Tempel's `den3` and `den10` are smoothed on 3 and 10 **Mpc**, which is
+≈ 2.0 and 6.8 h⁻¹ Mpc. It matters only if they are ever used for splits.
+
+**Done when:** Checks 0–2 pass with the numbers above, the radius histograms of the samples lie on
+the same h⁻¹ Mpc axis, and the frame decision is written down. **[2026-10-14]** Check 3 passes as
+well.
 
 **Prompt to start it:**
 
 ```text
 Start Stage 3 of docs/real_data_roadmap.md (put both catalogs in the same redshift-space
-coordinate system). Read CLAUDE.md and that stage first. Add a library function that builds
-s_T and s_V in h^-1 Mpc, CMB frame, observer at the origin, using one comoving-distance
-convention chi(z) for both catalogs (Tempel from dc, CF4 from Vcmb). Put the cosmology used
-for chi(z) in src/dvcorr/config/cosmology.py (also add H0_CF4 = 74.6 there, as its docstring
-asks). Run both checks from the roadmap: rebuild dc from member zcmb, and |s_T - s_V| for the
-pgc identity matches as a function of cz. Show me the plots and say plainly whether the two
-catalogs are in the same coordinate system. Do NOT change conventions.REFERENCE_FRAME; if you
-think the frame should change, stop and ask.
+coordinate system). Read CLAUDE.md and that stage first, including the [2026-10-20] notes on
+what Tempel did. Add H0_TEMPEL = 67.8 and Om0_TEMPEL = 0.308 to CosmologyConfig in
+src/dvcorr/config/cosmology.py, next to the existing H0_CF4 (catalog metadata, not an adopted
+cosmology; CosmologyConfig.h stays MDPL2's). Add a library function for chi(z) in h^-1 Mpc
+(flat LCDM, Tempel's Om) and one that builds s_T (dc * Tempel's h = 0.678, never
+conventions.HUBBLE_PARAM), s_V (chi(Vcmb/c), never fV or D) and s_M (2MRS heliocentric cz ->
+CMB with Tempel's additive formula z_cmb = z_obs - v_p/c and the apex fitted in Check 0), all
+in the CMB frame with the observer at the origin. Write tests for chi(z) and the conversions.
+Run Checks 0-3 from the roadmap: the apex fits, dc rebuilt as the mean member chi(zcmb)
+(expect rounding-level agreement except for the 750 groups with fewer rows than Ng), and the
+pgc-match residuals at galaxy and group level against cz and against the cosine to the CMB
+apex. Put the checks in a thin notebook (rule 11). Compare every number with the roadmap's
+"measured" values, show me the plots, and say plainly whether the catalogs are in the same
+coordinate system. Do NOT change conventions.REFERENCE_FRAME; if you think the frame should
+change, stop and ask.
 ```
 
 ---
 
 ## Stage 4: Selection function and randoms  → `src/dvcorr/selection/` (currently empty)
+
+<!-- roadmap
+missions: |
+  [ ] HEALPix footprint from the Tempel galaxies, area ≈ 7,600 deg²
+  [ ] Seeded, cached Tempel randoms; data/random n(s) and angular ratios flat
+  [ ] 2MRS randoms from the same machinery
+  [ ] A selection function $S_k$ for every velocity sample; correction scheme chosen with the advisor
+  [ ] MDPL2 Malmquist test: the corrected $\zeta_1$ recovers the true one
+-->
 
 **What this stage is for.** Describe **where Tempel could have seen a group**, as opposed to where
 groups actually are. The sky footprint gives the angular part, and the flux limit makes groups
@@ -406,6 +523,15 @@ vs corrected zeta_1) before any correction touches real velocities.
 
 ## Stage 5: Move the estimator from the box to the sky  → `notebooks/13_sky_estimator_validation.ipynb`
 
+<!-- roadmap
+missions: |
+  [ ] Masked-sky normalization written out and agreed (reduces to Nusser eq. 24)
+  [ ] Sky estimator built on the existing per-center shell sums, no fork
+  [ ] Bridge test: masked MDPL2 reproduces the full-box result, as a pytest test
+  [ ] Sky sign gates ($\zeta_1 > 0$, $\xi_{Tu,1} < 0$) and the velocity-shuffle null pass
+  [ ] Notebook 13: full box against masked, with and without randoms
+-->
+
 **What this stage is for.** Make Nusser's estimator work on a **partial, non-uniform sky**, and
 prove it gives the right answer **before** it touches real data. In the box, the expected number
 of neighbors in a shell was n̄V_b. On the sky, the shell is cut by the footprint and thinned with
@@ -456,6 +582,15 @@ full-catalog run. Use the reviewer agent on the finished diff.
 
 ## Stage 6: First measurement on real data  → `notebooks/14_first_data_dipole.ipynb`
 
+<!-- roadmap
+missions: |
+  [ ] $\zeta^V$ and $\zeta^M$ with their monopoles for T × CF4 groups, default binning
+  [ ] The same for M × CF4 groups
+  [ ] Nusser's linear 7 h⁻¹ Mpc binning, after confirming its edges
+  [ ] Linear-theory overlay; sign, shape and amplitude against theory written down
+  [ ] With and without the Malmquist correction
+-->
+
 **What this stage is for.** This is the first look at the real signal: Nusser's Fig. 2 top panel,
 built from Tempel × CF4. The error bars and mock bands come later. The questions here are only
 whether the curve has the right sign, the right shape and roughly the right size, and whether the
@@ -504,6 +639,13 @@ holds. No error bars yet.
 
 ## Stage 7: Bias of the density tracer
 
+<!-- roadmap
+missions: |
+  [ ] Method chosen: counts in spheres or $\xi_{TT}$ with the randoms
+  [ ] Validated on masked MDPL2 against the b of notebook 09
+  [ ] $b_T$ with an error bar for the primary sample and one `Ng` split
+-->
+
 **What this stage is for.** Measure how strongly Tempel groups trace the matter (b_T, or σ8g as
 Nusser writes it). The dipole amplitude is proportional to b_T·fσ8, so b_T has to be known to turn
 the measured amplitude into a growth rate. It also tells the mocks which halos stand in for
@@ -533,6 +675,13 @@ Ng cut, and say whether the trend makes sense.
 
 ## Stage 8: Observational error bars (Nusser's bootstrap)
 
+<!-- roadmap
+missions: |
+  [ ] 100 seeded bootstrap realizations of u
+  [ ] Error bars on the notebook 14 figures; bootstrap covariance saved
+  [ ] Bar size compared with the signal in each bin
+-->
+
 **What this stage is for.** Put error bars on the Stage 6 points that reflect only the
 **measurement noise** of CF4 velocities, the way Nusser did. Perturb every u by its own error many
 times and see how much the curve moves. This is one part of the total error. Cosmic variance comes
@@ -559,6 +708,14 @@ per bin, and whether that matches Nusser's statement that velocity errors are su
 ---
 
 ## Stage 8B [2026-10-14]: CF4 individuals, source by source (Phase B)  → `notebooks/15_cf4_sources.ipynb`
+
+<!-- roadmap
+missions: |
+  [ ] One CF4-individuals sample per source, each with its Malmquist correction and bootstrap
+  [ ] $\zeta_1$ per source, paired with a density field that covers it
+  [ ] Individuals against groups, and source against source, as ratios with bands
+  [ ] Every source labelled; the verdict written into the advisor notes
+-->
 
 **What this stage is for.** This is the advisor's consistency test. Phase A has a trusted
 group-velocity result with error bars. Now take apart what goes into it: rerun ζ₁ on the CF4
@@ -613,6 +770,15 @@ can be before the Stage 9 mocks.
 
 ## Stage 9: Mock observers in MDPL2  → `src/dvcorr/mocks/` (currently empty)
 
+<!-- roadmap
+missions: |
+  [ ] Mock recipe agreed: observers, tracer matching, velocity sampling, errors
+  [ ] One mock's sky map and n(s) checked against the data
+  [ ] All mocks run, with M-like tracers and per-source velocity samples
+  [ ] Nusser Fig. 2 top panel: data with bootstrap bars, mock mean and 1σ band
+  [ ] Fig. 4 analogue through `velocity_frame_comparison`
+-->
+
 **What this stage is for.** Build fake versions of the Tempel × CF4 survey inside MDPL2, with the
 same sky, the same depth, the same tracer density and bias, and the same velocity errors.
 Nusser's estimator then runs on each one. The spread across mocks gives **cosmic variance plus
@@ -656,6 +822,12 @@ and the Fig. 4 analogue via velocity_frame_comparison.
 
 ## Stage 10: Significance (Nusser eq. 34)
 
+<!-- roadmap
+missions: |
+  [ ] Total covariance (mocks + bootstrap) with the Hartlap correction
+  [ ] χ² against zero and against the mock mean for $\zeta^V$ and $\zeta^M$, in σ
+-->
+
 **What this stage is for.** Answer two yes/no questions with numbers. Is the measured dipole
 **different from zero**? Is it **consistent with ΛCDM**? Both are a χ² with the full covariance
 (mocks plus bootstrap).
@@ -679,6 +851,12 @@ to Nusser's (38.7 / 34.9; 14.97 / 11.13) and explain what any difference means.
 ---
 
 ## Stage 11: Growth rate (Nusser eqs. 35–36, Fig. 3)
+
+<!-- roadmap
+missions: |
+  [ ] The fit recovers fσ8 ≈ 0.43 on the mocks
+  [ ] fσ8 and β with 1σ errors from the data (the Fig. 3 analogue)
+-->
 
 **What this stage is for.** Turn the dipole amplitude into a cosmological number, fσ8 (and
 β = f/b). Fit the measured curve with templates from the mocks, which scale as fσ8·σ8g plus a
@@ -706,6 +884,13 @@ and beta = fsigma8/sigma8g with the Stage 7 sigma8g.
 ---
 
 ## Stage 12: Robustness and null suite (methodological note §6.2)
+
+<!-- roadmap
+missions: |
+  [ ] Every variant in the list run through the same pipeline
+  [ ] Summary table and ratio-to-primary figure with both bands
+  [ ] Every shift larger than 1σ explained
+-->
 
 **What this stage is for.** Try to break the result. Change every choice that could reasonably
 have been made differently, and check that the answer moves no more than the error bars allow.
@@ -738,6 +923,12 @@ touches the conventions.
 ---
 
 ## Stage 13 (stretch): Nusser §7, Wiener-filter reconstruction
+
+<!-- roadmap
+missions: |
+  [ ] Decided with Adi whether it is part of the full reproduction
+  [ ] Plan written: the matrices, the error model, the grid
+-->
 
 **What this stage is for.** Nusser's second half: reconstruct the full 3D velocity field from
 the radial velocities with a Wiener filter, and repeat the dipole with 3D velocities (Fig. 2

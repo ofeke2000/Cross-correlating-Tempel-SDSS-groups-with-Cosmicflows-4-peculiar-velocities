@@ -64,7 +64,7 @@ src/dvcorr/
   selection/           masks, selection functions, random catalogs (still empty)
   mocks/               MDPL2 observers, halo selection, mock covariance (still empty)
 tests/                 unit tests, including the spherical-infall sign gates
-notebooks/             exploration only — nothing load-bearing (04 … 12, DM_simulation)
+notebooks/             exploration only — nothing load-bearing (04 … 14, DM_simulation)
 intuition/             pedagogical parameter-scan notebooks; consume the library, no script
                        twin, nothing imports from them
 scripts/               thin drivers: plot_velocity_centered_dipole, plot_velocity_frame_
@@ -72,6 +72,8 @@ scripts/               thin drivers: plot_velocity_centered_dipole, plot_velocit
                        comparison, convert_mdpl2_catalog
 data/                  input catalogs + DM_simulation.hdf5 (gitignored, see README)
 literature/            papers and the methodological note (gitignored, local only)
+roadmap_site/          build_roadmap.py turns docs/real_data_roadmap.md into roadmap.html (the
+                       page and its roadmap_assets/ are gitignored; see "Roadmap page")
 .claude/agents/        subagent definitions with pinned models (implementer, reviewer)
 .claude/hooks/         venv activation, post-edit sign gate + rule-5 check, stale-notebook stop
 .claude/rules/         path-scoped rules, loaded only when matching files are read (plotting)
@@ -154,6 +156,32 @@ it has no subhalos to tally and carries `NUM_OF_SUBHALOS_UNKNOWN` (-1) rather th
 that would falsely claim its halos host none. Only `dvcorr.pipeline.halo_class_comparison`
 reads the column, and only from `full`. Loading it is opt-in
 (`load_and_carve(..., with_num_of_subhalos=True)`) because it costs ~508 MB uncarved.
+
+## Roadmap page
+
+`docs/real_data_roadmap.md` is the only source; `roadmap_site/roadmap.html` is generated
+from it and never edited by hand. Each stage heading carries a `<!-- roadmap -->` YAML block
+(`current`, `missions` as `[x]`/`[ ]` lines, `plots` with `file`/`caption`/`notes`); the
+format is documented in the docstring of `roadmap_site/build_roadmap.py`. Build with
+`python roadmap_site/build_roadmap.py` (`--check` validates only; `--fetch-vendor` once per
+machine downloads KaTeX and the fonts). The page links only to `roadmap_site/roadmap_assets/`,
+never to `output/` or a notebook, so rerunning an analysis cannot break it. Both the page and
+`roadmap_assets/` are gitignored; only the script is tracked.
+
+**When I say "stage X is done"** (or "mission … of stage X is done"):
+
+1. In that stage's block, flip its missions to `[x]` (only the ones named, for a single
+   mission). If a mission is not actually finished, say so instead of ticking it.
+2. For a finished stage, move `current: true` to the next stage that is not done. Exactly
+   one stage carries it.
+3. Copy each final plot I point to into `roadmap_site/roadmap_assets/` as
+   `stageNN_<what>.png` (`stage03_…`, `stage08b_…`; check the name for typos, rule 9). A
+   plot that lives only in a notebook is extracted from that cell's saved `image/png`
+   output. Final figures only, no diagnostics. Never link to the original location.
+4. Add a `plots:` entry per figure: a short `caption`, and `notes` of 2–3 sentences saying
+   what the plot shows and what in it shows the stage worked, with the numbers that matter.
+5. Run `python roadmap_site/build_roadmap.py` and report its summary line.
+6. **Never commit, stage, or push**: not the roadmap, not the script, nothing. I commit.
 
 ## Hard rules
 

@@ -41,13 +41,17 @@ from dvcorr.pipeline.real_catalogs import (
     EddCatalog,
     cf4_peculiar_velocity,
     collapse_tempel_groups,
+    counts_matrix,
     duplicate_test,
     footprint_pixels,
     in_pixel_footprint,
     load_cf4_groups,
     sample_counts,
     select_cf4_velocities,
+    select_cf4_velocities_in_twomrs,
     select_tempel_tracers,
+    select_twomrs_tracers,
+    twomrs_duplicate_test,
     angular_separation_deg,
     column_descriptions,
     curvature_corrected_velocity,
@@ -421,6 +425,21 @@ class TestReconstruction:
         by_depth = audit.velocity_test_by_depth(
             table, audit.AuditConfig(cz_edges=(4000.0, 15000.0, 30000.0)))
         np.testing.assert_allclose(by_depth[audit.VELOCITY_VPWF_LN], 1.0, atol=0.05)
+
+    def test_vpwf_error_labels_put_vpds_on_the_right_scale(self, tmp_path) -> None:
+        """With `VPWF_ERROR_LABELS` the summary carries `Vpds` in place of
+        `Vpec`: scale 1 by construction, published Vpwf ln 10 below it."""
+        catalog = _synthetic_velocities(tmp_path, n=6000, true_rms=0.0)
+        table = audit.velocity_test_table(catalog)
+        summary = audit.velocity_test_summary(table, labels=audit.VPWF_ERROR_LABELS)
+        assert tuple(summary.index) == audit.VPWF_ERROR_LABELS
+        vpds = summary.loc[audit.VELOCITY_VPDS_PUBLISHED]
+        assert vpds["median_ratio_to_vpds_linear"] == pytest.approx(1.0)
+        assert summary.loc[audit.VELOCITY_VPWF_PUBLISHED, "median_ratio_to_vpds_linear"] == (
+            pytest.approx(1.0 / LN10, abs=0.01))
+        binned = audit.velocity_test_binned(table, audit.VELOCITY_TEST_X_REDSHIFT,
+                                            labels=audit.VPWF_ERROR_LABELS)
+        assert set(binned["velocity"]) == set(audit.VPWF_ERROR_LABELS)
 
     def test_velocity_test_drops_undefined_rows_without_filling(self, tmp_path) -> None:
         """fV <= 0 (published Vpwf is a filler 0) and eDM = 0 (no sigma_u)
@@ -912,6 +931,57 @@ def test_duplicate_test_passes_and_catches_a_duplicate() -> None:
     assert result.loc["Tempel tracers, by center ID", "duplicates"] == 1
 
 
+def _twomrs_table() -> pd.DataFrame:
+    return pd.DataFrame(
+        {"pgc": [11, 12, 13], "RAJ": [10.0, 200.0, 300.0], "DEJ": [5.0, -40.0, 60.0],
+         "Glon": [120.0, 300.0, 95.0], "Glat": [-57.0, 22.0, 13.0],
+         "Vhel": [-300.0, 4000.0, 51000.0], "K_tc": [9.0, 11.0, 11.75]}
+    )
+
+
+class TestTwoMrsSamples:
+    def test_every_galaxy_kept(self) -> None:
+        tracers = select_twomrs_tracers(_catalog(_twomrs_table()))
+        assert list(tracers["pgc"]) == [11, 12, 13]
+        assert list(tracers["cz_hel"]) == [-300.0, 4000.0, 51000.0]  # Vhel < 0 kept
+
+    def test_duplicate_pgc_raises(self) -> None:
+        table = _twomrs_table().assign(pgc=[11, 11, 13])
+        with pytest.raises(ValueError, match="pgc is not unique"):
+            select_twomrs_tracers(_catalog(table))
+
+    def test_cf4_in_twomrs_mask(self, tmp_path) -> None:
+        velocities, groups = _cf4_pair(tmp_path)
+        g = groups.table.copy()
+        # Row 2 at |b| = 3 (masked everywhere); row 3 at b = 6 toward the bulge
+        # (masked); row 4 at b = 6 away from it (kept).
+        g.loc[[2, 3, 4], "GLong"] = [100.0, 10.0, 100.0]
+        g.loc[[2, 3, 4], "GLat"] = [3.0, 6.0, 6.0]
+        groups = _catalog(g)
+        sample = select_cf4_velocities_in_twomrs(velocities, groups)
+        pgc = velocities.table["pgc"]
+        kept = set(sample.table["pgc"])
+        assert pgc[2] not in kept and pgc[3] not in kept and pgc[4] in kept
+        assert sample.n_footprint == len(g) - 2
+        assert pgc[0] not in kept and sample.n_undefined_velocity == 1  # rule 5, as for T
+
+    def test_duplicate_test_and_counts_matrix(self) -> None:
+        tracers = select_twomrs_tracers(_catalog(_twomrs_table()))
+        cf4 = Cf4VelocitySample(
+            table=pd.DataFrame({"pgc": [1, 2, 3], "sigma_u": [np.nan, 100.0, 200.0]}),
+            velocity_definition=VELOCITY_VPEC_LN, n_catalog=5, n_cz=5, n_footprint=4,
+            n_undefined_velocity=1,
+        )
+        assert (twomrs_duplicate_test(tracers, cf4)["duplicates"] == 0).all()
+        doubled = pd.concat([tracers, tracers.iloc[[0]]], ignore_index=True)
+        assert twomrs_duplicate_test(doubled, cf4).loc["2MRS galaxies, by pgc", "duplicates"] == 1
+        matrix = counts_matrix({"M": (tracers, cf4)})
+        assert matrix.loc["M"].to_dict() == {
+            "density_tracers": 3, "cf4_in_footprint": 4, "cf4_undefined_u": 1,
+            "cf4_velocity_sample": 3, "cf4_calibrators": 1,
+        }
+
+
 _PATHS = PathsConfig()
 _HAVE_REAL = all(
     p.exists()
@@ -977,6 +1047,20 @@ class TestRealFiles:
         assert counts_near["Tempel singletons at cz < 10,000"] == 15_272
         assert cf4_near.n_footprint == 4_481
         assert len(cf4_near.table) == 4_480
+
+    @pytest.mark.skipif(not _PATHS.twomrs_catalog.exists(), reason="2MRS catalog not in data/")
+    def test_stage2_twomrs_samples(self, velocities) -> None:
+        cf4_groups = load_cf4_groups()
+        tracers = select_twomrs_tracers(load_twomrs_galaxies())
+        cf4 = select_cf4_velocities_in_twomrs(velocities, cf4_groups)
+        assert (twomrs_duplicate_test(tracers, cf4)["duplicates"] == 0).all()
+        assert len(tracers) == 43_526
+        assert cf4.n_footprint == 38_007
+        assert len(cf4.table) == 38_003
+        assert set(cf4.undefined_pgc) == {8484, 39346, 69468, 3097727}  # all fV = 0
+        near = select_cf4_velocities_in_twomrs(
+            velocities, cf4_groups, SampleConfig(velocity_cz_max=10_000.0))
+        assert near.n_footprint == 12_077  # notebook 11 section 10
 
     def test_tempel_traps(self) -> None:
         traps = audit.tempel_traps(load_tempel_galaxies())

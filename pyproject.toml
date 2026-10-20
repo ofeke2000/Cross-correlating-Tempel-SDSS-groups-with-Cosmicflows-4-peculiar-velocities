@@ -19,7 +19,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest"]
+dev = ["pytest", "markdown", "pyyaml"]  # markdown + pyyaml: roadmap_site/build_roadmap.py
 # Needed only by dvcorr.pipeline.galaxy_bias, which imports them lazily so the
 # rest of the package (and its tests) run without them.
 #   Corrfunc  -- periodic-box pair counting; needs GSL at BUILD time
