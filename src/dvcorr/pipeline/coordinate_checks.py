@@ -17,7 +17,9 @@ the audit notebooks import `real_catalog_audit`.
   Omega_m.
 - **Check 2** (`tempel_cf4_matches`): Tempel galaxies matched by `pgc` to CF4
   groups; residuals at galaxy level (Tempel's own galaxy redshift) and group
-  level (s_T from `dc` against s_V).
+  level (s_T from `dc` against s_V). `with_apex_difference` takes the Check 0
+  apex difference out of `d_frame`; `residual_by_richness_and_membership`
+  splits CF4's `Vhel` offset by sample.
 - **Check 3** (`twomrs_tempel_matches`, `twomrs_cf4_matches`): s_M against
   both.
 
@@ -113,6 +115,10 @@ class CoordinateCheckConfig:
     richness_edges : tuple of int
         `Ng` class lower edges for the group-level scatter by richness; the
         last class is open.
+    offset_split_min_cz : float
+        km/s. `residual_by_richness_and_membership` uses only matches beyond
+        this cz, where CF4's `Vhel` offset from Tempel is large enough to
+        split by sample.
     plot_percentile : float
         Scatter panels show the central this-percent of the residual
         (symmetric about zero).
@@ -133,6 +139,7 @@ class CoordinateCheckConfig:
     min_bin_count: int = 20
     cz_slope_unit: float = 10000.0
     richness_edges: tuple[int, ...] = (1, 2, 6, 20)
+    offset_split_min_cz: float = 15000.0
     plot_percentile: float = 98.0
     histogram_bins: int = 60
     dc_bins: int = 15
@@ -426,15 +433,18 @@ def tempel_cf4_matches(
     -------
     pandas.DataFrame
         One row per match: `pgc`, `IDg`, `Ng`, `cz` (Tempel c zcmb, km/s),
-        `cos_apex` (Tempel direction), and the residuals
+        `glon`, `glat` (deg) and `cos_apex` (Tempel direction), and the residuals
         `d_cz_hel` = Vhel - c zobs, `d_cz_cmb` = Vcmb - c zcmb,
         `d_frame` = (Vcmb - Vhel) - c (zcmb - zobs) (km/s);
         `d_s_galaxy` = s_V - chi(zcmb), `d_s_group` = s_V - s_T (h^-1 Mpc).
     """
     cosmology = cosmology or CosmologyConfig()
     c = conventions.SPEED_OF_LIGHT
+    t = tempel.table
     ref = _tempel_reference(tempel, cosmology).assign(
-        cos_apex=_cos_apex(tempel.table["glon"], tempel.table["glat"], apex)
+        glon=t["glon"].to_numpy(float),
+        glat=t["glat"].to_numpy(float),
+        cos_apex=_cos_apex(t["glon"], t["glat"], apex),
     )
     v = cf4_velocities.table
     cf4 = pd.DataFrame(
@@ -452,6 +462,8 @@ def tempel_cf4_matches(
             "IDg": j["IDg"],
             "Ng": j["Ng"],
             "cz": j["cz_cmb_T"],
+            "glon": j["glon"],
+            "glat": j["glat"],
             "cos_apex": j["cos_apex"],
             "d_cz_hel": j["Vhel"] - j["cz_hel_T"],
             "d_cz_cmb": j["Vcmb"] - j["cz_cmb_T"],
@@ -481,16 +493,16 @@ def twomrs_tempel_matches(
     Returns
     -------
     pandas.DataFrame
-        `pgc`, `IDg`, `Ng`, `cz` (Tempel c zcmb), `cos_apex` (2MRS direction),
-        `d_cz_hel` = Vhel - c zobs, `d_cz_cmb` = cz_cmb - c zcmb, `d_frame` =
-        (cz_cmb - Vhel) - c (zcmb - zobs) (km/s); `d_s_galaxy` =
-        s_M - chi(zcmb), `d_s_group` = s_M - s_T (h^-1 Mpc).
+        `pgc`, `IDg`, `Ng`, `cz` (Tempel c zcmb), `glon`, `glat` (deg) and
+        `cos_apex` (2MRS direction), `d_cz_hel` = Vhel - c zobs, `d_cz_cmb` =
+        cz_cmb - c zcmb, `d_frame` = (cz_cmb - Vhel) - c (zcmb - zobs) (km/s);
+        `d_s_galaxy` = s_M - chi(zcmb), `d_s_group` = s_M - s_T (h^-1 Mpc).
     """
     cosmology = cosmology or CosmologyConfig()
     ref = _tempel_reference(tempel, cosmology)
     m = twomrs_positioned.assign(
         cos_apex=_cos_apex(twomrs_positioned["glon"], twomrs_positioned["glat"], apex)
-    )[["pgc", "cz_hel", "cz_cmb", "s", "cos_apex"]]
+    )[["pgc", "cz_hel", "cz_cmb", "s", "glon", "glat", "cos_apex"]]
     j = m.merge(ref, on="pgc", how="inner", validate="one_to_one")
     return pd.DataFrame(
         {
@@ -498,6 +510,8 @@ def twomrs_tempel_matches(
             "IDg": j["IDg"],
             "Ng": j["Ng"],
             "cz": j["cz_cmb_T"],
+            "glon": j["glon"],
+            "glat": j["glat"],
             "cos_apex": j["cos_apex"],
             "d_cz_hel": j["cz_hel"] - j["cz_hel_T"],
             "d_cz_cmb": j["cz_cmb"] - j["cz_cmb_T"],
@@ -520,16 +534,16 @@ def twomrs_cf4_matches(
     Returns
     -------
     pandas.DataFrame
-        `pgc`, `cz` (CF4 `Vcmb`), `cos_apex` (2MRS direction), `d_cz_hel` =
-        Vhel_M - Vhel_CF4, `d_cz_cmb` = cz_cmb_M - Vcmb, `d_frame` =
-        (cz_cmb_M - Vhel_M) - (Vcmb - Vhel_CF4) (km/s); `d_s_group` =
-        s_M - s_V (h^-1 Mpc).
+        `pgc`, `cz` (CF4 `Vcmb`), `glon`, `glat` (deg) and `cos_apex` (2MRS
+        direction), `d_cz_hel` = Vhel_M - Vhel_CF4, `d_cz_cmb` = cz_cmb_M -
+        Vcmb, `d_frame` = (cz_cmb_M - Vhel_M) - (Vcmb - Vhel_CF4) (km/s);
+        `d_s_group` = s_M - s_V (h^-1 Mpc).
     """
     cosmology = cosmology or CosmologyConfig()
     c = conventions.SPEED_OF_LIGHT
     m = twomrs_positioned.assign(
         cos_apex=_cos_apex(twomrs_positioned["glon"], twomrs_positioned["glat"], apex)
-    )[["pgc", "cz_hel", "cz_cmb", "s", "cos_apex"]]
+    )[["pgc", "cz_hel", "cz_cmb", "s", "glon", "glat", "cos_apex"]]
     v = cf4_velocities.table
     cf4 = pd.DataFrame(
         {
@@ -544,6 +558,8 @@ def twomrs_cf4_matches(
         {
             "pgc": j["pgc"],
             "cz": j["Vcmb"],
+            "glon": j["glon"],
+            "glat": j["glat"],
             "cos_apex": j["cos_apex"],
             "d_cz_hel": j["cz_hel"] - j["Vhel"],
             "d_cz_cmb": j["cz_cmb"] - j["Vcmb"],
@@ -688,18 +704,106 @@ def residual_by_richness(
         One row per class: `Ng` (label), `n`, `median`, `robust_sigma`.
     """
     config = config or CoordinateCheckConfig()
-    edges = list(config.richness_edges)
     records = []
-    for i, lo in enumerate(edges):
-        hi = edges[i + 1] if i + 1 < len(edges) else None
-        inside = matches["Ng"] >= lo if hi is None else (matches["Ng"] >= lo) & (matches["Ng"] < hi)
-        label = f"Ng >= {lo}" if hi is None else (f"Ng = {lo}" if hi == lo + 1 else f"{lo} <= Ng < {hi}")
+    for label, inside in _richness_classes(matches["Ng"], config.richness_edges):
         r = matches.loc[inside, column].to_numpy(float)
         r = r[np.isfinite(r)]
         records.append(
             {"Ng": label, "n": r.size, "median": float(np.median(r)), "robust_sigma": robust_sigma(r)}
         )
     return pd.DataFrame.from_records(records).set_index("Ng")
+
+
+def _richness_classes(ng: pd.Series, edges: tuple[int, ...]) -> list[tuple[str, pd.Series]]:
+    """(label, mask) per `Ng` class; `edges` are lower edges, the last class open."""
+    edges = list(edges)
+    classes = []
+    for i, lo in enumerate(edges):
+        hi = edges[i + 1] if i + 1 < len(edges) else None
+        inside = ng >= lo if hi is None else (ng >= lo) & (ng < hi)
+        label = f"Ng >= {lo}" if hi is None else (f"Ng = {lo}" if hi == lo + 1 else f"{lo} <= Ng < {hi}")
+        classes.append((label, inside))
+    return classes
+
+
+def with_apex_difference(matches: pd.DataFrame, delta_v: np.ndarray) -> pd.DataFrame:
+    """A match table with the `d_frame` an apex difference predicts, and what
+    is left of `d_frame` once that is removed.
+
+    Two catalogs whose CMB corrections use the apexes V_a and V_b differ in
+    `d_frame` by exactly (V_a - V_b) . n_hat. If that is all that separates
+    them, `d_frame_less_apex` keeps no trend in cz or cos_apex. A trend in
+    cz can be the apex term itself, when the sky coverage changes with depth.
+
+    Parameters
+    ----------
+    matches : pandas.DataFrame
+        A `*_matches` table (columns `glon`, `glat`, `d_frame`).
+    delta_v : array_like, shape (3,)
+        km/s, Galactic. The checked catalog's apex minus its reference's, in
+        the order of the residuals: CF4 minus Tempel for Check 2, Tempel minus
+        CF4 for 2MRS minus CF4 (2MRS is converted with Tempel's apex).
+
+    Returns
+    -------
+    pandas.DataFrame
+        A copy with `apex_term` and `d_frame_less_apex` (km/s).
+    """
+    n_hat = galactic_unit_vector(matches["glon"].to_numpy(float), matches["glat"].to_numpy(float))
+    apex_term = n_hat @ np.asarray(delta_v, dtype=float)
+    return matches.assign(apex_term=apex_term, d_frame_less_apex=matches["d_frame"].to_numpy(float) - apex_term)
+
+
+def residual_by_richness_and_membership(
+    matches: pd.DataFrame,
+    column: str,
+    members: np.ndarray,
+    config: CoordinateCheckConfig | None = None,
+) -> pd.DataFrame:
+    """Median of one residual by Tempel `Ng` class and by whether the matched
+    `pgc` is in another catalog, beyond `config.offset_split_min_cz`.
+
+    Check 2's CF4-minus-Tempel `d_cz_hel` is not one function of cz: at the
+    same depth its sign follows the sample (faint Tempel singletons low,
+    2MRS-bright galaxies high), so it is not a CF4 redshift scale. In notebook
+    14 `members` is the 2MRS `pgc` list.
+
+    Parameters
+    ----------
+    matches : pandas.DataFrame
+        `tempel_cf4_matches(...)` (columns `pgc`, `Ng`, `cz`, `column`).
+    column : str
+    members : array_like of int, shape (M,)
+        `pgc` values of the other catalog.
+    config : CoordinateCheckConfig, optional
+
+    Returns
+    -------
+    pandas.DataFrame
+        Indexed by (`member`, `Ng`): `n`, `median`, `error`
+        (sqrt(pi/2) x robust sigma / sqrt(n)). Empty classes are left out.
+    """
+    config = config or CoordinateCheckConfig()
+    deep = matches[matches["cz"] > config.offset_split_min_cz]
+    is_member = deep["pgc"].isin(np.asarray(members))
+    records = []
+    for member in (False, True):
+        sub = deep[is_member == member]
+        for label, inside in _richness_classes(sub["Ng"], config.richness_edges):
+            r = sub.loc[inside, column].to_numpy(float)
+            r = r[np.isfinite(r)]
+            if r.size == 0:
+                continue
+            records.append(
+                {
+                    "member": member,
+                    "Ng": label,
+                    "n": r.size,
+                    "median": float(np.median(r)),
+                    "error": _MEDIAN_ERROR_FACTOR * robust_sigma(r) / np.sqrt(r.size),
+                }
+            )
+    return pd.DataFrame.from_records(records).set_index(["member", "Ng"])
 
 
 # --------------------------------------------------------------------------

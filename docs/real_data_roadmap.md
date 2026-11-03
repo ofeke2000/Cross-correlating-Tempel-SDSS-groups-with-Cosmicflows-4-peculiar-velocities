@@ -85,6 +85,29 @@ missions: |
   [x] The four traps reproduced and explained in notebook 11
   [x] Sky maps, n(cz) histograms and `Vpec` against cz
   [x] The $\sigma_u$ puzzle answered: `Vpwf` uses log₁₀ where ln is meant
+plots:
+  - file: stage01_ncz_histograms.png
+    caption: "n(cz) of Tempel, 2MRS and CF4 as published"
+    notes: >
+      Each catalog has the depth it should. Tempel's 305,952 galaxies rise to a peak at 20,000–25,000 km/s
+      and stop at z = 0.1 (cz = 29,979). 2MRS (43,526) is shallow and peaks at 5,000–10,000. The 38,057
+      CF4 groups show a nearby Tully–Fisher bump plus the SDSS FP population, which ends at about 30,000.
+  - file: stage01_vpwf_log_base.png
+    caption: "Published `Vpwf` against `Vpds`, the ln rebuild and the log₁₀ rebuild"
+    notes: >
+      This figure settles the $\sigma_u$ puzzle. The published `Vpwf` matches Watkins & Feldman's
+      estimator rebuilt with log₁₀ exactly (median ratio 1.0000). Against the ln rebuild it is a
+      constant 0.4343 = 1/ln 10, and against `Vpds`, which contains no log, the cloud follows slope
+      1/ln 10 near the origin. So EDD's `Vpwf`, and `Vpec` beyond Vls = 3,000 km/s, are 2.3× too small
+      (notebook 13).
+  - file: stage01_velocity_vs_cz.png
+    caption: "Peculiar velocity against cz, with the eDM-predicted $\\sigma_u$ band"
+    notes: >
+      For `Vpds` and the ln rebuild, the observed scatter (dashed) lies on the scatter eDM predicts
+      (dotted) at every depth: std/$\sigma_u$ = 0.99 at 5,000 km/s and 0.88 near 29,000, so eDM is a
+      correct, slightly conservative error. The two published log₁₀ columns stay at about 0.41 of it.
+      All four medians are flat at zero (each bin within 2σ from 3,000 to 28,000 km/s), so there is no
+      H0 mismatch.
 -->
 
 **What this stage is for.** Get to know the raw data before trusting any of it. Load the three
@@ -151,6 +174,24 @@ descriptions row into a column dictionary and read it. It is the documentation.
 and explained in the notebook; and the σ_u puzzle has a written answer, or is explicitly parked
 with a plan.
 
+**Lessons:**
+
+1. **Read the ranges, not the labels.** The units row says RA is in hours, but the values are
+   degrees. `gVcmb` is not one group velocity: it differs between members of one group in 19% of
+   groups. `Ng` is a richness from the parent Tempel+14 catalog, not the number of rows present.
+2. **Tempel is a galaxy table, not a group table.** `IDg = 0` labels 130,010 unrelated isolated
+   galaxies, so a naive group-by fabricates one 130,000-member "group". A tracer's identity has to be
+   built (Stage 2), not read off a column.
+3. **A noise larger than the signal is a definition bug, not physics.** The σ_u puzzle came from
+   EDD's `Vpwf` using log₁₀ where Watkins & Feldman use ln, so `Vpwf` and `Vpec` beyond
+   Vls = 3,000 are 2.3× too small. With ln restored, eDM is a correct, slightly conservative error.
+   Rebuilding a published column from its own inputs is what found it.
+4. **CF4 sits on its own H0 ≈ 74.6, so `D` is never a position.** Positions come from the
+   redshift. The `Vpec` medians are flat at zero at every depth, so there is no H0 mismatch in the
+   velocities.
+5. **Every special value needs a note before it can bite.** 228 groups have `eDM = 0`, which is
+   harmless under Nusser's w = 1 but means infinite weight under inverse-variance weighting.
+
 **Prompt to start it:**
 
 ```text
@@ -175,6 +216,22 @@ missions: |
   [x] CF4 method breakdown tabulated from `CF4_Groups.csv` (§11)
   [x] Per-method sky maps, n(cz) and median-`Vpec` drift; no source drifts (§11)
   [ ] CF4 individual-galaxy table downloaded from EDD, loaded and counted per source
+plots:
+  - file: stage01_addendum_three_catalogs_sky.png
+    caption: "Tempel, 2MRS and CF4 on one sky (equatorial Mollweide)"
+    notes: >
+      Tempel is the one contiguous northern SDSS cap (about 7,400–7,600 deg²). 2MRS and CF4 cover the
+      sky outside the Zone of Avoidance, and 2MRS's edge at |b| = 5° is sharp, with zero galaxies inside
+      it. At cz < 10,000 km/s the SDSS footprint holds 4,481 CF4 groups and the 2MRS mask 12,077, so M
+      gives 2.7× more velocity centers.
+  - file: stage01_addendum_source_drift.png
+    caption: "Median ln-scale velocity against cz, per CF4 distance method"
+    notes: >
+      A zero-point error would make one source's median drift linearly with cz. None does: every
+      implied modulus offset is within about 1.7σ of zero (TF −0.020 ± 0.012, SNIa −0.034 ± 0.020,
+      6dF-like FP −0.034 ± 0.027, SDSS-like FP −0.003 ± 0.010 mag). The 6dF-like FP sits a constant
+      ~400 km/s above the SDSS-like FP. That is either a bulk flow or a calibration offset, and Stage 8B
+      decides which.
 -->
 
 **What this adds.** The two new inputs get the same scrutiny as the first three files: the 2MASS
@@ -218,6 +275,20 @@ source split in Stage 8B starts from known counts and known quirks.
 **Done when:** both new files load with their counts, every source has a sky map, an n(cz) and a
 median-Vpec(cz) curve, and any source whose median drifts has been flagged.
 
+**Lessons:**
+
+1. **2MRS needs converting before it can share a coordinate system.** Its velocities are
+   heliocentric only, unlike Tempel and CF4. Stage 3 converts them with Tempel's formula and apex.
+2. **No CF4 source shows a zero-point drift.** Every implied modulus offset is within about 1.7σ
+   of zero. But the 6dF-like FP sits a constant ~400 km/s above the SDSS-like FP. A constant offset
+   is not a drift: it is either a bulk flow or a calibration offset, and only Stage 8B can tell which.
+3. **The CF4 groups already split almost cleanly by method** (96% use one method), **but not by
+   source.** `Nfp` merges SDSS FP and 6dFGS FP, so separating the advisor's prime suspect needs the
+   individual-galaxy table.
+4. **M has far more velocity centers than T.** At cz < 10,000 the 2MRS mask holds 12,077 CF4 groups
+   against 4,481 in the SDSS footprint, 2.7× more, because 2MRS covers the whole sky outside the
+   Galactic plane.
+
 **Prompt to start it:**
 
 ```text
@@ -232,7 +303,7 @@ Re-execute the notebook (rule 11). Tell me which sources, if any, show a zero-po
 
 ---
 
-## Stage 2: Build the two analysis samples
+## Stage 2: Build the two analysis samples  → `notebooks/12_analysis_samples.ipynb`
 
 <!-- roadmap
 missions: |
@@ -241,6 +312,20 @@ missions: |
   [x] Counts match the roadmap, with the cz < 10,000 differences explained
   [x] 2MRS (M) pair built, counts matrix filled, sky plots of both pairs
   [ ] Phase B per-source velocity samples (waits for the CF4 individual table)
+plots:
+  - file: stage02_tempel_pair_sky.png
+    caption: "The T pair: Tempel tracers and the CF4 velocity sample, all depths"
+    notes: >
+      The 179,681 Tempel tracers (49,671 groups plus 130,010 singletons, one row each) and the 26,302
+      CF4 velocity centers fill the same cap, and no CF4 center falls outside it. pgc 39346 is the only
+      group in the footprint that is dropped: it has fV = 0, so its u is undefined (rule 5).
+  - file: stage02_twomrs_pair_sky.png
+    caption: "The M pair: 2MRS tracers and the CF4 velocity sample, all depths"
+    notes: >
+      The 43,526 2MRS galaxies and the 38,003 CF4 centers inside the 2MRS mask, which leaves only the
+      plane strip empty. Every T velocity center is also an M center. Without a cz cut, 38% of M's
+      centers lie beyond 20,000 km/s, where 2MRS has about 1,100 galaxies, so a depth cut for M is worth
+      revisiting.
 -->
 
 **What this stage is for.** Turn the raw tables into the two lists the estimator actually uses.
@@ -298,6 +383,22 @@ groups and singletons (decided 2026-10-15).
 match, and a sky plot of the two samples (all depths since 2026-10-18; cz < 10,000 before) shows
 CF4 centers sitting inside the Tempel footprint. **[2026-10-14]** The same holds for M, and the counts matrix is filled in.
 
+**Lessons:**
+
+1. **The group redshift is the mean member `zcmb`, which `dc` encodes, never `gVcmb`.** Cutting on
+   `gVcmb` gave the roadmap's 6,367 / 15,278, and the right column gives 6,360 / 15,272. 243
+   singletons differ from their own c·zcmb by more than 500 km/s in `gVcmb`.
+2. **A published zero can be a filler, not a measurement.** pgc 39346 has fV = 0 and a filler
+   `Vpwf` = 0. Four calibrators sit at `Vcmb` = 0 with undefined u. Each is dropped and counted,
+   never kept as a zero velocity (rule 5).
+3. **Without a cz cut the velocity sample runs to the end of the density field.** The sample grows
+   from 4,480 to 26,302, but the added centers are deep (median `Vcmb` 21,120 km/s, median σ_u
+   4,430 km/s), and 9,473 of them lie within 64 h⁻¹ Mpc of the z = 0.1 edge. The randoms have to
+   carry that edge.
+4. **The two density fields cover different volumes.** Every T velocity center is also an M center,
+   but 38% of the M centers lie beyond cz 20,000, where 2MRS has about 1,100 galaxies. Whether M
+   needs its own depth cut is a question this stage raised.
+
 **Prompt to start it:**
 
 ```text
@@ -315,18 +416,57 @@ explain any difference. Ask me before choosing the primary richness cut.
 
 ---
 
-## Stage 3: Put both catalogs in the same redshift-space coordinate system
+## Stage 3: Put both catalogs in the same redshift-space coordinate system  → `notebooks/14_redshift_space_positions.ipynb`
 
 <!-- roadmap
 current: true
 missions: |
-  [ ] Tempel's cosmology (`H0_TEMPEL`, `Om0_TEMPEL`) in `config/cosmology.py`; `H0_CF4` is already there
-  [ ] $s_T$, $s_V$ and $s_M$ in h⁻¹ Mpc from one χ(z) in Tempel's Ωm; `dc` converted with Tempel's h = 0.678
-  [ ] Check 0: Tempel and CF4 use the same CMB apex (dipole fits to `zcmb − zobs` and `Vcmb − Vhel`)
-  [ ] Check 1: `dc` rebuilt as the mean member χ(`zcmb`), agreeing to rounding except for the 750 incomplete groups
+  [x] Tempel's cosmology (`H0_TEMPEL`, `Om0_TEMPEL`) in `config/cosmology.py`; `H0_CF4` is already there
+  [x] $s_T$, $s_V$ and $s_M$ in h⁻¹ Mpc from one χ(z) in Tempel's Ωm; `dc` converted with Tempel's h = 0.678
+  [x] Check 0: Tempel and CF4 use the same CMB apex (dipole fits to `zcmb − zobs` and `Vcmb − Vhel`)
+  [x] Check 1: `dc` rebuilt as the mean member χ(`zcmb`), agreeing to rounding except for the 752 incomplete groups
   [ ] Check 2: pgc matches show no trend with cz or with the cosine to the CMB apex, at group and galaxy level
-  [ ] Check 3: 2MRS converted to the CMB frame with Tempel's additive formula and checked against Tempel and CF4
+      (frame passes, its apex structure fully explained; CF4's `Vhel` offset from Tempel grows with cz
+      and depends on the sample, cause not identified)
+  [x] Check 3: 2MRS converted to the CMB frame with Tempel's additive formula and checked against Tempel and CF4
   [ ] Frame decision written down (CMB primary, LG as a Stage 12 run)
+plots:
+  - file: stage03_cmb_apex_by_cz.png
+    caption: "Check 0: the CMB-correction dipole refitted per cz bin"
+    notes: >
+      Tempel's additive dipole is flat at 368.9 km/s in every bin, toward (263.3°, 47.9°) with rms
+      1.2 km/s, which is the rounding of `zcmb`. The exact form drifts down by z·V, from 367 to 337 km/s,
+      so Tempel used the additive form. Beyond 5,000 km/s CF4 is an exact additive dipole too: 371.0 km/s
+      toward (264.15°, 48.26°), rms 0.29 km/s. The two apexes are 0.64° and 2.1 km/s apart, which passes.
+  - file: stage03_dc_rebuild.png
+    caption: "Check 1: `dc` rebuilt as the mean member χ(`zcmb`)"
+    notes: >
+      With Tempel's h = 0.678 and Ωm = 0.308 (blue), all 178,929 tracers whose member rows are all
+      present lie inside the rounding allowance. The median fractional offset is −8×10⁻⁷. MDPL2's
+      h = 0.6777 (orange) would show as a +4.4×10⁻⁴ ramp. The 752 incomplete groups (right, orange)
+      are off by up to 24 Mpc, because members beyond the EDD clip still count in `dc`.
+  - file: stage03_radius_histograms.png
+    caption: "All four samples on one h⁻¹ Mpc axis (CMB frame, one χ(z))"
+    notes: >
+      Tempel tracers reach $s_T$ = 305 h⁻¹ Mpc (median 203), and the CF4 centers in SDSS reach 303
+      (median 208), so the velocity centers run to the end of the density field and their outer shells
+      are incomplete. 2MRS peaks at 40–100 h⁻¹ Mpc (median 84). One CF4 center in SDSS, 43 in the 2MRS
+      mask and 22 2MRS galaxies have cz ≤ 0 and no position. They are to be dropped in Stage 5.
+  - file: stage03_check2_group_residual.png
+    caption: "Check 2, group level: $s_V - s_T$ for 25,439 pgc matches"
+    notes: >
+      The scatter is legitimate: 0.05 h⁻¹ Mpc for singletons and pairs, 1–1.5 h⁻¹ Mpc for Ng ≥ 6, where
+      the Tully and Tempel group definitions differ. There is no apex trend. The median is flat to
+      cz ≈ 10,000 and then curves down to −0.11 h⁻¹ Mpc at cz ≈ 28,700, while the frame residual stays
+      flat. It comes from CF4's heliocentric velocities, which sit below Tempel's for the faint objects
+      that dominate this sample (−14 km/s for singletons at 28,500) but above them for 2MRS-bright
+      galaxies at the same depth. It is real but 4–5× below the 0.5 h⁻¹ Mpc inner bin.
+  - file: stage03_check3_twomrs_tempel.png
+    caption: "Check 3: $s_M - s_T$ for 8,848 2MRS × Tempel matches"
+    notes: >
+      2MRS, converted with Tempel's additive formula and the Check 0 apex, lands in Tempel's system to
+      rounding. The frame residual has median −0.005 km/s and σ 1.27 km/s, and galaxy-level $s_M$ − χ(`zcmb`)
+      is −0.004 ± 0.014 h⁻¹ Mpc. There is no trend with cz or with cos θ_apex.
 -->
 
 **What this stage is for.** Check, and make sure, that Tempel positions and CF4 positions are
@@ -376,6 +516,7 @@ checked against `SDSS_Tempel.csv`.
     is the rounding of `zcmb`. The additive form fits; the exact form leaves a trend with z.
   - CF4 gives 367.8 km/s toward (263.8°, 48.6°) with 24 km/s rms. Its `Vcmb` and `Vhel` are group
     averages, so its formula cannot be determined, and at this size it does not matter.
+    *(Superseded by the Stage 3 result below: beyond cz ≈ 5,000 it can, and it is additive.)*
   - Pass: the two apexes agree within about 1° and a few km/s.
 - *Check 1:* rebuild `dc` as the **mean of χ(`zcmb`) over the member rows**, in Mpc with
   H0 = 67.8 and Ωm = 0.308.
@@ -409,6 +550,98 @@ checked against `SDSS_Tempel.csv`.
   - *Check 3:* cross-match 2MASS with Tempel inside the SDSS footprint and with CF4 by `pgc`.
     |s_M − s_T| and |s_M − s_V| for the matches should show no trend with cz or with the cosine
     to the CMB apex.
+
+*Stage 3 result (notebook 14, library in `pipeline/sky_positions.py` and `pipeline/coordinate_checks.py`):*
+Tempel, CF4 and 2MRS share one system (CMB frame, h⁻¹ Mpc, χ(z) at Ωm = 0.308, observer at the origin).
+
+- **Check 0 passes:** the numbers above reproduce. Against the text above, CF4's formula *can* be
+  determined: beyond cz ≈ 5,000 its `Vcmb − Vhel` is an exact additive dipole, 371.0 km/s toward
+  (264.15°, 48.26°) with rms 0.29 km/s. That is 0.64° and 2.1 km/s from Tempel's apex.
+- **Check 1 passes:** all 178,929 complete tracers agree to rounding. The incomplete groups number 752,
+  not 750.
+- **Check 2 passes on the frame** (`d_frame` flat in cz) **and on the group scatter.**
+  - **[2026-11-02]** `d_frame`'s whole structure is the Check 0 apex difference. Subtracting the
+    predicted (V_CF4 − V_Tempel)·n̂ match by match leaves a median of −0.01 km/s, and the cos θ_apex
+    slope falls from −0.72 ± 0.05 to 0.02 ± 0.04 km/s. Its step in cos θ, not a straight line, is
+    because ΔV is mostly perpendicular to the apex (0.64° × 370 ≈ 4.1 km/s, against 2.1 km/s along it).
+  - Check 2 also found CF4's heliocentric velocities below Tempel's by an amount that grows with
+    depth: −4.4 km/s per 10⁴ km/s over all matches, −14 km/s and −0.11 h⁻¹ Mpc at cz ≈ 28,500 for
+    Tempel singletons. The cause is not identified.
+  - **[2026-11-02] The offset depends on the sample, not only on depth**, so it is not a CF4
+    redshift scale. Beyond cz 15,000, CF4 − Tempel `Vhel`, by Tempel `Ng` and by whether the galaxy is
+    in 2MRS:
+
+    | Ng | faint (not in 2MRS) | bright (in 2MRS) |
+    | --- | --- | --- |
+    | 1 | −8.5 km/s (7,400) | +0.9 (47) |
+    | 2–5 | −5.7 (8,344) | +3.0 (201) |
+    | 6–19 | −2.9 (1,823) | +4.3 (215) |
+    | 20+ | +2.2 (187) | +3.5 (127) |
+
+    The faint singletons are decisive (−8.52 ± 0.07 km/s). Each bright class on its own is only
+    0.3–3σ from zero, but Check 3 establishes the bright side at 8–14σ: 2MRS − CF4 = −2.0 ± 0.24,
+    −4.0 ± 0.44, −8.5 ± 0.59 km/s at cz 15,000–22,500, while 2MRS matches Tempel.
+    Brightness and richness move together here, and CF4's `Vhel` is a Tully-group average, so this
+    cannot tell a per-galaxy redshift source from CF4's group averaging. Settling it needs the CF4
+    individuals table (Stage 8B). A split by distance method is inconclusive: FP-only and TF-only
+    singletons agree below cz 10,000 (−1.7 and −1.4 km/s), and TF does not reach the depth where the
+    offset grows.
+  - The offset is far below what the estimator resolves in *position*. What remains open is its effect
+    on *u* (Stage 12), so the mission stays open until it is accepted.
+- **Check 3 passes:** 2MRS agrees with Tempel to rounding (≤ 0.01 h⁻¹ Mpc, no trend).
+  - **[2026-11-02] 2MRS × CF4, corrected reading.** s_M − s_V stays within ±0.03 h⁻¹ Mpc apart from
+    the deep bins. Its two trends are not the Check 2 offset, which would have the opposite sign
+    (CF4 low makes 2MRS − CF4 positive):
+    1. The cos θ_apex dipole (±0.02 h⁻¹ Mpc) is the apex difference, now seen over the whole sky.
+       Subtracting (V_Tempel − V_CF4)·n̂ takes the `d_frame` cos slope from −2.61 ± 0.04 to
+       0.02 ± 0.01 km/s.
+    2. The cz trend is that same dipole leaking into cz, because the deeper CF4 groups lie nearer the
+       apex: the median cos θ_apex rises from 0.1–0.3 below cz 12,500 to 0.66 beyond 25,000. After the subtraction, the `d_frame`
+       cz slope falls from −1.42 to −0.04 km/s per 10⁴ km/s. What remains is in `d_cz_hel`, where CF4
+       sits *above* 2MRS at depth (−2, −4, −8.5 km/s for 2MRS − CF4 at cz 15,000–22,500).
+  - The 3,231 galaxies in all three catalogs confirm it. 2MRS − Tempel is flat at about −0.4 km/s,
+    while CF4 − Tempel is +2.8 km/s at cz 15,000–20,000 and +8.1 at 20,000–30,000.
+  - The notebook 14 text (§6 and the §7 verdict) still calls this "CF4's redshift drift" and is to be
+    corrected.
+- One CF4 center in SDSS (43 in the 2MRS mask) has cz ≤ 0 and no position. Stage 5 must drop it:
+  26,302 → 26,301 for T and 38,003 → 37,960 for M.
+
+**Lessons:**
+
+1. **The published CMB-frame redshifts can be used as they are.** Tempel and CF4 both used the
+   additive formula, and their apexes differ by ≤ 0.05 h⁻¹ Mpc in position. Fitting the dipole per
+   cz bin identifies which formula a catalog used, which a single all-z fit cannot do.
+2. **Tempel's h and Ωm are fixed to rounding, so they are not a choice.** s_T = `dc` × 0.678 and
+   χ at Ωm = 0.308 everywhere on the data arm. MDPL2's cosmology belongs to the simulation arm only.
+3. **The radius comes from `dc`, never from the member rows**, because 752 groups have members
+   beyond the EDD clip. The same applies to any depth cut on Tempel: cut on `dc`, not on the
+   row-mean `cz_cmb`, which is biased for those groups.
+4. **CF4 is the catalog that does not agree to rounding.** Its `Vhel` offset from Tempel depends on
+   the sample (faint low, bright high). Position effects are bounded at ≤ 0.11 h⁻¹ Mpc. A u effect
+   is not yet bounded. Treat CF4's redshifts as the least certain of the three.
+5. **A trend has to be checked for sign and for the sky's coverage before it is named.** The
+   2MRS × CF4 cz trend looked like the Check 2 offset, but it had the opposite sign and was mostly the
+   apex dipole projected through the changing sky coverage. Fitting the predicted apex term and
+   splitting by sample are what settled both.
+6. **Depth coverage differs sharply between the pairs.** T × CF4 is matched in depth, and both stop
+   at the z = 0.1 clip. M × CF4 is not: about half its centers lie where 2MRS has almost no galaxies.
+
+**[2026-11-02] Carried forward from Stage 3.**
+
+- *Stage 4:* the Tempel randoms must reproduce the **sharp z = 0.1 edge** (s ≈ 293 h⁻¹ Mpc), which
+  is the EDD clip, not the survey's own fall-off. 9,473 of the 26,302 T centers lie within 64 h⁻¹ Mpc
+  of it. The 22 2MRS galaxies without a position leave the 2MRS sample, and its randoms treat them
+  the same way.
+- *Stage 5:* drop the velocity centers without a position (above).
+- *Stage 6:* **decision for you and Adi, a depth cut for M.** Recommendation: cz < 10,000 km/s
+  (12,077 centers) as the M primary, with all depths as a variant.
+- *Stage 8B:* find the cause of CF4's sample-dependent `Vhel` offset from the individuals table
+  (each galaxy's cz against its SDSS or 2MRS redshift), and test whether the non-dipolar CMB
+  correction of the CF4 groups below cz 5,000 (rms 51–76 km/s, i.e. 0.5–0.8 h⁻¹ Mpc) grows with a
+  group's angular size. If it does, `Vcmb` is the right group average. That matters mostly for the M
+  arm, whose centers are nearby.
+- *Stage 12:* the CF4 redshift-offset injection test.
+- *Notebook 14:* correct the §6 and §7 text on the CF4 offset, then re-execute (rule 11).
 
 **Minor, for later stages:** Tempel's `den3` and `den10` are smoothed on 3 and 10 **Mpc**, which is
 ≈ 2.0 and 6.8 h⁻¹ Mpc. It matters only if they are ever used for splits.
@@ -474,6 +707,13 @@ matters here and 2MRS was nearly full-sky.
 - **[2026-10-14] 2MASS randoms:** the same machinery applied to M. Its angular mask is the sky
   minus the Zone of Avoidance, and its radial selection is its own n(s), which is shallower than
   Tempel's.
+- **[2026-11-02] From Stage 3: the edge is sharp.** The Tempel field stops at the EDD file's
+  z = 0.1 clip (s ≈ 293 h⁻¹ Mpc; a few groups reach 305 through clipped members), not at the
+  survey's own fall-off. The CF4 centers in SDSS peak just inside it, and 9,473 of 26,302 lie within
+  64 h⁻¹ Mpc of it. Randoms that soften this edge would turn the missing far-side volume into a fake
+  line-of-sight dipole for a third of the centers. Check the data/random n(s) ratio in the last
+  bins specifically. The 22 2MRS galaxies with cz_cmb ≤ 0 have no position, so leave them out of
+  the 2MRS sample and its n(s) alike.
 
 ### [2026-10-14] Velocity-tracer selection and Malmquist bias
 
@@ -497,6 +737,82 @@ second, separate use of selection: it does not normalize ζ, it **removes a bias
   each source's σ_d, apply S_k, and run ζ₁ on the true u, the biased u and the corrected u. The
   corrected curve must return to the true one within noise, and the biased one shows the size of
   the effect.
+
+### [2026-11-03] External references for this stage, and how to use each
+
+Nothing online replaces our own Tempel randoms. Nobody publishes randoms for Tempel's groups,
+and ours must stop at the EDD z = 0.1 clip in any case. What follows are **checks and ready-made
+pieces**. Each data set sits in its own directory under `data/external/` (gitignored). Every paper
+has a `.txt` twin with `=== page N ===` markers in `literature/`.
+
+#### Data
+
+- **NYU-VAGC dr72 angular randoms.** `data/external/nyu_vagc_dr72_random/lss_random-0.dr72.dat`,
+  1,962,944 points from Zenodo record 10257229. This is Blanton's original NYU file; the NYU
+  server itself did not respond. The columns are RA, Dec (deg), mangle polygon index, and a fourth
+  column we have not identified. It is *not* polygon area, because it varies within a polygon, so
+  leave it alone until it is identified. It covers the DR7 Legacy footprint, the "main contiguous
+  area" Tempel used.
+  *Use:* an independent check of our HEALPix footprint. Take the fraction of VAGC randoms that fall
+  in our footprint, and map those that fall outside. Our footprint should agree with the VAGC
+  footprint apart from Tempel's own choices: DR12 instead of DR7, and contiguous area only. Any
+  disagreement has to be explained, and the map shows where it is. The randoms also resolve
+  bright-star holes, which nside 64 cannot. Those holes matter for an angular ratio map at small
+  scales. We still build our own footprint from the Tempel galaxies.
+- **Howlett+ 2022 SDSS peculiar-velocity catalog**, Zenodo record 6824749 v1.1.0, in
+  `data/external/howlett2022_sdss_pv/`. It is the source of CF4's SDSS FP subsample: CF4 Table 1
+  (p25 of 2209.11238) lists "sdss 34045, Howlett et al. (2022)".
+  - `SDSS_PV_public.dat`: 34,059 early-type galaxies, z_cmb < 0.1. Columns are described in
+    `data_description.pdf`. It already carries **Tempel 2017 group IDs** (`IDgroupT17`,
+    `NgroupT17`, `zcmb_group`; 0 means ungrouped). 15,178 of its 15,439 groups are in our
+    `SDSS_Tempel.csv`, and `Ng` agrees for every one of them. It also has `in_mask`, with the VAGC
+    mask (33,121 inside, 938 outside), `nbar` (h³ Mpc⁻³), and skew-normal log-distance PDFs:
+    `logdist_corr`, `_err`, `_alpha`. The `_corr` set is the preferred one, but its zero point
+    should be set at group level.
+  - `SDSS_randoms_public.dat`: 4,000,000 randoms (RA, Dec, z_cmb, nbar). They were built with the
+    method we plan for Tempel: mangle angular randoms in the VAGC mask, with redshifts drawn from a
+    smoothed spline fit to the data's n(z) (§2.6, p6 of 2201.03112).
+  - *Use 1, ready-made $S_k$:* these randoms *are* the selection function of the SDSS FP velocity
+    sample, both angular and radial. In the Malmquist step they serve directly as $S_k$ for
+    CF4's SDSS FP source, and in Phase B (Stage 8B) for that source alone. Only CF4's groups
+    and the 6dFGSv/TF sources need $S_k$ built from scratch.
+  - *Use 2, method template:* compare its data/random n(z) with ours for Tempel. The two samples
+    share sky and depth, so the edge behaviour near z = 0.1 should look alike. A softer edge in
+    our randoms than in theirs is a warning sign (see the 2026-11-02 note above).
+  - *Use 3, cross-checks for Stage 8B:* compare its `logdist_corr` with CF4's SDSS distance
+    moduli, galaxy by galaxy, to see CF4's zero-point recalibration. Its `IDgroupT17` lets us
+    check, independently, how CF4 assigned these galaxies to groups.
+  - **Not downloaded:** `mocks.tar.gz`, 2,048 mocks with true and observed FP parameters,
+    10.6 GB. They would not fit (about 9 GB free on 2026-11-03). They are the natural external
+    test for the Malmquist correction (Stage 9): the correction should take the observed logdist
+    back to the true one. Fetch them with
+    `curl -L -o mocks.tar.gz https://zenodo.org/api/records/6824749/files/mocks.tar.gz/content`
+    once there is space.
+
+#### Papers (`literature/<arXiv id>.pdf` + `.txt`)
+
+| Paper | Where | Use in this stage |
+| --- | --- | --- |
+| Branchini+ 2012, `1202.5206` | p4, eqs. 9–10, Fig. 1 | The 2MRS selection Nusser used: dN/ds = A S(s) s², with S from the F/T estimator (eq. 10). The curve is not tabulated. Compare its shape with our 2MRS n(s), or apply eq. 10 to our 2MRS file. Their sample is semi-volume-limited, so expect differences in shape, not identical curves. |
+| Lavaux & Hudson 2011 (2M++), `1105.6107` | p2, §2.4 | Precedent for our footprint recipe: they sample the VAGC `lss_combmask.dr72.ply` onto HEALPix at nside 512, and build the 2MRS mask and completeness maps. Their mask files themselves are on VizieR, which was unreachable. |
+| Howlett+ 2022, `2201.03112` | p3 (cuts table), p6 §2.6 (randoms) | How the SDSS FP selection and its randoms were made (see above). |
+| Tully+ 2023 (CF4), `2209.11238` | p9–10 (6dFGSv), p11 (SDSS FP) | $S_k$ for 6dFGSv: CF4 re-normalized its Malmquist correction with **J < 13.38** (formerly 13.65). So $S_k$ = the 6dF footprint × J < 13.38. |
+| Kourkchi+ 2020 (CF4-TF), `2009.00733` | p16–18, §3.2, Table 3 | Residual Malmquist bias of the TF sample, $B_\lambda(\mathrm{DM}) = 0.01\sum_n B_n(\mathrm{DM}-31)^n$ per band (r, i, z, W1). A candidate per-object correction for TF, and a number to check our MDPL2 test against. |
+| Boubel+ 2025, `2504.10589` | whole paper | Correction scheme option A for the advisor: selection inside the TF likelihood, with Malmquist and Eddington bias handled jointly. |
+| Duangchan+ 2026 (A&A), `2507.22236` | p2–6 | Correction scheme option B: forward modelling with 64 mocks that copy CF4's selection *per subtype*, in position and magnitude, followed by a simulation-based correction. Their finding: incompleteness amplifies the flow beyond about 160 h⁻¹ Mpc. Their per-subtype mock construction is a template for our MDPL2 Malmquist test. We found no public mocks or code; Zenodo 16929459 holds only a talk. |
+
+#### Not obtained, still worth having
+
+- **Tempel 2017 galaxy table from VizieR** (J/A+A/602/A100). Its `dist_edge` column (comoving
+  distance to the survey-mask border) and its `lam`, `eta` columns are missing from our
+  `SDSS_Tempel.csv`. `dist_edge` is the best independent test of our footprint *edges*: galaxies
+  our HEALPix map puts near the boundary should have small `dist_edge`. CDS
+  (`cdsarc.cds.unistra.fr`) timed out from this machine on 2026-11-03, even outside the sandbox,
+  and the Harvard mirror returned 502. Try again with
+  `curl -O https://cdsarc.cds.unistra.fr/ftp/J/A+A/602/A100/ReadMe` and take the galaxy table
+  it lists.
+- **The original VAGC mangle polygons** (`sdss.physics.nyu.edu/lss/dr72/`, unreachable). The
+  random file above stands in for them.
 
 **Done when:** both ratio plots are flat, and the random catalog is cached (rule 7) and reproducible
 from a seed. **[2026-10-14]** M has its randoms as well, every velocity sample has an S_k, and the
@@ -530,6 +846,7 @@ missions: |
   [ ] Bridge test: masked MDPL2 reproduces the full-box result, as a pytest test
   [ ] Sky sign gates ($\zeta_1 > 0$, $\xi_{Tu,1} < 0$) and the velocity-shuffle null pass
   [ ] Notebook 13: full box against masked, with and without randoms
+  [ ] Velocity centers without a position dropped (26,302 → 26,301 for T, 38,003 → 37,960 for M)
 -->
 
 **What this stage is for.** Make Nusser's estimator work on a **partial, non-uniform sky**, and
@@ -559,6 +876,11 @@ group-centered ξ_Tu alongside; it must come out as ≈ −ζ.
 positions, must give ζ₁ > 0 and ξ_Tu,1 < 0. A velocity shuffle must give a dipole consistent with
 zero.
 
+**[2026-11-02] From Stage 3:** `sky_positions` flags objects whose CMB-frame redshift is ≤ 0 with
+`has_position = False` and NaN coordinates instead of dropping them. The sky estimator's input step
+drops them explicitly as velocity centers (1 for T, 43 for M), since no shell can be centered there,
+and says how many it dropped. A NaN must never reach the shell sums.
+
 **Done when:** the bridge test and both sky sign gates pass as `pytest` tests, and the notebook shows
 the curves with and without the random correction.
 
@@ -586,6 +908,7 @@ full-catalog run. Use the reviewer agent on the finished diff.
 missions: |
   [ ] $\zeta^V$ and $\zeta^M$ with their monopoles for T × CF4 groups, default binning
   [ ] The same for M × CF4 groups
+  [ ] Depth cut for the M velocity centers decided with the advisor
   [ ] Nusser's linear 7 h⁻¹ Mpc binning, after confirming its edges
   [ ] Linear-theory overlay; sign, shape and amplitude against theory written down
   [ ] With and without the Malmquist correction
@@ -617,6 +940,14 @@ monopole looks healthy.
   The two fields have different biases, so compare T and M as ζ₁/b, not raw ζ₁. Apply the
   Malmquist correction from Stage 4 to the group velocities and show the curve with and without
   it.
+- **[2026-11-02] Decision for you and Adi: a depth cut for M.** Stage 3's radius histograms show the
+  M pair unmatched in depth. 2MRS peaks at 40–100 h⁻¹ Mpc and has almost nothing left by 250 (median
+  84), while the CF4 centers in the 2MRS mask have a second hump at 200–290 (the SDSS FP groups).
+  38% of them lie beyond cz 20,000, where 2MRS has about 1,100 galaxies, so their shells hold only
+  shot noise and enormous selection weights. Recommendation: **cz < 10,000 km/s as the M primary**
+  (Nusser's cut, 12,077 centers), with all depths as a variant. Without a common cut, T measures
+  mostly at 200–300 h⁻¹ Mpc and M mostly at 40–100, so the T-against-M comparison is like-for-like
+  only on the cz < 10,000 variant.
 
 **Done when:** both binnings are plotted, the sign and shape are right, and the amplitude
 relative to theory has been written down. **[2026-10-14]** This holds for both T and M.
@@ -737,6 +1068,15 @@ trusted. The advisor's suspect is 6dFGS.
   2. **Source against source on the same density field**, and where two sources overlap on the
      sky, on the **same region**. That separates "6dF differs" from "the southern sky differs"
      (cosmic variance).
+- **[2026-11-02] Two CF4 redshift questions from Stage 3**, both answerable only from the
+  individuals table:
+  1. *Why does CF4's `Vhel` offset from Tempel depend on the sample?* Beyond cz 15,000 it is
+     −8.5 km/s for faint Tempel singletons but +1 to +4 km/s for 2MRS-bright galaxies. Compare each
+     individual's cz with its SDSS (Tempel) and 2MRS redshift, by source and by brightness. That
+     separates a per-galaxy redshift source from Tully-group averaging.
+  2. *Is the non-dipolar CMB correction of the groups below cz 5,000 (rms 51–76 km/s) group
+     averaging?* Test whether it grows with a group's angular extent or membership. If it does,
+     `Vcmb` is the right group value. This matters mostly for the M arm.
 
 **What a problematic source looks like:**
 
@@ -904,6 +1244,16 @@ primary, with the bootstrap band.
 
 **[2026-10-14]** Also: T against M as the density field; groups against individuals; each CF4
 source (Stage 8B, now with the mock bands); and the Malmquist correction on against off.
+
+**[2026-11-02] CF4 redshift-offset injection (from Stage 3).** CF4's u is built from its own
+`Vcmb`, and with the ln ramp ∂u/∂cz ≈ 1, so a cz offset of δ becomes a u offset of about δ. Per
+object that is nothing (σ_u ≈ 4,430 km/s at depth). But it is coherent over about 9,000 deep
+centers, and a constant δu enters the group-centered dipole as about 3δu⟨µ⟩, with ⟨µ⟩ largest at
+the z = 0.1 edge. Shift u by the CF4 − Tempel offset **of the T velocity sample itself**, not by a
+CF4-wide average, since the offset depends on the sample. That is close to the singleton curve
+(notebook 14 §5): −2.5 km/s at cz 11,000 to −14 km/s at 28,500. Report the shift in ζ₁ and ξ_Tu,1
+as a ratio against the primary. If it is well inside the band, close the Check 2 mission of
+Stage 3.
 
 **Done when:** a table of all variants exists, with each one either consistent with the primary
 or explained.

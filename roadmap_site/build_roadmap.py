@@ -47,6 +47,9 @@ Everything else comes from the stage's own text, so nothing is written twice:
 
 - the short explanation is the paragraph opening with ``**What this ...**``;
 - the exit test is the paragraph opening with ``**Done when:**``;
+- what the stage taught us is the ``**Lessons:**`` line and the list right after it (one
+  list, items not separated by blank lines); optional, shown under the missions as
+  "What this stage taught us";
 - the prompt is the fenced block after the ``**Prompt to start it:**`` line;
 - the rest is the long explanation (subsections such as a ``###`` inside a stage
   stay part of it).
@@ -91,6 +94,8 @@ PLOT_KEYS = frozenset({"file", "caption", "notes"})
 
 SHORT_LEAD = re.compile(r"^\*\*What this[^*]*\*\*\s*")
 DONE_LEAD = re.compile(r"^\*\*Done when:?\*\*:?\s*")
+LESSONS_LEAD = re.compile(r"^\*\*Lessons:?\*\*:?\s*")
+LIST_START = re.compile(r"^\s*([-*+]|\d+[.)])\s")
 PROMPT_LEAD = re.compile(r"^\*\*Prompt to start it:?\*\*:?\s*$")
 HEADING = re.compile(r"^(#{1,6})\s+(.*?)\s*#*\s*$")
 FENCE = re.compile(r"^\s*(```|~~~)")
@@ -235,6 +240,7 @@ class Stage:
     plots: list[Plot]
     short: str
     done_when: str
+    lessons: str
     prompt: str
     long: str
 
@@ -404,7 +410,7 @@ def parse_stage(heading: str, line_no: int, meta_text: str, body: list[str], err
         current = False
 
     taken: set[int] = set()
-    short = done_when = prompt = ""
+    short = done_when = lessons = prompt = ""
     blocks = blocks_of(body)
     for k, (start, end) in enumerate(blocks):
         text = "\n".join(body[start:end])
@@ -412,6 +418,14 @@ def parse_stage(heading: str, line_no: int, meta_text: str, body: list[str], err
             short, taken = SHORT_LEAD.sub("", text), taken | set(range(start, end))
         elif not done_when and DONE_LEAD.match(text):
             done_when, taken = DONE_LEAD.sub("", text), taken | set(range(start, end))
+        elif not lessons and LESSONS_LEAD.match(text):
+            lessons, taken = LESSONS_LEAD.sub("", text), taken | set(range(start, end))
+            for nxt_start, nxt_end in blocks[k + 1 :]:
+                if lessons.strip() or not LIST_START.match(body[nxt_start]):
+                    break
+                lessons, taken = "\n".join(body[nxt_start:nxt_end]), taken | set(range(nxt_start, nxt_end))
+            if not lessons.strip():
+                errors.append(f"{where}: '**Lessons:**' must be followed by its list")
         elif not prompt and PROMPT_LEAD.match(text):
             nxt = blocks[k + 1] if k + 1 < len(blocks) else None
             if nxt is None or not FENCE.match(body[nxt[0]]):
@@ -438,6 +452,7 @@ def parse_stage(heading: str, line_no: int, meta_text: str, body: list[str], err
         plots=parse_plots(meta.get("plots"), where, errors),
         short=short,
         done_when=done_when,
+        lessons=lessons,
         prompt=prompt,
         long=long_md,
     )
@@ -667,6 +682,12 @@ def render_stage(stage: Stage, index: int, travelled: bool) -> str:
             f'<span><span class="sr">{sr}</span>{render_inline(mission.text)}</span></li>'
         )
     out.append("</ul>")
+
+    if stage.lessons:
+        out.append(
+            '<div class="lessons"><div class="lessons-label">What this stage taught us</div>'
+            f"{render(stage.lessons)}</div>"
+        )
 
     if stage.done_when:
         done_html = render(stage.done_when)
@@ -1087,6 +1108,16 @@ details[open] > summary .chev { transform: rotate(90deg); }
 .done-when { margin-top: 1.05rem; font-size: 0.96875rem; color: var(--ink-2); }
 .done-label { font-weight: 620; color: var(--ink); }
 .done-when p { margin: 0; }
+
+/* what this stage taught us */
+.lessons {
+  margin-top: 1.05rem; padding: 0.75rem 1rem 0.85rem; border-radius: 12px;
+  background: var(--accent-wash); font-size: 0.96875rem;
+}
+.lessons-label { font-weight: 620; color: var(--ink); }
+.lessons ol, .lessons ul { margin: 0.35rem 0 0; padding-left: 1.3rem; }
+.lessons li + li { margin-top: 0.3rem; }
+.lessons p { margin: 0.35rem 0 0; }
 
 /* prompt box */
 .prompt { margin-top: 1.15rem; background: var(--sunk); border-radius: 12px; }

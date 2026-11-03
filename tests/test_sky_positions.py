@@ -166,6 +166,17 @@ class TestApex:
         with pytest.raises(ValueError):
             sp.cmb_correction_velocity([0.1], [0.1], "relativistic")
 
+    def test_apex_difference_leaves_only_what_it_does_not_explain(self) -> None:
+        glon, glat = _sky(n=500)
+        delta = 4.0 * sp.galactic_unit_vector(APEX_L + 90.0, 0.0)[0]
+        offset = 1.5
+        d_frame = sp.galactic_unit_vector(glon, glat) @ delta + offset
+        matches = pd.DataFrame({"glon": glon, "glat": glat, "d_frame": d_frame})
+        out = cc.with_apex_difference(matches, delta)
+        np.testing.assert_allclose(out["d_frame_less_apex"], offset, atol=1e-12)
+        assert np.ptp(out["apex_term"]) > 7.0  # the term spans +-|delta| over the sky
+        assert "apex_term" not in matches  # a copy
+
     def test_agreement_tolerances(self) -> None:
         a = _planted_apex()
         tilted = sp.fit_velocity_dipole(np.eye(3), (APEX_SPEED + 2.0) * sp.galactic_unit_vector(APEX_L + 0.5, APEX_B)[0])
@@ -286,6 +297,24 @@ class TestDcRebuild:
         clipped = out[~out["complete"]]
         assert list(clipped["IDg"]) == [8]
         assert (clipped["residual"].abs() > clipped["allowance"]).all()
+
+    def test_residual_split_by_richness_and_membership(self) -> None:
+        cut = cc.CoordinateCheckConfig().offset_split_min_cz
+        matches = pd.DataFrame(
+            {
+                "pgc": [1, 2, 3, 4, 5, 6],
+                "Ng": [1, 1, 3, 3, 1, 1],
+                "cz": [cut + 1.0] * 5 + [cut - 1.0],
+                "d_cz_hel": [-8.0, 2.0, -5.0, 4.0, -8.0, -99.0],
+            }
+        )
+        out = cc.residual_by_richness_and_membership(matches, "d_cz_hel", members=np.array([2, 4]))
+        assert out.loc[(False, "Ng = 1"), "n"] == 2  # pgc 6 is below the cut
+        assert out.loc[(False, "Ng = 1"), "median"] == -8.0
+        assert out.loc[(True, "Ng = 1"), "median"] == 2.0
+        assert out.loc[(False, "2 <= Ng < 6"), "median"] == -5.0
+        assert out.loc[(True, "2 <= Ng < 6"), "median"] == 4.0
+        assert (False, "Ng >= 20") not in out.index  # empty classes left out
 
     def test_another_h_shows_as_a_fixed_fractional_offset(self) -> None:
         out = cc.rebuild_tempel_dc(_tempel_catalog(), h=conventions.HUBBLE_PARAM)
