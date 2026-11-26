@@ -677,11 +677,15 @@ change, stop and ask.
 
 <!-- roadmap
 missions: |
-  [ ] HEALPix footprint from the Tempel galaxies, area ≈ 7,600 deg²
+  [ ] Double-correction audit: what each CF4 source's DM already contains, written down before any $S_k$
+  [ ] Mangle mask cut to Tempel's cap and rasterized at nside ≥ 512; area difference from the galaxy-pixel estimate explained
+  [ ] Shuffle and smoothed n(s) both run, one chosen as primary, the z = 0.1 edge kept
   [ ] Seeded, cached Tempel randoms; data/random n(s) and angular ratios flat
+  [ ] Completeness tested: data/random angular ratio before and after weighting by the VAGC window
   [ ] 2MRS randoms from the same machinery
+  [ ] CF4 randoms for each velocity sample
   [ ] A selection function $S_k$ for every velocity sample; correction scheme chosen with the advisor
-  [ ] MDPL2 Malmquist test: the corrected $\zeta_1$ recovers the true one
+  [ ] MDPL2 Malmquist test, with injected scatter matching eDM per source: the corrected $\zeta_1$ recovers the true one
 -->
 
 **What this stage is for.** Describe **where Tempel could have seen a group**, as opposed to where
@@ -694,19 +698,74 @@ like a physical signal.
 Recommended approach: use randoms rather than Nusser's 1/φ weights, because the angular mask
 matters here and 2MRS was nearly full-sky.
 
-- **Angular:** a HEALPix footprint built from Tempel galaxies (nside 64; check that the area is
-  ≈ 7,600 deg²).
-- **Radial:** draw random radii from the smoothed Tempel group n(s) ("shuffle" method), with 20–50×
-  as many randoms as data.
+- **Angular [changed 2026-11-04]:** the real mangle mask (`lss_combmask.dr72.ply`), cut to Tempel's
+  contiguous cap and rasterized at nside ≥ 512. It replaces the galaxy-built nside 64 footprint.
+  An nside 64 pixel is 0.9°, about 3 h⁻¹ Mpc at s = 200, which is the size of the inner bins. Edge
+  pixels count whole and bright-star holes are missed. Galaxies cannot define a finer map: the
+  occupied area is 7,621 / 7,394 / 7,206 / 5,621 / 2,623 deg² at nside 32 / 64 / 128 / 256 / 512
+  *(measured 11-04)*, because at about 40 galaxies per deg² the map runs out of galaxies. Two
+  things to handle:
+  - The VAGC file covers more than Tempel's cap: 10% of its randoms fall outside the Tempel
+    region *(measured 11-04)*. Cut those away.
+  - Tempel is DR12 and the mask is DR7, so some Tempel objects will fall outside it. In Howlett's
+    SDSS catalog 2.8% do (`in_mask`). Map the Tempel objects that fall outside, and explain them.
+- **Area [changed 2026-11-04]:** the target is the 7,221 deg² of the Martínez et al. (2009) mask,
+  which Tempel et al. (2014) used (paper value, to verify). Tempel et al. (2017) say the main area
+  is unchanged. It applies to the cut cap, because the whole VAGC mask covers 7,818.3 deg² *(summed
+  from its polygons, 11-04)*. Keep both numbers, and show why they differ. The expected answer is
+  that the 7,400–7,600 of Stage 1 is edge-pixel inflation: counting nside 64 edge pixels at half
+  weight gives 7,176 deg² *(measured 11-04)*. A second difference needs explaining too. 89.8% of the
+  VAGC randoms lie in the Tempel region, so the mask itself should cover about 7,020 deg² there,
+  about 3% below 7,221. Inside whole pixels the randoms average about 3% below their mean density
+  over the mask, so holes are a likely cause, and they would bring the figure back to about 7,220 if
+  filled. That is an estimate from random counts. Measure it from the rasterized mask.
+- **Stage 2's membership footprint [2026-11-04]:** Stage 2 selects CF4 objects with an nside 32
+  footprint. Of those 26,303 groups, 190 fall outside an nside 64 galaxy footprint and 312 outside
+  nside 128 *(measured 11-04)*. When the real mask lands, decide whether such objects stay as
+  centers, and report any change to the 26,302. A center just outside the mask still has shells
+  that overlap it.
+- **Radial [changed 2026-11-04]:** "shuffle" and "smoothed" are two different methods. Use 20–50×
+  as many randoms as data with either one, and take n(s) from the 179,681-tracer sample itself, not
+  from the galaxies. The FoF linking length and the singleton fraction change with distance, though
+  mildly: the singleton fraction goes from 0.71 to 0.74, and mean `Ng` from 1.85 to 1.62, between
+  s = 20–100 and 250–295 h⁻¹ Mpc *(measured 11-04)*.
+  - *Shuffle* copies the real radii. It keeps the z = 0.1 edge by construction, but it also copies
+    real radial structure into the randoms, which removes true line-of-sight modes. That structure
+    is well above the noise: 10.7% rms about a σ = 15 h⁻¹ Mpc Gaussian smooth, in 5 h⁻¹ Mpc bins over
+    40 < s < 280, against 1.9% from Poisson *(measured 11-04; smoothing curvature inflates it)*. The
+    cost should be largest nearby, where the cap holds the fewest modes. That is reasoning, not a
+    measurement.
+  - *A smoothed fit* carries no structure, but a poor fit creates fake features, and it softens the
+    edge unless told not to. In the 5 h⁻¹ Mpc bin at s ≈ 297, the raw count is 101 and that Gaussian
+    smooth gives 1,774 *(measured 11-04)*. Fit below the edge and keep the measured edge explicitly.
+  - *Recommendation:* shuffle as primary, smoothed with a hard edge as the check, and quote the
+    difference in ζ₁ as a systematic. The choice is made when the stage starts.
+- **Completeness [2026-11-04]:** all 653,897 polygons of `lss_combmask` have weight exactly 1
+  *(measured 11-04)*, so it is not a completeness map. Completeness is in the sample window files,
+  `window.dr72<sample>0.ply`, with weights such as 0.928. Tempel is DR12 and that weight is DR7, so
+  test first: plot the data/random angular ratio before and after weighting by it, and weight the
+  randoms only if the ratio gets flatter.
+- **The tracer population changes with depth [2026-11-04].** The flux limit leaves only luminous
+  groups far away, so b_T depends on s. Tracer density falls by 5.3× between s = 20–100 and
+  250–295 h⁻¹ Mpc *(measured 11-04)*. Randoms correct the counts, not the bias. Stage 7 measures
+  b_T by depth. Luminosity weighting is an option to decide with the advisor, and it needs
+  magnitudes that our EDD table does not have (see "Not obtained" below).
 - **Plots and what to look for:** data/random n(s) ratio flat at 1; data/random angular ratio map
-  flat apart from Poisson noise; and n̄_T(s) in groups per (h⁻¹ Mpc)³. That last curve falls
-  steeply because of the flux limit. If it does not fall, the sample is not what you think it is.
+  flat apart from Poisson noise, before and after completeness weighting **[2026-11-04]**; and
+  n̄_T(s) in groups per (h⁻¹ Mpc)³. That last curve falls steeply because of the flux limit. If it
+  does not fall, the sample is not what you think it is.
 - Nusser's velocity-centered ζ only needs the **density** tracer's selection *for its
   normalization*. CF4 objects are the centers, and their selection only decides which centers
   exist. The mocks model that.
+- **CF4 randoms [2026-11-04]:** build a random catalog for each velocity sample as well, with its
+  footprint and n(cz). The methodological note asks for them: step 4 of its recipe (p12), and §6
+  (p7) for calibrating "exact normalization and multipole mixing". Eq. 28 itself does not need them,
+  because its denominators are realized pairs with the real CF4 objects. These randoms are S_k
+  (below) in another form, so build the two once. Howlett's randoms already cover SDSS FP.
 - **[2026-10-14] 2MASS randoms:** the same machinery applied to M. Its angular mask is the sky
   minus the Zone of Avoidance, and its radial selection is its own n(s), which is shallower than
-  Tempel's.
+  Tempel's. **[2026-11-04]** The mask already exists from its published definition: use
+  `in_twomrs_footprint`, not the places where galaxies happen to be.
 - **[2026-11-02] From Stage 3: the edge is sharp.** The Tempel field stops at the EDD file's
   z = 0.1 clip (s ≈ 293 h⁻¹ Mpc; a few groups reach 305 through clipped members), not at the
   survey's own fall-off. The CF4 centers in SDSS peak just inside it, and 9,473 of 26,302 lie within
@@ -720,8 +779,67 @@ matters here and 2MRS was nearly full-sky.
 The advisor wants the velocities corrected for Malmquist bias with a selection function. That is a
 second, separate use of selection: it does not normalize ζ, it **removes a bias from u itself**.
 
-- **The mechanism.** A distance indicator scatters log-distance by σ_d (roughly 0.2 dex for FP and
-  TF). The objects that scatter one way are not balanced by those that scatter the other way, for
+**[2026-11-04] First step: the double-correction audit.** CF4's distance moduli are already partly
+corrected. For each source, write down what is already inside DM before designing any S_k. A
+correction applied on top of these would count the same bias twice.
+
+**[2026-11-11] The audit, done.** CF4 merges subsamples by changing **zero points only**. In CF4's
+words, "we do not make relative changes in moduli within a subsample" (p5). The same holds for FP
+(p12), SBF (p15), SN Ia (p16), and the global −0.138 mag shift (eq. 8, p23). So any bias correction
+inside a modulus comes from that subsample's own paper, and CF4 adds none when it merges. "Centers"
+counts the 26,302 Stage 2 centers whose group has that method (`N*` > 0; 25,808 use one method
+only). Pages are Tully+ 2023 (`2209.11238`) unless another paper is named.
+
+| CF4 method → subsample (N, CF4 Table 1 p25) | Centers | Already inside DM | Where | Status |
+| --- | --- | --- | --- | --- |
+| FP → sdss (34,045, Howlett+ 22) | 22,616 FP in all; nearly all SDSS inside the cap | A truncated-Gaussian likelihood. Each candidate log-distance ratio η is divided by f_n(η), the fraction of the FP that would pass 10 ≤ m_r ≤ 17 at that distance. The prior on η is flat, so there is no density field and no r² term in eq. 21, although the text (p13) says f_n also reflects "more volume". Mocks show it unbiased against z (Fig. 10). The group-richness bias is removed by fitting separate FPs by richness | CF4 p11; Howlett p10 eq. 16, p12 (flat prior), p13 eq. 21–23, p14 Fig. 10, p16 §5.3 | Verified |
+| FP → 6dfgsv (7,099, Qin+ 18) | ≈ 0 (δ < 0) | PDF normalization redone with an ad hoc J < 13.38, not the nominal 13.65, tuned in 128 mocks until H(cz) is flat and the bulk flow is recovered. The cause of the mismatch is "unclear" (p10). The morphology (M-type) trend is refitted | CF4 p8–11, Figs. 4–6 | Verified. Whether the normalization has a volume term is not stated (Springob+ 14 not local) |
+| FP → smac, enear, efar (689 / 447 / 696) | few | Zero point only, plus 3.5σ rejection | CF4 p11–12 | Nothing stated. Source papers not local |
+| TF → cf4 (9,323, **Kourkchi+ 2022 BTFR**) | 3,711 TF in all | Not K20b: CF4 says the K20b distances "are affected by a bias" (p4) and replaces them with the baryonic TFR. The H I flux-limit bias is removed with a pseudo gas mass, log M̃_HI = log M_HI − C_adj V_ls, with C_adj ≈ 5.6 × 10⁻⁵ per km/s. The fit is inverse, with residuals along linewidth, to limit Malmquist bias. Mocks show the adjustment recovers the input distances | CF4 p4, p25; K22 (`2201.13023`) p4 eq. 7, p6–7 §2.5, p8 eq. 9 | Verified. **Caveat below** |
+| TF → 2mtf (1,712) | (in the 3,711) | The K20b §5 adjustment for the trend with redshift; velocities below 2,000 km/s rejected | CF4 p5; K20b p29 | Verified |
+| TF → cf2, sfi, spitzer, flat (4,014 / 3,938 / 2,202 / 546) | (in the 3,711) | Zero point only. `flat` passes the constancy test for H_i | CF4 p5–7 | Nothing stated |
+| SN Ia (15 subsamples, 1,008) | 327 | Zero points only. "Selection cuts differ between programs" | CF4 p16 | Nothing stated. Whether Pantheon+'s BBC bias corrections came along is unchecked |
+| SBF (optical, IR) (480) | 67 + 18 | Zero points only | CF4 p14–15 | Nothing stated |
+| SN II (de Jaeger, 94) | 23 | Nothing described | CF4 p16 | Nothing stated |
+| Calibrators: TRGB, CPLR, maser | 132 (`Nc`) | They set the absolute scale and are not shifted | CF4 p20–23 | Not tracers to correct |
+
+The old draft of this table cited Kourkchi+ 2020's B_λ(DM) for TF. That describes the superseded K20b
+distances, not CF4's.
+
+**What no modulus contains.** No source has an inhomogeneous term (a prior that uses the density
+field). Bias from the conversion is not in any modulus either. It arises when DM is turned into u and
+is handled by our ln ramp, which assumes symmetric errors in ln d. Howlett's PDFs are skewed, and
+how CF4 reduced each skew-normal PDF to one modulus is not stated.
+
+**K22 caveat [2026-11-11, our derivation, not in the paper].** The adjustment uses each galaxy's own
+*observed* V_ls, which contains its peculiar velocity. The mocks were pure Hubble flow (K22 p6,
+step 1), so they could not see the consequence. A galaxy with true u gets an extra −C_adj u in
+log M̃_HI, which moves its inferred log d by +½ f_g C_adj u, where f_g is the gas share of its baryonic
+mass. The measured u is then damped by a factor of about 1 − (ln 10 / 2) C_adj f_g cz. That is about
+10–20% at cz = 10,000 km/s for f_g = 0.15–0.3. It shrinks real velocities toward zero rather than
+offsetting them. K22 notes that distant targets are mostly stellar-dominated, which limits it. Test:
+the TF-versus-FP velocity slope in the 415 centers with more than one method, and the TF-only
+Stage 8B run.
+
+**[2026-11-04] Which bias is left? Open question for the advisor (see the advisor notes).** Our
+positions are at redshift, as Nusser's were, so classic inhomogeneous Malmquist bias from placing
+objects at their measured distance largely does not arise. The limit is small scales: Nusser (p5)
+says the redshift-space version survives on "a few Mpc", and our inner shells reach that scale. Two
+things remain:
+
+- (a) Selection bias at fixed cz.
+- (b) Lognormal bias. The Watkins–Feldman part of our ln ramp is designed to handle it. It assumes
+  symmetric log-distance errors, and Howlett's PDFs are skewed (median `logdist_corr_alpha` −0.55,
+  *measured 11-04*). For comparison, Hoffman et al. 2024 treat this bias with BGc.
+
+Strauss & Willick 1995 is the reference for the taxonomy.
+
+- **The mechanism.** A distance indicator scatters log-distance by σ_d: ~0.1 dex for FP and TF;
+  take the per-source value from the CF4 eDM columns **[corrected 2026-11-04, was 0.2 dex]**. Median
+  eDM/5 in `CF4_Groups.csv` is 0.102 for FP, 0.082 for TF, 0.030 for SNIa, and 0.017–0.042 for SBF, and
+  Howlett's PDFs give 0.092 dex, or 23.6% *(measured 11-04)*. `eDM_FP` merges SDSS and 6dFGS, so
+  splitting those two needs the individuals table.
+  The objects that scatter one way are not balanced by those that scatter the other way, for
   two reasons. One is that the survey's selection (flux, size, depth) cuts off one side. The other
   is that the number of objects along the line of sight changes with distance (r² n(r), and the
   local density gradients). So at a fixed cz, the measured u is biased. Because the bias depends
@@ -732,11 +850,13 @@ second, separate use of selection: it does not normalize ζ, it **removes a bias
   each source in Phase B) from its n(cz) and its sky coverage. Then implement one correction scheme,
   chosen with the advisor (see the open questions in the advisor notes). One option is a per-object
   correction from S_k, homogeneous or inhomogeneous with the T/M density field. The other is a
-  forward model in the Stage 9 mocks.
+  forward model in the Stage 9 mocks. **[2026-11-04]** Whichever is chosen, it corrects only what
+  the audit shows is still missing.
 - **Validate on MDPL2 first.** Take a carved sphere, give the halos log-normal distance errors at
   each source's σ_d, apply S_k, and run ζ₁ on the true u, the biased u and the corrected u. The
   corrected curve must return to the true one within noise, and the biased one shows the size of
-  the effect.
+  the effect. **[2026-11-04]** Check that the injected scatter matches the data's eDM distribution
+  per source.
 
 ### [2026-11-03] External references for this stage, and how to use each
 
@@ -752,13 +872,26 @@ has a `.txt` twin with `=== page N ===` markers in `literature/`.
   server itself did not respond. The columns are RA, Dec (deg), mangle polygon index, and a fourth
   column we have not identified. It is *not* polygon area, because it varies within a polygon, so
   leave it alone until it is identified. It covers the DR7 Legacy footprint, the "main contiguous
-  area" Tempel used.
-  *Use:* an independent check of our HEALPix footprint. Take the fraction of VAGC randoms that fall
-  in our footprint, and map those that fall outside. Our footprint should agree with the VAGC
-  footprint apart from Tempel's own choices: DR12 instead of DR7, and contiguous area only. Any
-  disagreement has to be explained, and the map shows where it is. The randoms also resolve
-  bright-star holes, which nside 64 cannot. Those holes matter for an angular ratio map at small
-  scales. We still build our own footprint from the Tempel galaxies.
+  area" Tempel used. **[2026-11-04]** The NYU page says these randoms have equal surface density
+  (outside the bright-star mask), and that the polygon index refers to `lss_geometry`, not
+  `lss_combmask` (636,921 and 653,897 polygons).
+  *Use [changed 2026-11-04]:* an independent check of the rasterized mask and of its area. The cap
+  holds 1.76 M of them, about 10× the tracers, which is too few for our randoms, so we still draw
+  our own.
+- **NYU-VAGC mangle mask [2026-11-04].** `data/external/nyu_vagc_dr72_mask/ascii/lss_combmask.dr72.ply`,
+  the survey geometry, 367,947,292 bytes and 653,897 polygons, 7,818.3 deg². Complete and checked on
+  2026-11-04, after an earlier download stopped at about a third of the file. All its weights are 1.
+  Whether it already excludes the bright-star mask is still to be checked against `lss_bsmask`.
+  To fetch it again: the server omits its intermediate certificate, so `curl` fails with exit 60. Fetch that
+  certificate from the URL in the server's certificate, verify it against the system roots, and
+  pass the bundle with `--cacert`. Do not use `-k`. Base URL:
+  `https://sdss.physics.nyu.edu/lss/dr72/ascii/`.
+  *Use:* the angular selection of the Tempel randoms.
+- **NYU-VAGC window, for completeness [2026-11-04, not downloaded].** `window.dr72<sample>0.ply`,
+  about 90 MB, in `https://sdss.physics.nyu.edu/lss/dr72/<sample>/0/lss/`. Its polygon weights are
+  the completeness. `bright` and `safe` stop at r = 17.6, while `full` and `all` allow 20, with the
+  limits by position in each `mregion` file. Choose the sample that fits Tempel's r < 17.77 when the
+  completeness test is run.
 - **Howlett+ 2022 SDSS peculiar-velocity catalog**, Zenodo record 6824749 v1.1.0, in
   `data/external/howlett2022_sdss_pv/`. It is the source of CF4's SDSS FP subsample: CF4 Table 1
   (p25 of 2209.11238) lists "sdss 34045, Howlett et al. (2022)".
@@ -775,29 +908,34 @@ has a `.txt` twin with `=== page N ===` markers in `literature/`.
   - *Use 1, ready-made $S_k$:* these randoms *are* the selection function of the SDSS FP velocity
     sample, both angular and radial. In the Malmquist step they serve directly as $S_k$ for
     CF4's SDSS FP source, and in Phase B (Stage 8B) for that source alone. Only CF4's groups
-    and the 6dFGSv/TF sources need $S_k$ built from scratch.
+    and the 6dFGSv/TF sources need $S_k$ built from scratch. **[2026-11-04]** This $S_k$ describes
+    the sample, for example in mocks. It does not justify a second correction, since these PDFs
+    already encode the selection (see the audit above).
   - *Use 2, method template:* compare its data/random n(z) with ours for Tempel. The two samples
     share sky and depth, so the edge behaviour near z = 0.1 should look alike. A softer edge in
     our randoms than in theirs is a warning sign (see the 2026-11-02 note above).
   - *Use 3, cross-checks for Stage 8B:* compare its `logdist_corr` with CF4's SDSS distance
     moduli, galaxy by galaxy, to see CF4's zero-point recalibration. Its `IDgroupT17` lets us
     check, independently, how CF4 assigned these galaxies to groups.
-  - **Not downloaded:** `mocks.tar.gz`, 2,048 mocks with true and observed FP parameters,
-    10.6 GB. They would not fit (about 9 GB free on 2026-11-03). They are the natural external
-    test for the Malmquist correction (Stage 9): the correction should take the observed logdist
-    back to the true one. Fetch them with
-    `curl -L -o mocks.tar.gz https://zenodo.org/api/records/6824749/files/mocks.tar.gz/content`
-    once there is space.
+  - **Mocks [changed 2026-11-04]:** `mocks.tar.gz`, 2,048 mocks with true and observed FP
+    parameters, 10,643,218,721 bytes. They live on the larger disk, through the symlink
+    `data/external/howlett2022_sdss_pv_mocks`. Complete and checked on 2026-11-04: size and MD5
+    (`9ba3e8876f6f08a2af00d30cbf1c6cd9`) match Zenodo and `gzip -t` passes. Not yet unpacked. They
+    are the natural external test for the Malmquist correction (Stage 9): the correction should take
+    the observed logdist back to the true one. To fetch again, use
+    `curl -L -C - -o mocks.tar.gz https://zenodo.org/api/records/6824749/files/mocks.tar.gz/content`.
+    Use this record, because Zenodo 6640513 is the superseded v1.0.0.
 
 #### Papers (`literature/<arXiv id>.pdf` + `.txt`)
 
 | Paper | Where | Use in this stage |
 | --- | --- | --- |
 | Branchini+ 2012, `1202.5206` | p4, eqs. 9–10, Fig. 1 | The 2MRS selection Nusser used: dN/ds = A S(s) s², with S from the F/T estimator (eq. 10). The curve is not tabulated. Compare its shape with our 2MRS n(s), or apply eq. 10 to our 2MRS file. Their sample is semi-volume-limited, so expect differences in shape, not identical curves. |
-| Lavaux & Hudson 2011 (2M++), `1105.6107` | p2, §2.4 | Precedent for our footprint recipe: they sample the VAGC `lss_combmask.dr72.ply` onto HEALPix at nside 512, and build the 2MRS mask and completeness maps. Their mask files themselves are on VizieR, which was unreachable. |
+| Lavaux & Hudson 2011 (2M++), `1105.6107` | p2, §2.4, p9 | Precedent for our footprint recipe: they sample the VAGC `lss_combmask.dr72.ply` onto HEALPix at nside 512, and build the 2MRS mask and completeness maps. Their mask files themselves are on VizieR, which was unreachable. **[2026-11-04]** Optional cross-check on the 2MRS n(s): their K-band LF, α = −0.94, M* − 5 log h = −23.28 (paper value, to verify). It was fitted at K < 11.5, \|b\| > 10, not our K ≤ 11.75. |
 | Howlett+ 2022, `2201.03112` | p3 (cuts table), p6 §2.6 (randoms) | How the SDSS FP selection and its randoms were made (see above). |
-| Tully+ 2023 (CF4), `2209.11238` | p9–10 (6dFGSv), p11 (SDSS FP) | $S_k$ for 6dFGSv: CF4 re-normalized its Malmquist correction with **J < 13.38** (formerly 13.65). So $S_k$ = the 6dF footprint × J < 13.38. |
-| Kourkchi+ 2020 (CF4-TF), `2009.00733` | p16–18, §3.2, Table 3 | Residual Malmquist bias of the TF sample, $B_\lambda(\mathrm{DM}) = 0.01\sum_n B_n(\mathrm{DM}-31)^n$ per band (r, i, z, W1). A candidate per-object correction for TF, and a number to check our MDPL2 test against. |
+| Tully+ 2023 (CF4), `2209.11238` | p9–11 (6dFGSv), p11 (SDSS FP) | $S_k$ for 6dFGSv: CF4 re-normalized its Malmquist correction with **J < 13.38** (formerly 13.65). So $S_k$ = the 6dF footprint × J < 13.38. **[2026-11-04]** That correction, and the morphology one, are already in the moduli, so this $S_k$ describes the sample and is not a second correction. |
+| Kourkchi+ 2020 (CF4-TF), `2009.00733` | p16–19, §3.2, Table 3 | Residual Malmquist bias of the TF sample, $B_\lambda(\mathrm{DM}) = 0.01\sum_n B_n(\mathrm{DM}-31)^n$ per band (r, i, z, W1). **[changed 2026-11-11]** It describes the K20b distances, which CF4 superseded with the K22 BTFR (CF4 p4). It is neither a correction nor a check for CF4's TF moduli. Only its §5 2mtf adjustment survives into CF4 (CF4 p5). |
+| Kourkchi+ 2022 (CF4 BTFR), `2201.13023` **[added 2026-11-11]** | p4 eq. 7, p6–7 §2.5, p8 eq. 9 | The source of CF4's main TF subsample. Its H I flux-bias correction (the pseudo gas mass) is already in the moduli. See the audit's K22 caveat: the correction uses the observed V_ls. |
 | Boubel+ 2025, `2504.10589` | whole paper | Correction scheme option A for the advisor: selection inside the TF likelihood, with Malmquist and Eddington bias handled jointly. |
 | Duangchan+ 2026 (A&A), `2507.22236` | p2–6 | Correction scheme option B: forward modelling with 64 mocks that copy CF4's selection *per subtype*, in position and magnitude, followed by a simulation-based correction. Their finding: incompleteness amplifies the flow beyond about 160 h⁻¹ Mpc. Their per-subtype mock construction is a template for our MDPL2 Malmquist test. We found no public mocks or code; Zenodo 16929459 holds only a talk. |
 
@@ -810,29 +948,50 @@ has a `.txt` twin with `=== page N ===` markers in `literature/`.
   (`cdsarc.cds.unistra.fr`) timed out from this machine on 2026-11-03, even outside the sandbox,
   and the Harvard mirror returned 502. Try again with
   `curl -O https://cdsarc.cds.unistra.fr/ftp/J/A+A/602/A100/ReadMe` and take the galaxy table
-  it lists.
-- **The original VAGC mangle polygons** (`sdss.physics.nyu.edu/lss/dr72/`, unreachable). The
-  random file above stands in for them.
+  it lists. **[2026-11-04]** Tempel 2017 (p12) also names `cosmodb.to.ee`, but that host did not
+  resolve from this machine on 2026-11-04. This full table would also supply the magnitudes that
+  luminosity weighting needs.
+- **Papers, to download [2026-11-04]:** Hoffman+ 2024 (`2311.01340`, the BGc treatment of lognormal
+  bias), Strauss & Willick 1995 (bias taxonomy), Tempel+ 2014 (`1402.1350`, the 7,221 deg²), and
+  Martínez+ 2009 (the mask behind it). Read the first two, along with Tully+ 2023 and Kourkchi+ 2020,
+  before designing the correction.
+
+#### Generate ourselves [2026-11-04]
+
+- The Tempel randoms: no public catalog exists for Tempel's groups and singletons clipped at the
+  EDD z = 0.1.
+- The radial n(s) of that sample.
+- The S_k and the randoms of the combined CF4 groups, which nobody publishes. Take each source's
+  magnitude limits and scatter from its paper, and never invent them.
 
 **Done when:** both ratio plots are flat, and the random catalog is cached (rule 7) and reproducible
 from a seed. **[2026-10-14]** M has its randoms as well, every velocity sample has an S_k, and the
-MDPL2 Malmquist test recovers the true ζ₁.
+MDPL2 Malmquist test recovers the true ζ₁. **[2026-11-04]** The double-correction audit is written
+down, the velocity samples have their randoms, and the angular ratio map is shown before and after
+completeness weighting.
 
 **Prompt to start it:**
 
 ```text
 Start Stage 4 of docs/real_data_roadmap.md (selection function and randoms).
-Read CLAUDE.md, docs/architecture.md (the selection/ entry) and that stage first.
-Implement in src/dvcorr/selection/: a HEALPix angular footprint from the Tempel galaxies, the
-radial selection n(s) of the unique-group sample, and a seeded random catalog (shuffle method,
-size factor in config). Give the random draw its own seed and extend the seed-allocation test.
-Cache the randoms (rule 7). Notebook: footprint map and area, data/random n(s) ratio,
-data/random angular ratio map, and nbar_T(s) vs distance. Tell me what each plot should look
-like if the randoms are right, and whether ours do. Update the architecture.md index line.
-Then do the same for the 2MASS density field. Finally, for the Malmquist part: read
-docs/advisor_notes.md, propose the per-sample selection functions S_k and the correction
-scheme, and wait for my choice. Implement it and run the MDPL2 Malmquist test (true vs biased
-vs corrected zeta_1) before any correction touches real velocities.
+Read CLAUDE.md, docs/advisor_notes.md, docs/architecture.md (the selection/ entry) and that stage
+first. Begin with the double-correction audit: for each CF4 source, write down what its DM already
+contains, with page references, and show me the table before anything else.
+Check that data/external/nyu_vagc_dr72_mask/ascii/lss_combmask.dr72.ply is complete. Then implement
+in src/dvcorr/selection/: the mangle mask cut to Tempel's cap and rasterized at nside >= 512, the
+radial selection n(s) of the 179,681-tracer sample, and a seeded random catalog (size factor in
+config). Compare shuffle with smoothed n(s) with a hard edge, recommend a primary, and ask me to
+choose. Give the random draw its own seed and extend the seed-allocation test.
+Cache the randoms (rule 7). Notebook: mask map and area (explain 7,221 against the galaxy-pixel
+estimate), data/random n(s) ratio including the last bins, data/random angular ratio map before
+and after completeness weighting, and nbar_T(s) vs distance. Tell me what each plot should look
+like if the randoms are right, and whether ours do. Report any change to the 26,302 centers.
+Update the architecture.md index line.
+Then do the same for the 2MASS density field, using in_twomrs_footprint, and build the randoms of
+each CF4 velocity sample. Finally, for the Malmquist part: propose the per-sample selection
+functions S_k and a correction scheme for only what the audit shows is still missing, and wait for
+my choice. Implement it and run the MDPL2 Malmquist test (true vs biased vs corrected zeta_1, with
+injected scatter matching eDM per source) before any correction touches real velocities.
 ```
 
 ---
@@ -870,7 +1029,9 @@ r = 0 exclusion) by calling it on the data tracers and on the randoms. Do not fo
 the SDSS mask and a Tempel-like n(s) to the halos, and run the sky estimator with randoms. It must
 reproduce the full-box `velocity_centered_shell_dipole` to within noise. Then turn the random
 correction off and watch it fail. That failure shows you what the window does. Run the
-group-centered ξ_Tu alongside; it must come out as ≈ −ζ.
+group-centered ξ_Tu alongside; it must come out as ≈ −ζ. **[2026-11-04]** There the CF4 objects are
+the shell neighbours: the note's eq. 28 needs only the Tempel randoms, and its normalization and
+multipole mixing are calibrated with the CF4 randoms from Stage 4.
 
 **Sign gates on the sky:** a toy infall around real Tempel positions, observed at real CF4
 positions, must give ζ₁ > 0 and ξ_Tu,1 < 0. A velocity shuffle must give a dipole consistent with
@@ -975,6 +1136,7 @@ missions: |
   [ ] Method chosen: counts in spheres or $\xi_{TT}$ with the randoms
   [ ] Validated on masked MDPL2 against the b of notebook 09
   [ ] $b_T$ with an error bar for the primary sample and one `Ng` split
+  [ ] $b_T(s)$, or at least $b_T$ in two depth bins that cover the CF4 centers
 -->
 
 **What this stage is for.** Measure how strongly Tempel groups trace the matter (b_T, or σ8g as
@@ -987,8 +1149,12 @@ volume-limited cut, or measure ξ_TT with randoms (Landy–Szalay) and compare i
 `pipeline/galaxy_bias.py` holds the box version. *Check:* b_T rises with an `Ng` cut. If it does
 not, richness is not tracking mass.
 
+**[2026-11-04] From Stage 4:** because of the flux limit b_T depends on s, so measure b_T(s), or at
+least b_T in two depth bins. The bins must cover the CF4 centers (s = 95–263 h⁻¹ Mpc, 16–84%, median
+208, *measured 11-04*), because a nearby volume-limited cut would measure a different population.
+
 **Done when:** b_T (or σ8g) is known with an error bar for the primary sample and for one richness
-split.
+split. **[2026-11-04]** It is also known in at least two depth bins.
 
 **Prompt to start it:**
 
@@ -998,8 +1164,9 @@ Read CLAUDE.md, the docstring of src/dvcorr/pipeline/galaxy_bias.py and that sta
 Propose how to measure sigma_8g / b_T on the real (non-periodic, masked) sample, either
 counts-in-spheres as Nusser section 5 does or xi_TT with the Stage 4 randoms, and wait for my choice.
 Then implement it as library code, check it first on a masked MDPL2 sample where b is known
-from notebook 09, and only then run it on Tempel. Report b_T for the primary sample and for an
-Ng cut, and say whether the trend makes sense.
+from notebook 09, and only then run it on Tempel. Report b_T for the primary sample, for an
+Ng cut, and in at least two depth bins that cover the CF4 centers, and say whether the trends make
+sense.
 ```
 
 ---
@@ -1059,6 +1226,8 @@ trusted. The advisor's suspect is 6dFGS.
 - For each source k (SDSS FP, 6dFGS FP, TF, SNIa, SBF, and any others the Stage 1 addendum finds),
   run ζ₁ with its own Malmquist correction (S_k from Stage 4) and its own bootstrap (Stage 8).
   Sources with too few objects at cz < 10,000 (SBF, SNII) are reported as counts, not curves.
+  **[2026-11-04]** "Its own correction" means only what Stage 4's double-correction audit shows is
+  still missing. For SDSS FP, use the Howlett catalog and randoms listed in Stage 4.
 - **Pair each source with a density field that covers it.** SDSS FP goes with T and M. 6dFGS FP is
   southern, so it goes with **M only**. TF and SNIa (all-sky) go with M, and with T inside the
   footprint.
@@ -1140,6 +1309,8 @@ is compared against.
   b_M) and a **CF4-like velocity sample per source**: each source's sky, n(cz), σ_d and
   selection S_k, with the Malmquist correction applied exactly as on the data. The mock spread
   per source is what makes a Stage 8B disagreement significant or not.
+- **[2026-11-04]** Howlett's 2,048 selection-matched SDSS mocks (Stage 4) are an external test of
+  the SDSS FP selection and correction, alongside these mocks.
 
 **Done when:** you have Nusser's Fig. 2 top panel: data points with bootstrap bars, mock mean in
 redshift and real space, and the mock 1σ band.
@@ -1319,7 +1490,8 @@ and wait for my decision before writing code.
   loaders in `real_catalogs.py`. The selection functions S_k and the Malmquist correction go in
   `src/dvcorr/selection/`, and per-source mock selection goes in `src/dvcorr/mocks/`.
 - Config: `config/cosmology.py` gains `H0_CF4`; `config/paths.py` gets the Tempel filename fix
-  **[2026-10-14]** and the 2MASS and CF4-individual paths.
+  **[2026-10-14]** and the 2MASS and CF4-individual paths. **[2026-11-04]** It also gets the VAGC
+  mangle mask, the VAGC window file, and the Howlett catalog, randoms and mocks.
 - Docs: a one-line entry in `docs/architecture.md` per new file. The "n̄ is the box mean"
   contract gains its sky counterpart (n̄V_b → α_R × random count).
 
@@ -1329,6 +1501,7 @@ and wait for my decision before writing code.
 - `pytest` passes, including the sky sign gates and the bridge test from Stage 5, before any data
   ζ is plotted.
 - Stage 11's mock-recovery test (fσ8 ≈ 0.43 on mocks) passes before the data fit is quoted.
+- **[2026-11-04]** The double-correction audit (Stage 4) is written down before any S_k is designed.
 - **[2026-10-14]** The MDPL2 Malmquist test (Stage 4) passes before any corrected real velocity is
   plotted.
 - Every edited notebook is re-executed headlessly (rule 11).

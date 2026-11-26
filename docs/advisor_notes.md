@@ -75,3 +75,35 @@ what it says.
   fits a bulk flow seen from opposite sides of the sky as well as it fits a constant calibration
   offset. Medians cannot separate the two. Stage 8B's per-source ζ₁ can.
 
+## 2026-11-04 (preparation, not a meeting)
+
+### Open question for Adi: which Malmquist bias does he mean?
+
+CF4's moduli are already partly corrected: SDSS FP through its PDF normalization (Tully+ 2023, p11),
+6dFGS FP through the J < 13.38 normalization and morphology adjustments (p9–11), and TF through a
+residual-bias polynomial (Kourkchi+ 2020, p16–19; whether CF4's published TF moduli are these
+adjusted ones is still to be confirmed). A new correction on top could count the same bias twice.
+
+Our positions are at redshift, as Nusser's were, so classic inhomogeneous Malmquist bias from placing
+objects at their measured distance largely does not arise, except on the few-Mpc scales Nusser notes
+(p5). What remains is:
+
+- (a) selection bias at fixed cz;
+- (b) lognormal bias, which our ln-ramp Watkins–Feldman u is designed to handle. Hoffman+ 2024 treat
+  it with BGc instead.
+
+**[2026-11-11] Audit done (roadmap Stage 4).** The TF clause above is resolved: CF4's main TF subsample
+is the Kourkchi+ 2022 BTFR, not K20b. Its H I flux-bias correction is already in the moduli. SDSS FP,
+6dFGS FP, BTFR and 2mtf carry their own corrections. The smaller subsamples (about 2% of our centers)
+have none stated. New point for Adi: the BTFR correction uses each galaxy's observed velocity, so by
+our estimate it damps real TF peculiar velocities by about 10–20% at 10,000 km/s.
+
+Which of these does he want corrected, and does he want it beyond what is already in the moduli?
+This narrows the 2026-10-14 question about the correction scheme. Reference for the taxonomy: Strauss
+& Willick 1995.
+
+### Decision for Adi: luminosity weighting
+
+The flux limit leaves only luminous groups far away, so b_T depends on depth (Stage 4, Stage 7).
+Should the tracers get luminosity weights, or is measuring b_T by depth enough? Weights would need
+magnitudes from Tempel's full table, which we have not obtained.
